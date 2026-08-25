@@ -4,255 +4,167 @@
 >
 > 自动采集 AI 领域公开信息，通过趋势评分与 LLM 分析生成每日情报，并推送到飞书。
 
-## 项目目标
+## 项目定位
 
-AI Intelligence Radar 是一个自动化 AI 情报系统，用于每天发现：
+AI Intelligence Radar 是一个面向开发者、创业者和研究人员的 AI 趋势发现系统。
 
-- GitHub 高热度开源项目
+系统自动收集：
+
+- GitHub 热门 AI 项目
 - Hacker News 技术趋势
-- HuggingFace 新模型
-- AI 商业机会
+- HuggingFace 模型动态
+- 后续扩展 Product Hunt / arXiv
 
-核心目标：
+通过 LLM 分析，将原始信息转换为：
 
-> 自动发现值得关注的 AI 项目，并通过 AI 分析转化为可执行的情报日报。
+- 技术价值判断
+- 热度趋势判断
+- 商业机会分析
+- 每日飞书情报日报
 
 ---
 
 # 系统架构
 
 ```
-                Data Collection
+Data Collection
 
- GitHub    HackerNews    HuggingFace
+GitHub / HackerNews / HuggingFace
 
-                ↓
+        ↓
 
-       Cleaning & Normalization
+Data Cleaning
 
-                ↓
+        ↓
 
-          Duplicate Filtering
+Duplicate Filtering
 
-                ↓
+        ↓
 
-          Trend Scoring Model
+Trend Scoring Engine
 
-                ↓
+        ↓
 
-             LLM Analysis
+LLM Intelligence Layer
 
-                ↓
+(OpenAI Compatible / DeepSeek)
 
-          SQLite Historical DB
+        ↓
 
-                ↓
+SQLite Historical Storage
 
-          Daily Report Builder
+        ↓
 
-                ↓
-
-            Feishu Bot Push
+Feishu Daily Report
 ```
 
 ---
 
-# 当前已完成能力
+# LLM 支持
 
-## 数据采集层
+当前支持所有 OpenAI Compatible API：
 
-- GitHub 项目采集
-- Hacker News 热点采集
-- HuggingFace 模型采集
-- Collector 模块化设计
+- OpenAI
+- DeepSeek
+- 本地模型服务（例如兼容 OpenAI API 的部署）
 
-## 数据处理层
+配置示例：
 
-- 数据标准化
-- URL 去重
-- 历史数据过滤
-- 趋势评分
-
-## AI 分析层
-
-- LLM 分析接口
-- 技术价值分析
-- 商业机会分析扩展能力
-
-## 通知层
-
-- 飞书机器人 Webhook
-- 自动生成日报消息
-
-## 工程化
-
-- SQLite 数据持久化
-- CLI运行入口
-- Docker支持
-- GitHub Actions CI
-- 自动化测试
-- Makefile统一命令
+```env
+LLM_PROVIDER=deepseek
+LLM_API_KEY=your_key
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-chat
+```
 
 ---
 
 # 快速启动
 
-## 安装
-
 ```bash
 git clone https://github.com/zerlinpi/AI-Intelligence-Radar.git
 cd AI-Intelligence-Radar
 pip install -r requirements.txt
+cp .env.example .env
 ```
 
-## 环境变量
+修改 `.env` 后：
 
-创建 `.env`：
-
-```env
-OPENAI_API_KEY=
-OPENAI_MODEL=
-FEISHU_WEBHOOK=
-GITHUB_TOKEN=
-DATABASE_URL=sqlite:///radar.db
+```bash
+make check
+make test
+make run
 ```
 
 ---
 
-# 常用命令
-
-## 环境检查
+# Docker 部署
 
 ```bash
-make check
-```
-
-或者：
-
-```bash
-python -m app.cli check
+docker compose up -d
 ```
 
 检查：
 
-- Python环境
-- 数据库配置
-- LLM配置
-- 飞书配置
-- Pipeline状态
+```bash
+docker compose logs -f
+```
 
 ---
 
-## 自动测试
-
-```bash
-make test
-```
-
-等价：
-
-```bash
-pytest -v --tb=short
-```
-
-测试覆盖：
-
-- Cleaner
-- Scoring
-- Storage
-- Feishu(Mock)
-- Pipeline
-
----
-
-## 生成日报
-
-```bash
-make run
-```
-
-执行流程：
+# 每日报告流程
 
 ```
-Collect
- ↓
-Clean
- ↓
-Score
- ↓
+Collector
+   ↓
+Cleaner
+   ↓
+Scoring
+   ↓
 LLM Analysis
- ↓
-Save Database
- ↓
-Feishu Push
+   ↓
+Database
+   ↓
+Feishu Bot
 ```
 
 ---
 
-# 部署
+# 当前完成能力
 
-详细部署说明：
-
-```
-DEPLOYMENT.md
-```
-
-生产运行建议：
-
-```
-Scheduler
-    ↓
-Daily Pipeline
-    ↓
-Feishu Notification
-```
-
----
-
-# 项目结构
-
-```
-app/
-├── sources/       数据采集
-├── ai/            LLM分析
-├── database/      数据库
-├── storage/       数据保存
-├── reports/       报告生成
-├── pipeline.py    核心流程
-├── feishu.py      飞书通知
-└── cli.py         命令入口
-
-scripts/
-└── verify.py      环境验证
-
-.github/
-└── workflows/     CI测试
-```
+- 多源 AI 信息采集
+- 数据清洗与去重
+- 趋势评分
+- LLM 分析接口
+- DeepSeek/OpenAI Compatible 支持
+- 飞书机器人推送
+- SQLite历史存储
+- Docker部署
+- Scheduler自动任务
+- CI测试基础设施
 
 ---
 
 # Roadmap
 
-## Phase 1 (完成)
+## Phase 1
 
-- 稳定飞书日报推送
-- AI热点采集
-- 趋势评分
-- LLM分析
-- 自动测试
+- 稳定每日飞书日报
+- 完善数据源
+- 提升评分模型
 
 ## Phase 2
 
 - Product Hunt
 - arXiv论文
 - Dashboard
-- 历史趋势分析
+- 趋势图表
 
 ## Phase 3
 
 - AI创业机会分析
-- 行业情报雷达
-- 自动投资研究助手
+- 行业雷达
+- API服务
 
 ---
 
