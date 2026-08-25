@@ -22,11 +22,14 @@ def save_item(db: Session, item):
         title=data.get("title", ""),
         url=data.get("url", ""),
         description=data.get("description", ""),
+        category=data.get("category", "ai"),
         trend_score=data.get("trend_score", 0),
         business_score=analysis.get(
             "business_score",
             data.get("business_score", 0),
         ),
+        metrics=data.get("metrics", {}),
+        analysis=analysis,
     )
 
     db.add(record)
