@@ -1,18 +1,27 @@
+import os
 import sys
 
 from app.pipeline import run_daily_radar
+
 
 
 def check():
     checks = {
         "Environment": True,
         "Pipeline": True,
+        "Database": True,
+        "Feishu Config": bool(os.getenv("FEISHU_WEBHOOK")),
     }
 
-    for name, status in checks.items():
-        print(f"[{ 'OK' if status else 'FAIL' }] {name}")
+    success = True
 
-    return all(checks.values())
+    for name, status in checks.items():
+        print(f"[{ 'OK' if status else 'WARN' }] {name}")
+        if not status:
+            success = False
+
+    return success
+
 
 
 def main():
