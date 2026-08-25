@@ -2,9 +2,12 @@ import requests
 
 from app.config import GITHUB_TOKEN
 from app.sources.base import BaseCollector
+from app.core.logger import get_logger
 
 
 API = "https://api.github.com/search/repositories"
+
+logger = get_logger("collector.github")
 
 
 class GithubCollector(BaseCollector):
@@ -29,16 +32,31 @@ class GithubCollector(BaseCollector):
         )
         response.raise_for_status()
 
-        return [
-            {
-                "source": "github",
-                "title": item.get("name"),
-                "url": item.get("html_url"),
-                "stars": item.get("stargazers_count", 0),
-                "description": item.get("description") or ""
-            }
-            for item in response.json().get("items", [])[:10]
-        ]
+        payload = response.json()
+        if not isinstance(payload, dict):
+            logger.warning("github api returned invalid payload")
+            return []
+
+        items = payload.get("items", [])
+        if not isinstance(items, list):
+            return []
+
+        result = []
+        for item in items[:10]:
+            if not isinstance(item, dict):
+                continue
+
+            result.append(
+                {
+                    "source": "github",
+                    "title": item.get("name") or "",
+                    "url": item.get("html_url") or "",
+                    "stars": item.get("stargazers_count", 0),
+                    "description": item.get("description") or ""
+                }
+            )
+
+        return result
 
 
 def fetch_ai_repositories():
