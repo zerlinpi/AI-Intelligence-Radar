@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 import uuid
 
@@ -34,7 +34,6 @@ COLLECTORS = [
 
 
 def collect_sources():
-    """Collect all sources. A failed collector must not stop the pipeline."""
     items = []
 
     for collector in COLLECTORS:
@@ -56,7 +55,6 @@ def collect_sources():
                 len(data),
                 time.time() - start,
             )
-
         except Exception:
             logger.exception(
                 "collector failed=%s duration=%.2fs",
@@ -85,7 +83,7 @@ def build_report(items):
         item.trend_score = calculate_score(item.to_dict())
 
         try:
-            item.analysis = analyze_item(item.to_dict())
+            item.analysis = analyze_item(item.to_dict()) or {}
         except Exception as error:
             logger.exception("analysis failed item=%s", item.title)
             item.analysis = fallback_analysis(item, error)
@@ -104,12 +102,13 @@ def build_feishu_message(items):
     message = "🔥 AI Intelligence Radar Daily\n\n"
 
     for index, item in enumerate(items, start=1):
+        analysis = item.analysis or {}
         message += (
             f"{index}. {item.title}\n"
             f"Source: {item.source}\n"
             f"Trend Score: {item.trend_score}\n"
-            f"Business Opportunity: {item.analysis.get('opportunity', 'medium')}\n"
-            f"{item.analysis.get('summary', item.description[:120])}\n\n"
+            f"Business Opportunity: {analysis.get('opportunity', 'medium')}\n"
+            f"{analysis.get('summary', item.description[:120])}\n\n"
         )
 
     return message
@@ -157,7 +156,7 @@ def run_daily_radar():
 
     return {
         "execution_id": execution_id,
-        "time": datetime.utcnow().isoformat(),
+        "time": datetime.now(timezone.utc).isoformat(),
         "duration": duration,
         "items": [item.to_dict() for item in report],
     }
