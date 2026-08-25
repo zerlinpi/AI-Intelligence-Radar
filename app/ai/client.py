@@ -1,7 +1,8 @@
 import time
+
 from openai import OpenAI
 
-from app.config import LLM_API_KEY, LLM_BASE_URL
+from app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
 
 def get_llm_client() -> OpenAI:
@@ -10,12 +11,27 @@ def get_llm_client() -> OpenAI:
     Supports OpenAI, DeepSeek and any provider exposing an
     OpenAI-compatible API endpoint.
     """
+    if not LLM_API_KEY:
+        raise RuntimeError(
+            "LLM API key is missing. Set LLM_API_KEY or OPENAI_API_KEY."
+        )
+
+    if not LLM_BASE_URL:
+        raise RuntimeError(
+            "LLM base URL is missing. Set LLM_BASE_URL."
+        )
+
     return OpenAI(
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
         timeout=60.0,
         max_retries=2,
     )
+
+
+def get_llm_model() -> str:
+    """Return configured LLM model name."""
+    return LLM_MODEL
 
 
 def get_llm_model_usage(response):
