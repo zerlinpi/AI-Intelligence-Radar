@@ -21,6 +21,10 @@ MAX_REPORT_ITEMS = 10
 
 
 def collect_sources():
+    """Collect intelligence from all sources.
+
+    A single collector failure must not stop the complete daily radar job.
+    """
     items = []
 
     collectors = [
@@ -34,11 +38,29 @@ def collect_sources():
             data = collector()
             if isinstance(data, list):
                 items.extend(data)
-                logger.info("collector %s collected %s items", collector.__name__, len(data))
-        except Exception as error:
-            logger.exception("collector failed: %s", collector.__name__)
+                logger.info(
+                    "collector %s collected %s items",
+                    collector.__name__,
+                    len(data),
+                )
+        except Exception:
+            logger.exception(
+                "collector failed: %s",
+                collector.__name__,
+            )
 
     return items
+
+
+def fallback_analysis(item, error=None):
+    return {
+        "summary": (item.get("description") or "")[:300],
+        "trend_score": item.get("trend_score", 50),
+        "business_score": 50,
+        "opportunity": "medium",
+        "startup_ideas": [],
+        "error": str(error) if error else None,
+    }
 
 
 def build_report(items):
@@ -50,11 +72,11 @@ def build_report(items):
         try:
             item["analysis"] = analyze_item(item)
         except Exception as error:
-            logger.exception("analysis failed for item: %s", item.get("title"))
-            item["analysis"] = {
-                "summary": "Analysis unavailable",
-                "error": str(error),
-            }
+            logger.exception(
+                "analysis failed for item: %s",
+                item.get("title"),
+            )
+            item["analysis"] = fallback_analysis(item, error)
 
         analyzed.append(item)
 
@@ -67,15 +89,11 @@ def build_report(items):
 
 
 def filter_existing_items(db, items):
-    result = []
-
-    for item in items:
-        url = item.get("url")
-
-        if not url or not exists(db, url):
-            result.append(item)
-
-    return result
+    return [
+        item
+        for item in items
+        if not item.get("url") or not exists(db, item.get("url"))
+    ]
 
 
 def build_feishu_message(items):
@@ -88,6 +106,7 @@ def build_feishu_message(items):
             f"{index}. {item.get('title', 'Unknown')}\n"
             f"Source: {item.get('source', 'unknown')}\n"
             f"Trend Score: {item.get('trend_score', 0)}\n"
+            f"Business Opportunity: {analysis.get('opportunity', 'medium')}\n"
             f"{analysis.get('summary', item.get('description', '')[:120])}\n\n"
         )
 
@@ -97,10 +116,10 @@ def build_feishu_message(items):
 def run_daily_radar():
     logger.info("daily radar started")
     init_database()
-    report = []
 
     raw_items = collect_sources()
     cleaned_items = normalize_items(raw_items)
+    report = []
 
     db = SessionLocal()
 
@@ -119,8 +138,11 @@ def run_daily_radar():
             "message": "No new intelligence items found",
         }
 
-    send_feishu(build_feishu_message(report))
-    logger.info("feishu notification sent")
+    try:
+        send_feishu(build_feishu_message(report))
+        logger.info("feishu notification sent")
+    except Exception:
+        logger.exception("feishu notification failed")
 
     return {
         "time": datetime.utcnow().isoformat(),
