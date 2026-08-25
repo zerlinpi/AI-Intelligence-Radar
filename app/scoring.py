@@ -8,12 +8,15 @@ def _normalize(value, divisor, weight):
     except (TypeError, ValueError):
         value = 0
 
+    if value < 0:
+        value = 0
+
     return min(value / divisor * weight, weight)
 
 
 def freshness_score(item):
     """Calculate freshness signal from created timestamps."""
-    created_at = item.get("created_at")
+    created_at = item.get("created_at") if isinstance(item, dict) else None
 
     if not created_at:
         return 0
@@ -22,6 +25,10 @@ def freshness_score(item):
         created = datetime.fromisoformat(
             str(created_at).replace("Z", "+00:00")
         )
+
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+
         now = datetime.now(timezone.utc)
         hours = max((now - created).total_seconds() / 3600, 0)
 
@@ -49,6 +56,9 @@ def calculate_score(item):
     - Freshness: 15
     """
 
+    if not isinstance(item, dict):
+        return 0
+
     community = (
         _normalize(item.get("stars"), 1000, 20)
         + _normalize(item.get("upvotes"), 100, 10)
@@ -59,8 +69,12 @@ def calculate_score(item):
         + _normalize(item.get("comments"), 50, 10)
     )
 
-    ai_relevance = item.get("ai_relevance_score", 0) or 0
-    ai_relevance = min(float(ai_relevance) * 0.20, 20)
+    try:
+        ai_relevance = float(item.get("ai_relevance_score", 0) or 0)
+    except (TypeError, ValueError):
+        ai_relevance = 0
+
+    ai_relevance = min(max(ai_relevance, 0) * 0.20, 20)
 
     market_signal = (
         _normalize(item.get("downloads"), 10000, 10)
@@ -77,4 +91,4 @@ def calculate_score(item):
         + freshness
     )
 
-    return round(min(score, 100), 2)
+    return round(min(max(score, 0), 100), 2)
