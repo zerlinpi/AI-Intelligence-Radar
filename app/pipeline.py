@@ -5,6 +5,7 @@ from app.scoring import calculate_score
 from app.ai.analyzer import analyze_item
 from app.feishu import send_feishu
 from app.core.logger import get_logger
+from app.models.radar_item import RadarItem
 
 from app.sources.github import GithubCollector
 from app.sources.hackernews import HackerNewsCollector
@@ -21,7 +22,6 @@ logger = get_logger("pipeline")
 MAX_ANALYSIS_ITEMS = 50
 MAX_REPORT_ITEMS = 10
 
-
 COLLECTORS = [
     GithubCollector(),
     HackerNewsCollector(),
@@ -32,34 +32,37 @@ COLLECTORS = [
 
 
 def collect_sources():
-    """Collect normalized intelligence from all sources safely."""
+    """Collect sources and convert every item into RadarItem."""
     items = []
 
     for collector in COLLECTORS:
         try:
             data = collector.collect_safe()
+            if not isinstance(data, list):
+                continue
 
-            if isinstance(data, list):
-                items.extend(data)
-                logger.info(
-                    "collector %s collected %s items",
-                    collector.__class__.__name__,
-                    len(data),
-                )
+            for raw_item in data:
+                if isinstance(raw_item, RadarItem):
+                    items.append(raw_item)
+                elif isinstance(raw_item, dict):
+                    items.append(RadarItem.from_dict(raw_item))
+
+            logger.info(
+                "collector %s collected %s items",
+                collector.__class__.__name__,
+                len(data),
+            )
 
         except Exception:
-            logger.exception(
-                "collector failed: %s",
-                collector.__class__.__name__,
-            )
+            logger.exception("collector failed: %s", collector.__class__.__name__)
 
     return items
 
 
 def fallback_analysis(item, error=None):
     return {
-        "summary": (item.get("description") or "")[:300],
-        "trend_score": item.get("trend_score", 50),
+        "summary": item.description[:300],
+        "trend_score": item.trend_score or 50,
         "business_score": 50,
         "opportunity": "medium",
         "startup_ideas": [],
@@ -71,21 +74,18 @@ def build_report(items):
     analyzed = []
 
     for item in items[:MAX_ANALYSIS_ITEMS]:
-        item["trend_score"] = calculate_score(item)
+        item.trend_score = calculate_score(item.to_dict())
 
         try:
-            item["analysis"] = analyze_item(item)
+            item.analysis = analyze_item(item.to_dict())
         except Exception as error:
-            logger.exception(
-                "analysis failed for item: %s",
-                item.get("title"),
-            )
-            item["analysis"] = fallback_analysis(item, error)
+            logger.exception("analysis failed for item: %s", item.title)
+            item.analysis = fallback_analysis(item, error)
 
         analyzed.append(item)
 
     analyzed.sort(
-        key=lambda x: x.get("trend_score", 0),
+        key=lambda x: x.trend_score,
         reverse=True,
     )
 
@@ -96,7 +96,7 @@ def filter_existing_items(db, items):
     return [
         item
         for item in items
-        if not item.get("url") or not exists(db, item.get("url"))
+        if not item.url or not exists(db, item.url)
     ]
 
 
@@ -104,14 +104,12 @@ def build_feishu_message(items):
     message = "🔥 AI Intelligence Radar Daily\n\n"
 
     for index, item in enumerate(items, start=1):
-        analysis = item.get("analysis", {})
-
         message += (
-            f"{index}. {item.get('title', 'Unknown')}\n"
-            f"Source: {item.get('source', 'unknown')}\n"
-            f"Trend Score: {item.get('trend_score', 0)}\n"
-            f"Business Opportunity: {analysis.get('opportunity', 'medium')}\n"
-            f"{analysis.get('summary', item.get('description', '')[:120])}\n\n"
+            f"{index}. {item.title}\n"
+            f"Source: {item.source}\n"
+            f"Trend Score: {item.trend_score}\n"
+            f"Business Opportunity: {item.analysis.get('opportunity', 'medium')}\n"
+            f"{item.analysis.get('summary', item.description[:120])}\n\n"
         )
 
     return message
@@ -121,16 +119,17 @@ def run_daily_radar():
     logger.info("daily radar started")
     init_database()
 
-    raw_items = collect_sources()
-    cleaned_items = normalize_items(raw_items)
-    report = []
+    items = collect_sources()
+    cleaned = normalize_items([item.to_dict() for item in items])
+    radar_items = [RadarItem.from_dict(item) for item in cleaned]
 
     db = SessionLocal()
+    report = []
 
     try:
-        new_items = filter_existing_items(db, cleaned_items)
+        new_items = filter_existing_items(db, radar_items)
         report = build_report(new_items)
-        save_batch(db, report)
+        save_batch(db, [item.to_dict() for item in report])
         logger.info("saved %s report items", len(report))
     finally:
         db.close()
@@ -150,5 +149,5 @@ def run_daily_radar():
 
     return {
         "time": datetime.utcnow().isoformat(),
-        "items": report,
+        "items": [item.to_dict() for item in report],
     }
