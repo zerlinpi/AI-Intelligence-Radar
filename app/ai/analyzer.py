@@ -19,10 +19,15 @@ def _fallback_result(item: Dict, reason: str = "") -> Dict:
 
     return {
         "summary": (item.get("description") or "")[:300],
-        "trend_score": 50,
+        "trend_score": item.get("trend_score", 50),
         "business_score": 50,
         "opportunity": "medium",
         "startup_ideas": [],
+        "llm_meta": {
+            "success": False,
+            "fallback": True,
+            "reason": reason,
+        },
     }
 
 
