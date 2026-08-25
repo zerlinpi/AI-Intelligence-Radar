@@ -5,9 +5,13 @@ from app.pipeline import run_daily_radar
 
 
 def check():
-    llm_configured = bool(
+    llm_api_key = bool(
         os.getenv("LLM_API_KEY")
         or os.getenv("OPENAI_API_KEY")
+    )
+    llm_model = bool(os.getenv("LLM_MODEL", "gpt-5.5-mini"))
+    llm_base_url = bool(
+        os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
     )
 
     checks = {
@@ -15,7 +19,9 @@ def check():
         "Pipeline": True,
         "Database": bool(os.getenv("DATABASE_URL", "sqlite:///radar.db")),
         "Feishu Config": bool(os.getenv("FEISHU_WEBHOOK")),
-        "LLM Config": llm_configured,
+        "LLM API Key": llm_api_key,
+        "LLM Model": llm_model,
+        "LLM Base URL": llm_base_url,
     }
 
     success = True
