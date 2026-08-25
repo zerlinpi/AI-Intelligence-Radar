@@ -13,91 +13,85 @@ AI Intelligence Radar 是一个自动化 AI 情报系统，用于每天发现：
 - HuggingFace 新模型
 - AI 商业机会
 
-最终输出：
+核心目标：
 
-```
-数据采集
-    ↓
-数据清洗
-    ↓
-重复过滤
-    ↓
-趋势评分
-    ↓
-LLM 分析
-    ↓
-日报生成
-    ↓
-飞书机器人通知
-```
+> 自动发现值得关注的 AI 项目，并通过 AI 分析转化为可执行的情报日报。
 
 ---
 
-# 当前系统架构
+# 系统架构
 
 ```
-Collectors
+                Data Collection
 
-GitHub
-Hacker News
-HuggingFace
+ GitHub    HackerNews    HuggingFace
 
-        ↓
+                ↓
 
-Cleaning & Normalization
+       Cleaning & Normalization
 
-        ↓
+                ↓
 
-Duplicate Filter
+          Duplicate Filtering
 
-        ↓
+                ↓
 
-Trend Scoring Engine
+          Trend Scoring Model
 
-        ↓
+                ↓
 
-LLM Analysis
+             LLM Analysis
 
-        ↓
+                ↓
 
-SQLite Storage
+          SQLite Historical DB
 
-        ↓
+                ↓
 
-Feishu Daily Report
+          Daily Report Builder
+
+                ↓
+
+            Feishu Bot Push
 ```
 
 ---
 
 # 当前已完成能力
 
-## 数据层
+## 数据采集层
 
-- Collector 模块化架构
-- GitHub 数据采集
-- Hacker News 数据采集
+- GitHub 项目采集
+- Hacker News 热点采集
 - HuggingFace 模型采集
-- 数据标准化处理
+- Collector 模块化设计
+
+## 数据处理层
+
+- 数据标准化
 - URL 去重
+- 历史数据过滤
+- 趋势评分
 
 ## AI 分析层
 
-- 趋势评分模型
 - LLM 分析接口
-- 技术价值分析结构
-- 商业机会分析扩展接口
+- 技术价值分析
+- 商业机会分析扩展能力
 
 ## 通知层
 
 - 飞书机器人 Webhook
-- 日报消息生成
+- 自动生成日报消息
 
 ## 工程化
 
 - SQLite 数据持久化
-- Docker 部署结构
-- 环境变量配置
 - CLI运行入口
+- Docker支持
+- GitHub Actions CI
+- 自动化测试
+- Makefile统一命令
 
 ---
 
@@ -111,7 +105,7 @@ cd AI-Intelligence-Radar
 pip install -r requirements.txt
 ```
 
-## 配置环境变量
+## 环境变量
 
 创建 `.env`：
 
@@ -125,9 +119,15 @@ DATABASE_URL=sqlite:///radar.db
 
 ---
 
-# 运行检查
+# 常用命令
 
-执行：
+## 环境检查
+
+```bash
+make check
+```
+
+或者：
 
 ```bash
 python -m app.cli check
@@ -135,17 +135,40 @@ python -m app.cli check
 
 检查：
 
-- Environment
-- Pipeline
-- Database
-- Feishu Config
+- Python环境
+- 数据库配置
+- LLM配置
+- 飞书配置
+- Pipeline状态
 
 ---
 
-# 生成日报
+## 自动测试
 
 ```bash
-python -m app.cli
+make test
+```
+
+等价：
+
+```bash
+pytest -v --tb=short
+```
+
+测试覆盖：
+
+- Cleaner
+- Scoring
+- Storage
+- Feishu(Mock)
+- Pipeline
+
+---
+
+## 生成日报
+
+```bash
+make run
 ```
 
 执行流程：
@@ -166,21 +189,23 @@ Feishu Push
 
 ---
 
-# 测试
+# 部署
 
-运行：
+详细部署说明：
 
-```bash
-pytest
+```
+DEPLOYMENT.md
 ```
 
-当前覆盖：
+生产运行建议：
 
-- Cleaner
-- Scoring
-- Storage
-- Feishu
-- Pipeline
+```
+Scheduler
+    ↓
+Daily Pipeline
+    ↓
+Feishu Notification
+```
 
 ---
 
@@ -196,17 +221,25 @@ app/
 ├── pipeline.py    核心流程
 ├── feishu.py      飞书通知
 └── cli.py         命令入口
+
+scripts/
+└── verify.py      环境验证
+
+.github/
+└── workflows/     CI测试
 ```
 
 ---
 
 # Roadmap
 
-## Phase 1
+## Phase 1 (完成)
 
-- 完成稳定飞书日报推送
-- 增强 Collector
-- 增加更多测试
+- 稳定飞书日报推送
+- AI热点采集
+- 趋势评分
+- LLM分析
+- 自动测试
 
 ## Phase 2
 
