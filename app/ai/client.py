@@ -5,7 +5,7 @@ from app.config import LLM_API_KEY, LLM_BASE_URL
 
 
 def get_llm_client() -> OpenAI:
-    """Create an OpenAI-compatible client.
+    """Create an OpenAI compatible client.
 
     Supports OpenAI, DeepSeek and any provider exposing an
     OpenAI-compatible API endpoint.
@@ -18,19 +18,36 @@ def get_llm_client() -> OpenAI:
     )
 
 
+def get_llm_model_usage(response):
+    """Extract token usage from OpenAI compatible responses."""
+    usage = getattr(response, "usage", None)
+
+    if not usage:
+        return {}
+
+    return {
+        "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+        "completion_tokens": getattr(usage, "completion_tokens", 0),
+        "total_tokens": getattr(usage, "total_tokens", 0),
+    }
+
+
 def call_llm_with_retry(request_func, retries=3, delay=2):
-    """Execute an LLM request with lightweight retry protection."""
+    """Execute an LLM request with retry protection."""
     last_error = None
 
     for attempt in range(retries):
         try:
             start = time.time()
             response = request_func()
+
             return response, {
                 "success": True,
                 "latency": round(time.time() - start, 3),
                 "attempt": attempt + 1,
+                "usage": get_llm_model_usage(response),
             }
+
         except Exception as exc:
             last_error = exc
             if attempt < retries - 1:
@@ -40,4 +57,5 @@ def call_llm_with_retry(request_func, retries=3, delay=2):
         "success": False,
         "error": str(last_error),
         "attempt": retries,
+        "usage": {},
     }
