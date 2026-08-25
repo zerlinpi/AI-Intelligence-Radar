@@ -4,6 +4,7 @@ Runs the daily radar pipeline automatically.
 """
 
 import os
+import threading
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -17,8 +18,15 @@ scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 RUN_HOUR = int(os.getenv("RADAR_RUN_HOUR", "8"))
 RUN_MINUTE = int(os.getenv("RADAR_RUN_MINUTE", "0"))
 
+_job_lock = threading.Lock()
+
 
 def daily_radar_job():
+    """Execute radar pipeline with duplicate-run protection."""
+    if not _job_lock.acquire(blocking=False):
+        logger.warning("daily radar job skipped: previous execution still running")
+        return
+
     try:
         logger.info("daily radar job started")
         result = run_daily_radar()
@@ -28,6 +36,8 @@ def daily_radar_job():
         )
     except Exception:
         logger.exception("daily radar job failed")
+    finally:
+        _job_lock.release()
 
 
 def start_scheduler():
@@ -41,6 +51,8 @@ def start_scheduler():
         minute=RUN_MINUTE,
         id="daily_radar",
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
 
     scheduler.start()
