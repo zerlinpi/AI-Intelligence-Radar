@@ -1,13 +1,13 @@
 import json
 from typing import Dict
 
-from openai import OpenAI
-
-from app.config import OPENAI_API_KEY, LLM_MODEL
+from app.ai.client import get_llm_client, get_llm_model
+from app.ai.parser import parse_json_response
+from app.config import LLM_MAX_TOKENS, LLM_TEMPERATURE, LLM_API_KEY
 
 
 def analyze_item(item: Dict) -> Dict:
-    if not OPENAI_API_KEY:
+    if not LLM_API_KEY:
         return {
             "summary": (item.get("description") or "")[:300],
             "trend_score": 50,
@@ -15,7 +15,7 @@ def analyze_item(item: Dict) -> Dict:
             "opportunity": "medium",
         }
 
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = get_llm_client()
 
     prompt = f"""
 Analyze this project as an AI startup analyst.
@@ -34,10 +34,22 @@ Return JSON only:
 }}
 """
 
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=get_llm_model(),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=LLM_TEMPERATURE,
+            max_tokens=LLM_MAX_TOKENS,
+        )
 
-    return json.loads(response.choices[0].message.content)
+        return parse_json_response(
+            response.choices[0].message.content
+        )
+
+    except Exception:
+        return {
+            "summary": (item.get("description") or "")[:300],
+            "trend_score": 50,
+            "business_score": 50,
+            "opportunity": "medium",
+        }
