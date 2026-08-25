@@ -1,13 +1,17 @@
-from app.sources.base import BaseCollector
+from typing import List, Dict
+
 import requests
 
-API = "http://export.arxiv.org/api/query"
+from app.sources.base import BaseCollector
+
+
+API = "https://export.arxiv.org/api/query"
 
 
 class ArxivCollector(BaseCollector):
     name = "arxiv"
 
-    def collect(self, limit=10):
+    def collect(self, limit: int = 10) -> List[Dict]:
         params = {
             "search_query": "cat:cs.AI",
             "start": 0,
@@ -17,12 +21,17 @@ class ArxivCollector(BaseCollector):
         response = requests.get(API, params=params, timeout=20)
         response.raise_for_status()
 
+        text = response.text or ""
+
+        if not text.strip():
+            return []
+
         return [
             {
                 "source": self.name,
                 "title": "AI Research Paper",
                 "url": "",
-                "description": response.text[:500],
+                "description": text[:500],
             }
         ]
 
