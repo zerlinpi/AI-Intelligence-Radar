@@ -29,10 +29,10 @@ def daily_radar_job():
 
     try:
         logger.info("daily radar job started")
-        result = run_daily_radar()
+        result = run_daily_radar() or {}
         logger.info(
             "daily radar job finished, items=%s",
-            len(result.get("items", [])),
+            len(result.get("items", [])) if isinstance(result, dict) else 0,
         )
     except Exception:
         logger.exception("daily radar job failed")
