@@ -36,13 +36,18 @@ def analyze_item(item: Dict) -> Dict:
         return _fallback_result(item, "missing llm api key")
 
     client = get_llm_client()
+    metrics = item.get("metrics", {})
 
     prompt = f"""
 Analyze this project as an AI startup analyst.
 
+Evaluate technical value, market opportunity and startup potential.
+
 Title: {item.get('title')}
 Description: {item.get('description')}
 Source: {item.get('source')}
+Metrics: {metrics}
+Trend Score: {item.get('trend_score', 0)}
 
 Return JSON only:
 {{
