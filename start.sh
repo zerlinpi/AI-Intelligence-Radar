@@ -27,4 +27,12 @@ fi
 python scripts/verify.py
 python -m app.cli check
 
-python -m app.cli
+MODE=${MODE:-api}
+
+if [ "$MODE" = "scheduler" ]; then
+    echo "Starting AI Radar scheduler mode"
+    exec python -m app.main
+else
+    echo "Starting AI Radar API mode"
+    exec python -m app.cli
+fi
