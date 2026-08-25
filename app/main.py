@@ -23,7 +23,7 @@ app = FastAPI(
 def home():
     return {
         "name": "AI Intelligence Radar",
-        "status": "running"
+        "status": "running",
     }
 
 
@@ -38,7 +38,7 @@ def health_check():
 @app.get("/ready")
 def readiness_check():
     return {
-        "ready": True,
+        "ready": scheduler.running,
         "scheduler": scheduler.running,
     }
 
