@@ -12,29 +12,39 @@ def _to_dict(item):
     return item or {}
 
 
+def _safe_dict(value):
+    """Ensure JSON fields are always stored as dictionaries."""
+    return value if isinstance(value, dict) else {}
+
+
 def save_item(db: Session, item):
     data = _to_dict(item)
 
-    analysis = data.get("analysis", {}) or {}
+    analysis = _safe_dict(data.get("analysis"))
+    metrics = _safe_dict(data.get("metrics"))
 
     record = IntelligenceItem(
-        source=data.get("source", "unknown"),
-        title=data.get("title", ""),
-        url=data.get("url", ""),
-        description=data.get("description", ""),
-        category=data.get("category", "ai"),
-        trend_score=data.get("trend_score", 0),
+        source=data.get("source", "unknown") or "unknown",
+        title=data.get("title", "") or "",
+        url=data.get("url", "") or "",
+        description=data.get("description", "") or "",
+        category=data.get("category", "ai") or "ai",
+        trend_score=data.get("trend_score", 0) or 0,
         business_score=analysis.get(
             "business_score",
-            data.get("business_score", 0),
+            data.get("business_score", 0) or 0,
         ),
-        metrics=data.get("metrics", {}),
+        metrics=metrics,
         analysis=analysis,
     )
 
-    db.add(record)
-    db.commit()
-    db.refresh(record)
+    try:
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+    except Exception:
+        db.rollback()
+        raise
 
     return record
 
@@ -54,10 +64,14 @@ def exists(db: Session, url: str):
 def save_batch(db: Session, items: list):
     saved = []
 
-    for item in items:
+    for item in items or []:
         data = _to_dict(item)
 
-        if not exists(db, data.get("url", "")):
-            saved.append(save_item(db, item))
+        try:
+            if not exists(db, data.get("url", "")):
+                saved.append(save_item(db, item))
+        except Exception:
+            db.rollback()
+            continue
 
     return saved
