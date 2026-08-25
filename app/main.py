@@ -1,8 +1,22 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.pipeline import run_daily_radar
+from app.scheduler import start_scheduler, stop_scheduler
 
-app = FastAPI(title="AI Intelligence Radar")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
+    stop_scheduler()
+
+
+app = FastAPI(
+    title="AI Intelligence Radar",
+    lifespan=lifespan,
+)
 
 
 @app.get("/")
