@@ -36,19 +36,28 @@ class RadarItem:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]):
-        metrics = data.get("metrics", {})
+        data = data or {}
+        metrics = dict(data.get("metrics") or {})
 
         for key in ["stars", "forks", "comments", "downloads", "upvotes"]:
             if key in data:
                 metrics[key] = data[key]
 
+        created_at = data.get("created_at")
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.fromisoformat(created_at)
+            except ValueError:
+                created_at = None
+
         return cls(
             title=data.get("title", data.get("name", "Unknown")),
             source=data.get("source", "unknown"),
             url=data.get("url", ""),
-            description=data.get("description", ""),
+            description=data.get("description", "") or "",
             category=data.get("category", "ai"),
             metrics=metrics,
-            trend_score=data.get("trend_score", 0),
-            analysis=data.get("analysis", {}),
+            created_at=created_at,
+            trend_score=data.get("trend_score", 0) or 0,
+            analysis=data.get("analysis") or {},
         )
