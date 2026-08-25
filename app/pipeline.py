@@ -33,9 +33,17 @@ def collect_sources():
 def build_report(items):
     analyzed = []
 
-    for item in items[:20]:
+    for item in items[:50]:
         item["trend_score"] = calculate_score(item)
-        item["analysis"] = analyze_item(item)
+
+        try:
+            item["analysis"] = analyze_item(item)
+        except Exception as error:
+            item["analysis"] = {
+                "summary": "Analysis unavailable",
+                "error": str(error),
+            }
+
         analyzed.append(item)
 
     analyzed.sort(
@@ -54,10 +62,12 @@ def run_daily_radar():
     message = "🔥 AI Intelligence Radar Daily\n\n"
 
     for index, item in enumerate(report, start=1):
+        analysis = item.get("analysis", {})
         message += (
             f"{index}. {item.get('title', 'Unknown')}\n"
-            f"Score: {item.get('trend_score', 0)}\n"
-            f"{item.get('description', '')[:120]}\n\n"
+            f"Source: {item.get('source', 'unknown')}\n"
+            f"Trend Score: {item.get('trend_score', 0)}\n"
+            f"{analysis.get('summary', item.get('description', '')[:120])}\n\n"
         )
 
     send_feishu(message)
