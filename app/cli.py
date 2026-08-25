@@ -9,14 +9,16 @@ def check():
     checks = {
         "Environment": True,
         "Pipeline": True,
-        "Database": True,
+        "Database": bool(os.getenv("DATABASE_URL", "sqlite:///radar.db")),
         "Feishu Config": bool(os.getenv("FEISHU_WEBHOOK")),
+        "LLM Config": bool(os.getenv("OPENAI_API_KEY")),
     }
 
     success = True
 
     for name, status in checks.items():
-        print(f"[{ 'OK' if status else 'WARN' }] {name}")
+        level = "OK" if status else "WARN"
+        print(f"[{level}] {name}")
         if not status:
             success = False
 
