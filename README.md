@@ -2,143 +2,118 @@
 
 > AI 情报自动化系统
 >
-> 自动采集 AI 领域公开信息，通过规则评分与 LLM 分析生成每日情报，并推送到飞书。
+> 自动采集 AI 领域公开信息，通过趋势评分与 LLM 分析生成每日情报，并推送到飞书。
 
 ## 项目目标
 
-本项目解决的问题：
+AI Intelligence Radar 是一个自动化 AI 情报系统，用于每天发现：
 
-- 每天发现值得关注的 AI 项目
-- 跟踪开源趋势和产品机会
-- 自动分析技术价值与商业潜力
-- 降低人工研究成本
+- GitHub 高热度开源项目
+- Hacker News 技术趋势
+- HuggingFace 新模型
+- AI 商业机会
 
-当前第一阶段目标：
+最终输出：
 
 ```
 数据采集
     ↓
-数据整理
+数据清洗
+    ↓
+重复过滤
     ↓
 趋势评分
     ↓
-AI分析
+LLM 分析
     ↓
-飞书日报通知
+日报生成
+    ↓
+飞书机器人通知
 ```
 
 ---
 
-# 系统架构
+# 当前系统架构
 
 ```
-                    Data Collection Layer
+Collectors
 
- ┌──────────┬────────────┬──────────┬──────────┬────────────┐
- GitHub     Product      Hacker     AI        HuggingFace
- Projects   Hunt         News       Papers    Models
- └──────────┴────────────┴──────────┴──────────┴────────────┘
+GitHub
+Hacker News
+HuggingFace
 
-                         ↓
+        ↓
 
-              Data Cleaning & Normalization
+Cleaning & Normalization
 
-                         ↓
+        ↓
 
-                 Trend Scoring Engine
+Duplicate Filter
 
-                         ↓
+        ↓
 
-                  LLM Analysis Layer
+Trend Scoring Engine
 
-              ┌──────────────────────┐
-              │ Technology Analysis  │
-              │ Business Opportunity│
-              └──────────────────────┘
+        ↓
 
-                         ↓
+LLM Analysis
 
-                 Report Generator
+        ↓
 
-                         ↓
+SQLite Storage
 
-                    Feishu Bot
+        ↓
+
+Feishu Daily Report
 ```
 
 ---
 
-# 技术栈
+# 当前已完成能力
 
-## Backend
+## 数据层
 
-- Python 3.12
-- FastAPI
-- SQLAlchemy
-- APScheduler
+- Collector 模块化架构
+- GitHub 数据采集
+- Hacker News 数据采集
+- HuggingFace 模型采集
+- 数据标准化处理
+- URL 去重
 
-## AI
+## AI 分析层
 
-- OpenAI Compatible API
-- LLM analysis
-- Opportunity evaluation
+- 趋势评分模型
+- LLM 分析接口
+- 技术价值分析结构
+- 商业机会分析扩展接口
 
-## Deployment
+## 通知层
 
-- Docker
-- GitHub Actions
-- Feishu Webhook
-
----
-
-# 当前实现状态
-
-## 已完成
-
-### 基础服务
-
-- FastAPI 服务入口
-- Health Check
-- 手动任务执行接口
-
-### 数据处理
-
-- 数据采集模块结构
-- 数据清洗流程
-- 评分模块
-
-### AI能力
-
-- LLM 调用接口
-- AI项目分析框架
-
-### 通知
-
-- 飞书机器人 Interactive Card
+- 飞书机器人 Webhook
 - 日报消息生成
 
-### 工程化
+## 工程化
 
+- SQLite 数据持久化
 - Docker 部署结构
 - 环境变量配置
+- CLI运行入口
 
 ---
 
 # 快速启动
 
-## 1. Clone
+## 安装
 
 ```bash
 git clone https://github.com/zerlinpi/AI-Intelligence-Radar.git
 cd AI-Intelligence-Radar
+pip install -r requirements.txt
 ```
 
-## 2. 创建环境变量
+## 配置环境变量
 
-```bash
-cp .env.example .env
-```
-
-配置：
+创建 `.env`：
 
 ```env
 OPENAI_API_KEY=
@@ -148,35 +123,32 @@ GITHUB_TOKEN=
 DATABASE_URL=sqlite:///radar.db
 ```
 
-## 3. 安装依赖
+---
+
+# 运行检查
+
+执行：
 
 ```bash
-pip install -r requirements.txt
+python -m app.cli check
 ```
 
-## 4. 启动服务
+检查：
 
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-检测：
-
-```
-GET /health
-```
+- Environment
+- Pipeline
+- Database
+- Feishu Config
 
 ---
 
-# 手动生成日报
+# 生成日报
 
-调用：
-
-```
-POST /run
+```bash
+python -m app.cli
 ```
 
-执行：
+执行流程：
 
 ```
 Collect
@@ -187,71 +159,67 @@ Score
  ↓
 LLM Analysis
  ↓
-Generate Report
+Save Database
  ↓
 Feishu Push
 ```
 
 ---
 
-# 飞书配置
+# 测试
 
-1. 创建飞书群机器人
-2. 获取 Webhook
-3. 添加：
-
-```env
-FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
-```
-
-运行后会自动推送日报。
-
----
-
-# Docker运行
+运行：
 
 ```bash
-docker compose up -d
+pytest
 ```
+
+当前覆盖：
+
+- Cleaner
+- Scoring
+- Storage
+- Feishu
+- Pipeline
 
 ---
 
-# 项目目录
+# 项目结构
 
 ```
 app/
-
-├── sources/       # 数据源
-├── ai/            # LLM分析
-├── reports/       # 日报生成
-├── database/      # 数据模型
-├── storage/       # 数据保存
-├── scheduler.py   # 定时任务
-├── pipeline.py    # 数据流程
-└── feishu.py      # 飞书通知
+├── sources/       数据采集
+├── ai/            LLM分析
+├── database/      数据库
+├── storage/       数据保存
+├── reports/       报告生成
+├── pipeline.py    核心流程
+├── feishu.py      飞书通知
+└── cli.py         命令入口
 ```
 
 ---
 
-# 后续规划
+# Roadmap
 
 ## Phase 1
 
-- 完善真实 API Collector
-- 完善数据统一模型
-- 增强异常处理
-- 增加自动化测试
+- 完成稳定飞书日报推送
+- 增强 Collector
+- 增加更多测试
 
 ## Phase 2
 
-- 历史趋势分析
+- Product Hunt
+- arXiv论文
 - Dashboard
-- 更多数据源
+- 历史趋势分析
 
 ## Phase 3
 
-- 多行业情报雷达
-- AI投资研究助手
+- AI创业机会分析
+- 行业情报雷达
+- 自动投资研究助手
 
 ---
 
