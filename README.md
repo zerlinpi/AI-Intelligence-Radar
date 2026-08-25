@@ -1,30 +1,31 @@
 # AI Intelligence Radar
 
-> AI 创业情报自动化系统
+> AI 情报自动化系统
 >
-> 自动发现正在增长的 AI 项目、技术趋势和商业机会，并通过 LLM 分析后生成飞书日报。
+> 自动采集 AI 领域公开信息，通过规则评分与 LLM 分析生成每日情报，并推送到飞书。
 
----
+## 项目目标
 
-## 项目介绍
+本项目解决的问题：
 
-AI Intelligence Radar 是一个面向开发者、创业者和产品研究人员的 AI 情报系统。
+- 每天发现值得关注的 AI 项目
+- 跟踪开源趋势和产品机会
+- 自动分析技术价值与商业潜力
+- 降低人工研究成本
 
-系统每天自动收集多个公开数据源：
+当前第一阶段目标：
 
-- GitHub Trending / 高增长项目
-- Product Hunt 新产品
-- Hacker News 技术趋势
-- arXiv AI 论文
-- HuggingFace 热门模型
-
-经过数据清洗、去重、评分和 AI 分析后，输出：
-
-- 技术趋势判断
-- 热度评分
-- 商业价值分析
-- 可创业方向建议
-- 飞书日报推送
+```
+数据采集
+    ↓
+数据整理
+    ↓
+趋势评分
+    ↓
+AI分析
+    ↓
+飞书日报通知
+```
 
 ---
 
@@ -33,32 +34,31 @@ AI Intelligence Radar 是一个面向开发者、创业者和产品研究人员�
 ```
                     Data Collection Layer
 
- ┌────────────┬────────────┬────────────┬────────────┬────────────┐
- GitHub       Product      Hacker       AI           HuggingFace
- Trending     Hunt         News         Papers       Models
- └────────────┴────────────┴────────────┴────────────┴────────────┘
+ ┌──────────┬────────────┬──────────┬──────────┬────────────┐
+ GitHub     Product      Hacker     AI        HuggingFace
+ Projects   Hunt         News       Papers    Models
+ └──────────┴────────────┴──────────┴──────────┴────────────┘
 
                          ↓
 
-              Data Cleaning & Deduplication
+              Data Cleaning & Normalization
 
                          ↓
 
-                    AI Analysis Layer
+                 Trend Scoring Engine
+
+                         ↓
+
+                  LLM Analysis Layer
 
               ┌──────────────────────┐
-              │  LLM Intelligence     │
+              │ Technology Analysis  │
+              │ Business Opportunity│
               └──────────────────────┘
 
                          ↓
 
-        ┌────────────────┴────────────────┐
-        ↓                                 ↓
- Trend Score                    Business Analysis
-
-                         ↓
-
-                 Daily Report Generator
+                 Report Generator
 
                          ↓
 
@@ -74,74 +74,65 @@ AI Intelligence Radar 是一个面向开发者、创业者和产品研究人员�
 - Python 3.12
 - FastAPI
 - SQLAlchemy
-- SQLite / PostgreSQL
 - APScheduler
 
 ## AI
 
 - OpenAI Compatible API
-- LLM structured analysis
-- Opportunity scoring model
+- LLM analysis
+- Opportunity evaluation
 
-## Integration
+## Deployment
 
-- Feishu Bot Webhook
-- GitHub Actions
 - Docker
+- GitHub Actions
+- Feishu Webhook
 
 ---
 
-# 已完成功能
+# 当前实现状态
 
-## 数据采集层
+## 已完成
 
-- [x] GitHub 数据源结构
-- [x] Product Hunt 数据源结构
-- [x] Hacker News 数据源结构
-- [x] arXiv AI Papers 数据源结构
-- [x] HuggingFace Models 数据源结构
+### 基础服务
 
-## 数据处理
+- FastAPI 服务入口
+- Health Check
+- 手动任务执行接口
 
-- [x] 数据标准化
-- [x] 数据清洗
-- [x] URL 去重
-- [x] 历史记录保存结构
+### 数据处理
 
-## AI 分析
+- 数据采集模块结构
+- 数据清洗流程
+- 评分模块
 
-- [x] 热度评分模型
-- [x] 商业机会分析框架
-- [x] LLM 分析接口
+### AI能力
 
-## 通知系统
+- LLM 调用接口
+- AI项目分析框架
 
-- [x] 飞书机器人接口
-- [x] 日报生成结构
+### 通知
 
-## 工程化
+- 飞书机器人 Interactive Card
+- 日报消息生成
 
-- [x] FastAPI 服务
-- [x] Docker 部署结构
-- [x] GitHub Actions 自动任务结构
+### 工程化
+
+- Docker 部署结构
+- 环境变量配置
 
 ---
 
-# 项目运行
+# 快速启动
 
-## 1. 克隆项目
+## 1. Clone
 
 ```bash
 git clone https://github.com/zerlinpi/AI-Intelligence-Radar.git
-
 cd AI-Intelligence-Radar
 ```
 
----
-
 ## 2. 创建环境变量
-
-复制：
 
 ```bash
 cp .env.example .env
@@ -150,14 +141,12 @@ cp .env.example .env
 配置：
 
 ```env
-OPENAI_API_KEY=your_api_key
-OPENAI_MODEL=gpt-5-mini
-FEISHU_WEBHOOK=your_feishu_webhook
-GITHUB_TOKEN=your_github_token
+OPENAI_API_KEY=
+OPENAI_MODEL=
+FEISHU_WEBHOOK=
+GITHUB_TOKEN=
 DATABASE_URL=sqlite:///radar.db
 ```
-
----
 
 ## 3. 安装依赖
 
@@ -165,41 +154,21 @@ DATABASE_URL=sqlite:///radar.db
 pip install -r requirements.txt
 ```
 
----
-
 ## 4. 启动服务
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-访问：
+检测：
 
 ```
-http://localhost:8000/health
-```
-
-返回：
-
-```json
-{
-  "ok": true
-}
+GET /health
 ```
 
 ---
 
-# Docker 部署
-
-```bash
-docker compose up -d
-```
-
-服务启动后会自动运行 Radar 服务。
-
----
-
-# 手动执行日报任务
+# 手动生成日报
 
 调用：
 
@@ -207,7 +176,7 @@ docker compose up -d
 POST /run
 ```
 
-执行流程：
+执行：
 
 ```
 Collect
@@ -228,64 +197,61 @@ Feishu Push
 # 飞书配置
 
 1. 创建飞书群机器人
-2. 获取 Webhook 地址
-3. 设置：
+2. 获取 Webhook
+3. 添加：
 
 ```env
-FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxxx
+FEISHU_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx
 ```
 
-系统会自动发送 AI Radar 日报。
+运行后会自动推送日报。
 
 ---
 
-# 日报示例
+# Docker运行
 
-```
-🔥 AI Intelligence Radar Daily
-
-Project:
-OpenHands
-
-Source:
-GitHub
-
-Trend Score:
-92
-
-Business Score:
-88
-
-Analysis:
-AI Coding Agent 方向持续增长。
-
-Opportunity:
-Enterprise AI Developer Tool
+```bash
+docker compose up -d
 ```
 
 ---
 
-# Roadmap
+# 项目目录
+
+```
+app/
+
+├── sources/       # 数据源
+├── ai/            # LLM分析
+├── reports/       # 日报生成
+├── database/      # 数据模型
+├── storage/       # 数据保存
+├── scheduler.py   # 定时任务
+├── pipeline.py    # 数据流程
+└── feishu.py      # 飞书通知
+```
+
+---
+
+# 后续规划
 
 ## Phase 1
 
-- [x] Data source architecture
-- [x] Scoring engine
-- [x] LLM analysis framework
-- [x] Feishu notification
+- 完善真实 API Collector
+- 完善数据统一模型
+- 增强异常处理
+- 增加自动化测试
 
 ## Phase 2
 
-- [ ] Production database migration
-- [ ] Complete API collectors
-- [ ] Dashboard
-- [ ] Trend prediction model
+- 历史趋势分析
+- Dashboard
+- 更多数据源
 
 ## Phase 3
 
-- [ ] Multi-user intelligence platform
-- [ ] Custom industry radar
-- [ ] AI investment research assistant
+- 多行业情报雷达
+- AI投资研究助手
 
 ---
 
