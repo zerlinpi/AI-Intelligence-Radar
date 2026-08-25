@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.pipeline import run_daily_radar
-from app.scheduler import start_scheduler, stop_scheduler
+from app.scheduler import start_scheduler, stop_scheduler, scheduler
 
 
 @asynccontextmanager
@@ -29,7 +29,18 @@ def home():
 
 @app.get("/health")
 def health_check():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "scheduler": scheduler.running,
+    }
+
+
+@app.get("/ready")
+def readiness_check():
+    return {
+        "ready": True,
+        "scheduler": scheduler.running,
+    }
 
 
 @app.post("/run")
