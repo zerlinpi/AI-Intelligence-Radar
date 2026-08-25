@@ -9,6 +9,9 @@ from app.sources.github import fetch_ai_repositories
 from app.sources.hackernews import fetch_hackernews
 from app.sources.huggingface import fetch_models
 
+from app.database.session import SessionLocal, init_database
+from app.storage.repository import save_batch
+
 
 def collect_sources():
     items = []
@@ -55,9 +58,17 @@ def build_report(items):
 
 
 def run_daily_radar():
+    init_database()
+
     raw_items = collect_sources()
     cleaned_items = normalize_items(raw_items)
     report = build_report(cleaned_items)
+
+    db = SessionLocal()
+    try:
+        save_batch(db, report)
+    finally:
+        db.close()
 
     message = "🔥 AI Intelligence Radar Daily\n\n"
 
