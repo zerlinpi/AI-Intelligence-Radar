@@ -6,9 +6,11 @@ from app.ai.analyzer import analyze_item
 from app.feishu import send_feishu
 from app.core.logger import get_logger
 
-from app.sources.github import fetch_ai_repositories
-from app.sources.hackernews import fetch_hackernews
-from app.sources.huggingface import fetch_models
+from app.sources.github import GithubCollector
+from app.sources.hackernews import HackerNewsCollector
+from app.sources.huggingface import HuggingFaceCollector
+from app.sources.arxiv import ArxivCollector
+from app.sources.producthunt import ProductHuntCollector
 
 from app.database.session import SessionLocal, init_database
 from app.storage.repository import save_batch, exists
@@ -20,33 +22,35 @@ MAX_ANALYSIS_ITEMS = 50
 MAX_REPORT_ITEMS = 10
 
 
-def collect_sources():
-    """Collect intelligence from all sources.
+COLLECTORS = [
+    GithubCollector(),
+    HackerNewsCollector(),
+    HuggingFaceCollector(),
+    ArxivCollector(),
+    ProductHuntCollector(),
+]
 
-    A single collector failure must not stop the complete daily radar job.
-    """
+
+def collect_sources():
+    """Collect normalized intelligence from all sources safely."""
     items = []
 
-    collectors = [
-        fetch_ai_repositories,
-        fetch_hackernews,
-        fetch_models,
-    ]
-
-    for collector in collectors:
+    for collector in COLLECTORS:
         try:
-            data = collector()
+            data = collector.collect_safe()
+
             if isinstance(data, list):
                 items.extend(data)
                 logger.info(
                     "collector %s collected %s items",
-                    collector.__name__,
+                    collector.__class__.__name__,
                     len(data),
                 )
+
         except Exception:
             logger.exception(
                 "collector failed: %s",
-                collector.__name__,
+                collector.__class__.__name__,
             )
 
     return items
