@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.log
+.env
+.venv/
+venv/
+.git/
+.github/
+tests/
+.pytest_cache/
+
+# runtime data stays mounted
