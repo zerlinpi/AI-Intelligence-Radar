@@ -76,15 +76,21 @@ def _database_check() -> PreflightCheck:
         return PreflightCheck("数据库", False, str(exc))
 
 
-def _database_path_check() -> PreflightCheck:
+def _sqlite_database_file() -> Path | None:
     if not str(DATABASE_URL).startswith("sqlite:///"):
-        return PreflightCheck("数据库目录可写", True, "非文件型 SQLite")
-
+        return None
     raw_path = str(DATABASE_URL)[len("sqlite:///"):]
     if not raw_path or raw_path == ":memory:":
-        return PreflightCheck("数据库目录可写", True, "内存数据库")
+        return None
+    return Path(raw_path).expanduser()
 
-    path = Path(raw_path).expanduser()
+
+def _database_path_check() -> PreflightCheck:
+    path = _sqlite_database_file()
+    if path is None:
+        detail = "内存数据库" if str(DATABASE_URL).startswith("sqlite:") else "非文件型 SQLite"
+        return PreflightCheck("数据库目录可写", True, detail)
+
     parent = path.parent if str(path.parent) else Path(".")
     try:
         parent.mkdir(parents=True, exist_ok=True)
@@ -123,6 +129,20 @@ def _file_parent_check(name: str, value: str) -> PreflightCheck:
         return PreflightCheck(name, False, str(exc))
 
 
+def _required_free_mb() -> int:
+    configured = max(int(DATA_MIN_FREE_MB or 0), 64)
+    database_path = _sqlite_database_file()
+    if database_path is None or not database_path.exists():
+        return configured
+    try:
+        database_mb = database_path.stat().st_size / (1024 * 1024)
+    except OSError:
+        return configured
+    # 为下一份在线备份、SQLite WAL/临时写入以及 outbox 留出安全余量。
+    adaptive = int(database_mb * 2 + 64)
+    return max(configured, adaptive)
+
+
 def _disk_space_check() -> PreflightCheck:
     """data 目录空间不足时在进入付费模型调用前阻止执行。"""
     try:
@@ -130,7 +150,7 @@ def _disk_space_check() -> PreflightCheck:
         path.mkdir(parents=True, exist_ok=True)
         usage = shutil.disk_usage(path)
         free_mb = usage.free / (1024 * 1024)
-        threshold = max(int(DATA_MIN_FREE_MB or 0), 64)
+        threshold = _required_free_mb()
         return PreflightCheck(
             "数据磁盘剩余空间",
             free_mb >= threshold,
