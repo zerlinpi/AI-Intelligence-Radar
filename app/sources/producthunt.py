@@ -7,6 +7,7 @@ import requests
 
 from app.sources.base import BaseCollector
 from app.core.logger import get_logger
+from app.relevance import attach_eligibility_metrics, report_eligibility
 
 
 API = "https://api.producthunt.com/v2/api/graphql"
@@ -98,9 +99,8 @@ class ProductHuntCollector(BaseCollector):
             logger.warning("未配置 PRODUCT_HUNT_TOKEN，已跳过 Product Hunt")
             return []
 
-        fetch_limit = min(max(limit * 5, 30), 50)
+        fetch_limit = min(max(limit * 6, 40), 50)
 
-        # 使用基础 GraphQL 查询，时间与 AI 相关性在本地筛选，提高接口兼容性。
         query = """
         query RecentProducts($first: Int!) {
           posts(first: $first) {
@@ -162,6 +162,7 @@ class ProductHuntCollector(BaseCollector):
             return []
 
         results = []
+        rejected = 0
         now = datetime.now(timezone.utc)
 
         for edge in edges:
@@ -186,34 +187,46 @@ class ProductHuntCollector(BaseCollector):
             age_days = max(age_hours / 24, 0.25)
             momentum = (votes + comments * 3) / age_days
 
-            results.append(
-                {
-                    "source": self.name,
-                    "title": node.get("name") or "",
-                    "url": node.get("website") or node.get("url") or "",
-                    "description": _product_description(node),
-                    "created_at": created_at,
+            record = {
+                "source": self.name,
+                "title": node.get("name") or "",
+                "url": node.get("website") or node.get("url") or "",
+                "description": _product_description(node),
+                "created_at": created_at,
+                "upvotes": votes,
+                "comments": comments,
+                "metrics": {
                     "upvotes": votes,
                     "comments": comments,
-                    "metrics": {
-                        "upvotes": votes,
-                        "comments": comments,
-                        "momentum": round(momentum, 2),
-                        "producthunt_url": node.get("url") or "",
-                        "website": node.get("website") or "",
-                    },
-                }
-            )
+                    "momentum": round(momentum, 2),
+                    "producthunt_url": node.get("url") or "",
+                    "website": node.get("website") or "",
+                },
+            }
+
+            eligibility = report_eligibility(record)
+            attach_eligibility_metrics(record, eligibility)
+            if not eligibility["eligible"]:
+                rejected += 1
+                continue
+
+            results.append(record)
 
         results.sort(
-            key=lambda x: (x.get("metrics") or {}).get("momentum", 0),
+            key=lambda x: (
+                float((x.get("metrics") or {}).get("opportunity_score", 0) or 0),
+                float((x.get("metrics") or {}).get("momentum", 0) or 0),
+                x.get("created_at") or "",
+            ),
             reverse=True,
         )
 
         logger.info(
-            "Product Hunt 获取=%s 近期AI项目=%s",
+            "Product Hunt 获取=%s 资格淘汰=%s 合格=%s 最终返回=%s",
             len(edges),
+            rejected,
             len(results),
+            min(len(results), limit),
         )
 
         return results[:limit]
