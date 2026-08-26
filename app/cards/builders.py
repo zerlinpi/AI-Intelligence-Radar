@@ -215,8 +215,24 @@ def _split_oversized_element(title: str, element: dict, template: str) -> list:
     return [element]
 
 
+def _content_stream(element: dict) -> str:
+    """提取需要守恒的正文；column_set 只取右侧正文，避免分页后重复标签干扰校验。"""
+    tag = element.get("tag")
+    if tag == "div":
+        return str(((element.get("text") or {}).get("content") or ""))
+    if tag == "column_set":
+        columns = element.get("columns") or []
+        if len(columns) >= 2:
+            return "".join(
+                _content_stream(child)
+                for child in (columns[1].get("elements") or [])
+            )
+    return ""
+
+
 def _paginate_elements(title: str, elements: list, template: str) -> list:
-    """把完整元素流按真实 Payload 自动分页；不因为卡片大小删除正文。"""
+    """把完整元素流按真实 Payload 自动分页；分页前后业务正文必须逐字符守恒。"""
+    expected_content = "".join(_content_stream(element) for element in elements)
     pages = []
     current = []
     reserve_title = f"{title}｜99/99"
@@ -230,6 +246,15 @@ def _paginate_elements(title: str, elements: list, template: str) -> list:
 
     if current or not pages:
         pages.append(current or [_md("暂无内容")])
+
+    actual_content = "".join(
+        _content_stream(element)
+        for page in pages
+        for element in page
+    )
+    if actual_content != expected_content:
+        raise ValueError("飞书分页内容完整性校验失败：业务正文在分页过程中发生变化")
+
     return pages
 
 
@@ -435,35 +460,68 @@ def build_compliance_card(model: ReportDecisionModel) -> CardEnvelope:
     return build_compliance_cards(model)[0]
 
 
+def _project_source_label(project) -> str:
+    if project.source_name == "arXiv":
+        return "📚 arXiv 研究论文"
+    if project.source_name == "GitHub":
+        return "GitHub 开源项目"
+    if project.source_name == "Product Hunt":
+        return "Product Hunt 新产品"
+    if project.source_name == "Hugging Face":
+        return "Hugging Face 模型/项目"
+    if project.source_name == "Hacker News":
+        return "Hacker News 产品信号"
+    return project.source_name
+
+
 def _project_elements(project, index: int) -> list:
     title = _text(project.title)
     opportunity = OPPORTUNITY_LABELS.get(project.opportunity, "中")
-    tags = " ".join(f"`{tag}`" for tag in project.tags[:3])
+    tags = " ".join(f"`{tag}`" for tag in project.tags)
+    is_arxiv = project.source_name == "arXiv"
 
-    header_lines = [
-        f"**{index:02d}｜{title}**",
-        (
-            f"{project.source_name} · {project.age_text} · "
-            f"🔥 {project.trend_score:.0f} · 💼 {project.business_score:.0f} {opportunity}"
-        ),
+    # 标题独占正文块，避免和编号/元信息挤在同一行造成客户端视觉省略。
+    elements = [
+        _md(f"**{index:02d}｜{_project_source_label(project)}**"),
+        _md(f"**{title}**"),
     ]
-    if tags:
-        header_lines.append(tags)
 
-    elements = [_md("\n".join(header_lines))]
+    if is_arxiv:
+        meta = f"{project.age_text} · 💼 **产品化价值 {project.business_score:.0f}** · {opportunity}"
+    else:
+        meta = (
+            f"{project.age_text} · 🔥 **{project.trend_score:.0f}** · "
+            f"💼 **{project.business_score:.0f}** {opportunity}"
+        )
+    elements.append(_md(meta))
+    if tags:
+        elements.append(_md(tags))
+
     description = _text(project.description)
     judgment = _text(project.judgment)
     direction = _text(project.direction)
 
     if description:
-        elements.append(_md(f"🧩 **做什么**\n{description}"))
-    if project.growth_signal:
+        description_label = "研究内容" if is_arxiv else "做什么"
+        elements.append(_md(f"🧩 **{description_label}**\n{description}"))
+
+    if is_arxiv:
+        research_stage = _text(project.growth_signal) or "最新预印本研究 · 尚无产品市场验证"
+        elements.append(_md(f"📚 **研究阶段**\n{research_stage}"))
+    elif project.growth_signal:
         elements.append(_md(f"📈 **增长信号**\n{project.growth_signal}"))
+
     if judgment:
         elements.append(_pair("价值判断", judgment, "🧠"))
     if direction:
-        elements.append(_pair("可借鉴方向", direction, "🛠️"))
-    _append_button(elements, "查看项目", project.url)
+        direction_label = "产品化方向" if is_arxiv else "可借鉴方向"
+        elements.append(_pair(direction_label, direction, "🛠️"))
+
+    _append_button(
+        elements,
+        "查看 arXiv 论文" if is_arxiv else "查看项目",
+        project.url,
+    )
     return elements
 
 
