@@ -10,7 +10,7 @@ from app.core.logger import get_logger
 
 
 API = "https://api.producthunt.com/v2/api/graphql"
-logger = get_logger("collector.producthunt")
+logger = get_logger("Product Hunt采集")
 
 AI_KEYWORDS = (
     "artificial intelligence",
@@ -83,14 +83,12 @@ class ProductHuntCollector(BaseCollector):
     def collect(self, limit: int = 10) -> List[Dict]:
         token = os.getenv("PRODUCT_HUNT_TOKEN", "").strip()
         if not token:
-            logger.warning("PRODUCT_HUNT_TOKEN is not configured")
+            logger.warning("未配置 PRODUCT_HUNT_TOKEN，已跳过 Product Hunt")
             return []
 
         fetch_limit = min(max(limit * 5, 30), 50)
 
-        # Keep the GraphQL arguments deliberately simple. Product Hunt's
-        # public API documentation guarantees the posts(first: ...) shape;
-        # recency and AI filtering are applied locally for compatibility.
+        # 使用基础 GraphQL 查询，时间与 AI 相关性在本地筛选，提高接口兼容性。
         query = """
         query RecentProducts($first: Int!) {
           posts(first: $first) {
@@ -136,19 +134,19 @@ class ProductHuntCollector(BaseCollector):
 
         payload = response.json()
         if not isinstance(payload, dict):
-            logger.warning("product hunt returned invalid payload")
+            logger.warning("Product Hunt 返回数据格式无效")
             return []
 
         errors = payload.get("errors")
         if errors:
-            logger.error("product hunt graphql errors=%s", errors)
+            logger.error("Product Hunt 图查询返回错误=%s", errors)
             return []
 
         data = payload.get("data") or {}
         posts = data.get("posts") if isinstance(data, dict) else {}
         edges = posts.get("edges") if isinstance(posts, dict) else []
         if not isinstance(edges, list):
-            logger.warning("product hunt posts payload has no edge list")
+            logger.warning("Product Hunt 返回内容中缺少产品列表")
             return []
 
         results = []
@@ -201,7 +199,7 @@ class ProductHuntCollector(BaseCollector):
         )
 
         logger.info(
-            "product hunt fetched=%s recent_ai=%s",
+            "Product Hunt 获取=%s 近期AI项目=%s",
             len(edges),
             len(results),
         )
