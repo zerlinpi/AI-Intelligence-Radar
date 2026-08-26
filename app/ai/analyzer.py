@@ -14,10 +14,11 @@ from app.core.logger import get_logger
 
 logger = get_logger("AI分析")
 
-MAX_DESCRIPTION_CHARS = 220
+MAX_PROJECT_DESCRIPTION_CHARS = 340
+MAX_POLICY_DESCRIPTION_CHARS = 520
 MAX_TITLE_CHARS = 120
-MAX_BATCH_ITEMS = 13
-MAX_OUTPUT_TOKENS = 900
+MAX_BATCH_ITEMS = 14
+MAX_OUTPUT_TOKENS = 1100
 
 SOURCE_NAMES = {
     "github": "GitHub",
@@ -26,8 +27,10 @@ SOURCE_NAMES = {
     "arxiv": "arXiv",
     "producthunt": "Product Hunt",
     "amazon_policy": "Amazon",
-    "tiktok_policy": "TikTok Shop",
-    "us_regulation": "美国跨境法规",
+    "us_import_rule": "美国海关 CBP",
+    "cpsc_compliance": "CPSC",
+    "fda_compliance": "FDA",
+    "fcc_compliance": "FCC",
 }
 
 OPPORTUNITY_MAP = {
@@ -68,12 +71,12 @@ def _fallback_result(item: Dict, reason: str = "") -> Dict:
 
     if _is_policy(item):
         return {
-            "purpose": "政策内容暂无法生成，请查看官方原文。",
-            "summary": "影响判断暂不可用，建议优先查看原始政策。",
+            "purpose": "政策或产品审核要求暂无法生成，请直接核对官方原文。",
+            "summary": "影响范围暂无法判断，建议先确认产品类别、进口主体与适用法规。",
             "trend_score": 0,
             "business_score": 50,
             "opportunity": "medium",
-            "startup_ideas": ["查看官方原文并核对适用范围"],
+            "startup_ideas": ["核对官方原文并准备对应合规资料"],
             "llm_meta": {
                 "success": False,
                 "fallback": True,
@@ -111,6 +114,17 @@ def _compact_metrics(item: Dict) -> str:
     if isinstance(tags, list) and tags:
         parts.append("标=" + "/".join(str(tag) for tag in tags[:2]))
 
+    if _is_policy(item):
+        focus = str(metrics.get("policy_focus") or "").strip()
+        authority = str(metrics.get("policy_authority") or "").strip()
+        kind = str(metrics.get("policy_kind") or "").strip()
+        if focus:
+            parts.append(f"焦={focus}")
+        if authority:
+            parts.append(f"机={authority}")
+        if kind:
+            parts.append(f"类={kind}")
+
     return ";".join(parts)
 
 
@@ -131,7 +145,12 @@ def _age_hours(item: Dict):
 def _compact_item(item: Dict, index: int) -> list:
     title = str(item.get("title") or "")[:MAX_TITLE_CHARS]
     description = " ".join(str(item.get("description") or "").split())
-    description = description[:MAX_DESCRIPTION_CHARS]
+    description_limit = (
+        MAX_POLICY_DESCRIPTION_CHARS
+        if _is_policy(item)
+        else MAX_PROJECT_DESCRIPTION_CHARS
+    )
+    description = description[:description_limit]
     source = str(item.get("source") or "")
     item_type = "政" if _is_policy(item) else "项"
 
@@ -238,7 +257,7 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
         results.append(
             {
                 "purpose": purpose or (
-                    "政策内容暂不明确，请查看官方原文。"
+                    "政策或审核要求暂不明确，请查看官方原文。"
                     if _is_policy(item)
                     else "项目用途暂不明确，请查看项目说明。"
                 ),
@@ -255,7 +274,7 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
 
 
 def analyze_items(items: List[Dict]) -> List[Dict]:
-    """一次请求同时分析政策与项目，避免增加第二次 DeepSeek 调用。"""
+    """一次请求同时分析美国经营合规政策与早期产品项目。"""
     items = list(items or [])[:MAX_BATCH_ITEMS]
     if not items:
         return []
@@ -274,14 +293,23 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
     )
 
     prompt = (
-        "你是跨境电商经营风险与早期AI产品机会分析师。数组每项依次为"
+        "你是美国跨境电商合规与早期AI产品分析师。数组每项为"
         "[序号,类型(政/项),名称,简介,来源,时间小时,热度,指标]。"
-        "若类型=政：用途字段用≤36字概括新政策/规则，必须保留明确日期、阈值或限制；"
-        "摘要≤36字说明对跨境卖家的直接影响；分数代表影响程度0-100；高中低代表处理紧急度；"
-        "建议≤24字给出最具体的下一步动作。"
-        "若类型=项：重点判断Amazon、Shopify、TikTok Shop、独立站、选品、Listing、广告、"
-        "本地化、客服、SEO、竞品、定价、物流、库存、评论、达人营销，以及是否可做成SaaS、"
-        "Agent、插件、API或自动化产品；用途≤28字，摘要≤32字，建议≤22字。"
+        "类型=政时，优先级依次是Amazon政策与审核、美国进口清关新规、美国市场产品合规审核。"
+        "Amazon重点看商品合规、Testing/Inspection/Certification、Account Health、"
+        "Listing前置审核、受限产品、e-mobility/儿童用品/膳食补充剂等高风险品类。"
+        "美国进口重点看CBP、关税、de minimis、电子申报、进口商责任。"
+        "产品审核重点看CPSC的CPC/GCC/eFiling与实验室测试、FDA的注册/产品列名/进口要求、"
+        "FCC的RF设备Equipment Authorization。"
+        "政策用途≤60字：写清核心变化或审核要求，并尽量保留生效日期、产品类别、证书/测试要求；"
+        "政策判断≤58字：写清影响谁以及不处理可能导致的直接后果；"
+        "政策建议≤42字：给出应准备的证书、测试报告、注册、标签或具体操作。"
+        "类型=项时，重点判断Amazon、Shopify、TikTok Shop、独立站、选品、Listing、广告、"
+        "本地化、客服、SEO、竞品、定价、物流、库存、评论、达人营销，以及是否能成为SaaS、"
+        "Agent、插件、API或自动化产品。"
+        "项目用途≤65字：必须包含目标用户、核心功能、解决的问题和一个典型使用场景；"
+        "项目判断≤50字：说明增长信号、跨境电商适配度和产品化价值；"
+        "项目建议≤30字：给出最值得借鉴或开发的产品方向。"
         "不要因历史规模或品牌知名度加分。只返回JSON："
         '{"结果":[[序号,"用途","判断",分数,"高|中|低","建议"]]}。'
         f"数据={compact_json}"
