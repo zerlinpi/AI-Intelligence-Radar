@@ -141,8 +141,8 @@ def test_batch_analyzer_uses_one_request_for_policy_and_project(monkeypatch):
 
 def test_batch_analyzer_allows_full_output_budget(monkeypatch):
     _mock_success(monkeypatch)
-    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 8192)
+    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 16000)
     analyzer.analyze_items(
         [{"title": "项目一", "description": "测试", "metrics": {"stars": 10}, "trend_score": 80}]
     )
-    assert FakeClient.calls[0]["max_tokens"] == 4096
+    assert FakeClient.calls[0]["max_tokens"] == 8192
