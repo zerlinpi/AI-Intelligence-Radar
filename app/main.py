@@ -148,24 +148,25 @@ def _public_result(result):
         "状态": result.get("status", "success"),
         "是否跳过": bool(result.get("skipped", False)),
         "原因": result.get("reason", ""),
+        "错误": [str(item) for item in result.get("errors", [])],
         "项目": [_public_item(item) for item in result.get("items", [])],
         "政策": [_public_item(item) for item in result.get("policies", [])],
         "飞书卡片": result.get("feishu_cards", 0),
     }
 
 
+def _is_preflight_failure(result) -> bool:
+    if not isinstance(result, dict) or result.get("status") != "failed":
+        return False
+    return any("生产预检失败" in str(item) for item in result.get("errors", []))
+
+
 @app.post("/run")
 def run():
-    preflight = run_preflight()
-    if not preflight.ok:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "执行": False,
-                "原因": "生产预检失败",
-                "失败项": preflight.failures,
-            },
-        )
+    # run_daily_radar 内部统一负责 execution_lock + preflight。
     result = run_daily_radar()
     record_run_safe(result)
-    return _public_result(result)
+    public = _public_result(result)
+    if _is_preflight_failure(result):
+        return JSONResponse(status_code=503, content=public)
+    return public
