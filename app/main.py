@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from app.pipeline import run_daily_radar
 from app.scheduler import start_scheduler, stop_scheduler, scheduler
@@ -37,10 +38,14 @@ def health_check():
 
 @app.get("/ready")
 def readiness_check():
-    return {
-        "ready": scheduler.running,
-        "scheduler": scheduler.running,
-    }
+    ready = bool(scheduler.running)
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "ready": ready,
+            "scheduler": ready,
+        },
+    )
 
 
 @app.post("/run")
