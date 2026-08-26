@@ -37,8 +37,8 @@ class FakeClient:
                     return FakeClient.responses.pop(0)
                 return FakeResponse(
                     '{"结果":['
-                    '[1,"受监管消费品进口时需电子申报合规证书","进口商未完成申报可能导致清关或销售受阻",94,"高","核对CPC或GCC并准备eFiling数据"],'
-                    '[2,"面向Amazon卖家的Listing运营工具，自动生成标题、卖点并做本地化优化","卖家场景明确，既有增长信号又可直接做成订阅SaaS",90,"高","做多站点Listing优化工具"]'
+                    '[1,"受监管消费品进口时需电子申报合规证书","进口商需确认适用范围和申报义务",94,"高","核对CPC或GCC并准备eFiling数据","儿童产品及其他需CPC或GCC的受监管消费品","证书或申报数据不完整可能导致清关延误、整改或销售受阻","准备第三方测试报告、CPC或GCC及eFiling所需字段"],'
+                    '[2,"面向Amazon卖家的Listing运营工具，自动生成标题、卖点并做本地化优化","卖家场景明确，既有增长信号又可直接做成订阅SaaS",90,"高","做多站点Listing优化工具","","",""]'
                     ']}'
                 )
 
@@ -89,6 +89,9 @@ def test_policy_fallback_uses_original_policy_text(monkeypatch):
     )
     assert "CPSC certification update" in result["purpose"]
     assert result["startup_ideas"]
+    assert result["affected_products"]
+    assert result["risk"]
+    assert result["preparation"]
 
 
 def test_analyzer_success(monkeypatch):
@@ -111,6 +114,9 @@ def test_analyzer_success(monkeypatch):
     assert result["opportunity"] == "high"
     assert result["startup_ideas"]
     assert result["trend_score"] == 0
+    assert "儿童产品" in result["affected_products"]
+    assert "清关延误" in result["risk"]
+    assert "测试报告" in result["preparation"]
 
 
 def test_batch_analyzer_uses_json_mode_and_max_deepseek_thinking(monkeypatch):
@@ -150,6 +156,9 @@ def test_batch_analyzer_uses_json_mode_and_max_deepseek_thinking(monkeypatch):
     assert "目标用户" in prompt
     assert "完整、准确、有决策价值优先" in prompt
     assert "跨境电商" in prompt
+    assert "影响产品" in prompt
+    assert "准备资料" in prompt
+    assert "不得把推测写成事实" in prompt
     assert call["response_format"] == {"type": "json_object"}
     assert call["reasoning_effort"] == "max"
     assert call["extra_body"] == {"thinking": {"type": "enabled"}}
