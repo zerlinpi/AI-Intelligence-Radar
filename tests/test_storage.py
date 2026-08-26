@@ -172,3 +172,60 @@ def test_successful_analysis_overwrites_old_fallback(monkeypatch):
     assert old.analysis["llm_meta"]["success"] is True
     assert db.items == []
     assert db.commits == 1
+
+
+def test_material_update_overwrites_existing_success_snapshot():
+    old = SimpleNamespace(
+        source="github",
+        title="acme/edge-camera",
+        url="https://github.com/acme/edge-camera",
+        description="old edge camera runtime",
+        category="ai",
+        trend_score=60,
+        business_score=75,
+        metrics={"stars": 80},
+        analysis={
+            "purpose": "旧分析",
+            "summary": "旧判断",
+            "business_score": 75,
+            "opportunity": "medium",
+            "llm_meta": {"success": True, "fallback": False},
+        },
+        created_at=datetime(2026, 8, 25, 10, 0, 0),
+    )
+    db = FakeDB(old)
+
+    result = save_batch(
+        db,
+        [
+            {
+                "source": "github",
+                "title": "acme/edge-camera",
+                "url": "https://github.com/acme/edge-camera",
+                "description": "new edge camera runtime with BLE sensor product integration",
+                "created_at": "2026-08-25T10:00:00Z",
+                "trend_score": 92,
+                "metrics": {
+                    "stars": 320,
+                    "history_material_update": True,
+                    "history_material_update_reason": "GitHub Star 显著增长：80→320",
+                },
+                "analysis": {
+                    "purpose": "新版产品能力",
+                    "summary": "增长和硬件产品价值均明显提升",
+                    "business_score": 90,
+                    "opportunity": "high",
+                    "llm_meta": {"success": True, "fallback": False},
+                },
+            }
+        ],
+    )
+
+    assert len(result) == 1
+    assert result[0] is old
+    assert old.metrics["stars"] == 320
+    assert old.metrics["history_material_update"] is True
+    assert old.business_score == 90
+    assert old.analysis["purpose"] == "新版产品能力"
+    assert db.items == []
+    assert db.commits == 1
