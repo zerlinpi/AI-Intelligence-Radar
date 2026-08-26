@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from app import pipeline
+from app.cards import build_daily_cards
 from app.models.radar_item import RadarItem
 
 
@@ -25,7 +26,7 @@ def test_collect_sources_converts_items(monkeypatch):
     assert items[0].title == "Test AI Project"
 
 
-def test_build_feishu_message_groups_compliance_and_projects():
+def test_decision_model_builds_three_feishu_cards():
     project = RadarItem(
         title="Seller AI Tool",
         source="github",
@@ -96,26 +97,40 @@ def test_build_feishu_message_groups_compliance_and_projects():
         "startup_ideas": ["核对适用标准、测试报告及证书申报数据"],
     }
 
-    message = pipeline.build_feishu_message(
+    model = pipeline.build_decision_model(
         [project],
         [amazon_policy, cpsc_policy],
     )
+    cards = build_daily_cards(model)
 
-    assert "美国跨境经营雷达" in message
-    assert "今日合规重点" in message
-    assert "A｜Amazon 政策与审核" in message
-    assert "C｜美国市场产品审核" in message
-    assert "审核简报：" in message
-    assert "重点影响产品：" in message
-    assert "核心变化：" in message
-    assert "审核要求：" in message
-    assert "> 🎯 **影响产品：** **儿童产品及其他需要CPC或GCC的受监管消费品**" in message
-    assert "> ⚠️ **风险：** **证书或eFiling数据不完整可能导致清关延误、整改或销售受阻**" in message
-    assert "> 📋 **准备资料：** **第三方测试报告、CPC或GCC证书及eFiling所需申报字段**" in message
-    assert "建议动作：" in message
-    assert "跨境电商直接相关项目" in message
-    assert "产品描述：" in message
-    assert "增长信号：" in message
-    assert "价值判断：" in message
-    assert "可借鉴方向：" in message
-    assert message.index("今日合规重点") < message.index("跨境电商直接相关项目")
+    assert len(cards) == 3
+    assert [card.card_type for card in cards] == [
+        "summary",
+        "compliance",
+        "products",
+    ]
+
+    summary = str(cards[0].payload)
+    compliance = str(cards[1].payload)
+    products = str(cards[2].payload)
+
+    assert "今日判断" in summary
+    assert "① 必须" in summary
+    assert "② 关注" in summary
+    assert "③ 研究" in summary
+
+    assert "A｜Amazon 政策与审核" in compliance
+    assert "C｜美国市场产品审核" in compliance
+    assert "审核简报" in compliance
+    assert "影响产品" in compliance
+    assert "儿童产品" in compliance
+    assert "风险" in compliance
+    assert "清关延误" in compliance
+    assert "准备资料" in compliance
+    assert "CPC" in compliance
+
+    assert "跨境电商直接相关" in products
+    assert "Seller AI Tool" in products
+    assert "Listing" in products
+    assert "判断" in products
+    assert "方向" in products
