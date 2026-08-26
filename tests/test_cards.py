@@ -100,7 +100,7 @@ def test_short_daily_report_keeps_three_logical_cards():
     ]
 
 
-def test_summary_contains_only_three_actions_and_grey_blocks():
+def test_summary_contains_today_judgment_and_only_three_actions():
     summary_card = build_daily_cards(_model(project_count=2))[0].payload
     blocks = [
         item
@@ -108,16 +108,18 @@ def test_summary_contains_only_three_actions_and_grey_blocks():
         if item.get("tag") == "column_set"
     ]
 
-    assert len(blocks) == 3
+    # 今日判断 + ①必须 + ②关注 + ③研究。
+    assert len(blocks) == 4
     assert all(block["background_style"] == "grey" for block in blocks)
     serialized = str(summary_card)
+    assert "今日判断" in serialized
     assert "① 必须" in serialized
     assert "② 关注" in serialized
     assert "③ 研究" in serialized
     assert "不应展示第四条" not in serialized
 
 
-def test_compliance_card_highlights_only_decision_fields():
+def test_compliance_card_highlights_decision_fields_and_uses_buttons():
     compliance_card = build_daily_cards(_model(project_count=2))[1].payload
     blocks = [
         item
@@ -125,14 +127,28 @@ def test_compliance_card_highlights_only_decision_fields():
         if item.get("tag") == "column_set"
     ]
 
-    # 产品审核：审核简报 + 影响产品 + 风险 + 准备资料。
-    assert len(blocks) == 4
+    # Amazon 下一步 + 产品审核简报/影响产品/风险/准备资料/下一步。
+    assert len(blocks) >= 6
     assert all(block["background_style"] == "grey" for block in blocks)
     serialized = str(compliance_card)
     assert "影响产品" in serialized
     assert "风险" in serialized
     assert "准备资料" in serialized
+    assert "下一步" in serialized
     assert "查看官方原文" in serialized
+    assert "button" in serialized
+
+
+def test_product_card_separates_description_judgment_direction_and_uses_button():
+    cards = build_daily_cards(_model(project_count=1))
+    product_card = cards[-1].payload
+    serialized = str(product_card)
+    assert "做什么" in serialized
+    assert "增长信号" in serialized
+    assert "价值判断" in serialized
+    assert "可借鉴方向" in serialized
+    assert "查看项目" in serialized
+    assert "button" in serialized
 
 
 def test_all_projects_are_paginated_instead_of_omitted():
@@ -179,7 +195,6 @@ def test_long_business_copy_is_never_hard_truncated():
     assert "END-风险" in serialized
     assert "BEGIN-产品描述" in serialized
     assert "END-产品描述" in serialized
-    # 长文必须通过增加物理卡片承载，而不是字段末尾加省略号。
     assert len(cards) > 3
 
 
@@ -193,7 +208,12 @@ def test_every_generated_page_stays_inside_payload_budget():
         assert payload_bytes(card.payload) <= FEISHU_MAX_PAYLOAD_BYTES
 
 
-def test_all_daily_headers_are_turquoise():
-    cards = build_daily_cards(_model())
-    for card in cards:
-        assert card.payload["card"]["header"]["template"] == "turquoise"
+def test_headers_use_distinct_visual_semantics():
+    cards = build_daily_cards(_model(project_count=2))
+    templates = {
+        card.card_type: card.payload["card"]["header"]["template"]
+        for card in cards
+    }
+    assert templates["summary"] == "turquoise"
+    assert templates["compliance"] == "red"
+    assert templates["products"] == "blue"
