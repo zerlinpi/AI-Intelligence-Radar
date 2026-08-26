@@ -22,7 +22,8 @@ class GithubCollector(BaseCollector):
         if GITHUB_TOKEN:
             headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
 
-        since = (datetime.now(timezone.utc) - timedelta(days=7)).date().isoformat()
+        now = datetime.now(timezone.utc)
+        since = (now - timedelta(days=7)).date().isoformat()
         fetch_limit = min(max(limit * 5, 30), 100)
 
         params = {
@@ -55,8 +56,24 @@ class GithubCollector(BaseCollector):
                 continue
 
             created_at = item.get("created_at")
+            if not created_at:
+                continue
+
+            try:
+                created = datetime.fromisoformat(
+                    str(created_at).replace("Z", "+00:00")
+                )
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                age_hours = max((now - created).total_seconds() / 3600, 1)
+            except Exception:
+                continue
+
             stars = item.get("stargazers_count", 0) or 0
             forks = item.get("forks_count", 0) or 0
+            open_issues = item.get("open_issues_count", 0) or 0
+            age_days = max(age_hours / 24, 0.25)
+            momentum = (stars + forks * 3) / age_days
 
             result.append(
                 {
@@ -70,11 +87,16 @@ class GithubCollector(BaseCollector):
                     "metrics": {
                         "stars": stars,
                         "forks": forks,
-                        "open_issues": item.get("open_issues_count", 0) or 0,
+                        "open_issues": open_issues,
+                        "momentum": round(momentum, 2),
                     },
                 }
             )
 
+        result.sort(
+            key=lambda x: (x.get("metrics") or {}).get("momentum", 0),
+            reverse=True,
+        )
         return result[:limit]
 
 
