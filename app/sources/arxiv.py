@@ -61,7 +61,9 @@ class ArxivCollector(BaseCollector):
                     "source": self.name,
                     "title": title,
                     "url": url,
-                    "description": summary[:1000],
+                    # 保留 arXiv 原始摘要全文。模型输入层可独立做上下文预算控制，
+                    # 但源数据本身不应提前裁掉，确保降级展示和后续再分析都有完整材料。
+                    "description": summary,
                     "created_at": created_at or None,
                     "metrics": {},
                 }
