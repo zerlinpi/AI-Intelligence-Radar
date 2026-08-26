@@ -40,6 +40,15 @@ logger = get_logger("主流程")
 MAX_REPORT_ITEMS = 10
 MAX_POLICY_ITEMS = 4
 MAX_PROJECT_AGE_DAYS = 14
+MAX_ITEMS_PER_SOURCE = 6
+MIN_STRATEGIC_PRIORITY_SCORE = 20
+MIN_STRATEGIC_SELECTION_SCORE = 35
+STRATEGIC_TAGS = (
+    "跨境电商",
+    "技术前沿",
+    "硬件开发",
+    "实体商品机会",
+)
 
 COLLECTORS = [
     GithubCollector(),
@@ -180,8 +189,88 @@ def _is_recent_item(item: RadarItem) -> bool:
     return hours <= MAX_PROJECT_AGE_DAYS * 24
 
 
+def _project_selection_score(trend_score: float, priority_score: float) -> float:
+    """趋势决定“现在是否值得看”，机会价值决定“是否值得做”。后者略高权重。"""
+    return round(float(trend_score or 0) * 0.45 + float(priority_score or 0) * 0.55, 2)
+
+
+def _portfolio_candidates(scored):
+    """从高质量候选中构建多方向机会组合，避免同一来源/同一形态占满日报。
+
+    先为四个战略方向各保留一个达到质量阈值的代表，再按综合分补齐；
+    单一来源优先不超过 MAX_ITEMS_PER_SOURCE，若候选不足则第二轮解除来源上限补满。
+    """
+    ordered = sorted(
+        scored,
+        key=lambda x: (
+            (x.metrics or {}).get("selection_score", 0),
+            (x.metrics or {}).get("priority_score", 0),
+            x.trend_score,
+        ),
+        reverse=True,
+    )
+
+    selected = []
+    selected_ids = set()
+    source_counts = {}
+
+    def add(item):
+        marker = id(item)
+        if marker in selected_ids or len(selected) >= MAX_REPORT_ITEMS:
+            return False
+        selected.append(item)
+        selected_ids.add(marker)
+        source_counts[item.source] = source_counts.get(item.source, 0) + 1
+        return True
+
+    # 先保证有质量的战略方向不会被大量同质化热门项目淹没。
+    for tag in STRATEGIC_TAGS:
+        candidate = next(
+            (
+                item
+                for item in ordered
+                if tag in ((item.metrics or {}).get("priority_tags") or [])
+                and float((item.metrics or {}).get("priority_score", 0) or 0)
+                >= MIN_STRATEGIC_PRIORITY_SCORE
+                and float((item.metrics or {}).get("selection_score", 0) or 0)
+                >= MIN_STRATEGIC_SELECTION_SCORE
+                and id(item) not in selected_ids
+            ),
+            None,
+        )
+        if candidate is not None:
+            add(candidate)
+
+    # 第一轮按来源软上限填充，优先让 GitHub、Hugging Face、arXiv、Product Hunt/HN
+    # 都有机会进入最终 10 项，但不会牺牲明显的质量差距。
+    for item in ordered:
+        if len(selected) >= MAX_REPORT_ITEMS:
+            break
+        if id(item) in selected_ids:
+            continue
+        if source_counts.get(item.source, 0) >= MAX_ITEMS_PER_SOURCE:
+            continue
+        add(item)
+
+    # 候选不足时解除来源上限，只按质量补满，不为了多样性空置名额。
+    for item in ordered:
+        if len(selected) >= MAX_REPORT_ITEMS:
+            break
+        add(item)
+
+    selected.sort(
+        key=lambda x: (
+            (x.metrics or {}).get("selection_score", 0),
+            (x.metrics or {}).get("priority_score", 0),
+            x.trend_score,
+        ),
+        reverse=True,
+    )
+    return selected
+
+
 def select_project_candidates(items):
-    """根据早期热度与跨境业务优先级选出最终项目。"""
+    """按趋势、业务/技术机会和组合多样性选出最终项目。"""
     scored = []
 
     for raw_item in items:
@@ -193,22 +282,39 @@ def select_project_candidates(items):
         item.trend_score = calculate_score(item_data)
         item_data["trend_score"] = item.trend_score
 
+        # priority_tags/calculate_priority_score 会把四维机会、商品品类和证据同步写回 metrics。
         tags = priority_tags(item_data)
         priority_score = calculate_priority_score(item_data)
         item.metrics = dict(item.metrics or {})
         item.metrics["priority_tags"] = tags
         item.metrics["priority_score"] = priority_score
-        item.metrics["selection_score"] = round(item.trend_score + priority_score, 2)
+        item.metrics["selection_score"] = _project_selection_score(
+            item.trend_score,
+            priority_score,
+        )
         scored.append(item)
 
-    scored.sort(
-        key=lambda x: (
-            (x.metrics or {}).get("selection_score", x.trend_score),
-            x.trend_score,
-        ),
-        reverse=True,
+    selected = _portfolio_candidates(scored)
+    tag_counts = {
+        tag: sum(
+            1
+            for item in selected
+            if tag in ((item.metrics or {}).get("priority_tags") or [])
+        )
+        for tag in STRATEGIC_TAGS
+    }
+    source_counts = {}
+    for item in selected:
+        source_counts[item.source] = source_counts.get(item.source, 0) + 1
+
+    logger.info(
+        "项目筛选：候选=%s 入选=%s 方向=%s 来源=%s",
+        len(scored),
+        len(selected),
+        tag_counts,
+        source_counts,
     )
-    return scored[:MAX_REPORT_ITEMS]
+    return selected
 
 
 def _policy_focus(item: RadarItem) -> str:
@@ -476,7 +582,7 @@ def _build_summary_actions(compliance, products):
         focus_text = "关注 Amazon、CBP、CPSC、FDA、FCC 后续新增要求。"
 
     if top_product:
-        research_text = top_product.direction or f"研究 {top_product.title} 的产品化与跨境电商适配价值。"
+        research_text = top_product.direction or f"研究 {top_product.title} 的产品化与业务适配价值。"
     else:
         research_text = "今日暂无达到优先展示阈值的新产品机会。"
 
@@ -520,7 +626,7 @@ def build_decision_model(items, policies=None) -> ReportDecisionModel:
     opportunity_count = sum(
         1
         for item in products
-        if item.cross_border and (item.opportunity == "high" or item.business_score >= 80)
+        if item.opportunity == "high" or item.business_score >= 80
     )
 
     summary = DailySummary(
