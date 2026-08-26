@@ -3,7 +3,7 @@ import time
 import uuid
 
 from app.cleaner import normalize_items
-from app.scoring import calculate_score
+from app.scoring import age_hours, calculate_score
 from app.ai.analyzer import analyze_item
 from app.feishu import send_feishu
 from app.core.logger import get_logger
@@ -21,8 +21,8 @@ from app.storage.repository import save_batch, exists
 
 logger = get_logger("pipeline")
 
-MAX_ANALYSIS_ITEMS = 50
 MAX_REPORT_ITEMS = 10
+MAX_PROJECT_AGE_DAYS = 14
 
 COLLECTORS = [
     GithubCollector(),
@@ -31,6 +31,20 @@ COLLECTORS = [
     ArxivCollector(),
     ProductHuntCollector(),
 ]
+
+SOURCE_NAMES = {
+    "github": "GitHub",
+    "hackernews": "Hacker News",
+    "huggingface": "Hugging Face",
+    "arxiv": "arXiv",
+    "producthunt": "Product Hunt",
+}
+
+OPPORTUNITY_NAMES = {
+    "high": "高",
+    "medium": "中",
+    "low": "低",
+}
 
 
 def collect_sources():
@@ -67,7 +81,7 @@ def collect_sources():
 
 def fallback_analysis(item, error=None):
     return {
-        "summary": item.description[:300],
+        "summary": "AI 分析暂不可用，建议直接查看项目页面了解最新进展。",
         "trend_score": item.trend_score or 50,
         "business_score": 50,
         "opportunity": "medium",
@@ -76,42 +90,110 @@ def fallback_analysis(item, error=None):
     }
 
 
+def _is_recent_item(item: RadarItem) -> bool:
+    hours = age_hours(item.to_dict())
+    if hours is None:
+        return False
+    return hours <= MAX_PROJECT_AGE_DAYS * 24
+
+
 def build_report(items):
-    analyzed = []
+    """Score all recent items first, then analyze only the final Top 10."""
+    scored = []
 
-    for item in items[:MAX_ANALYSIS_ITEMS]:
+    for raw_item in items:
+        item = raw_item if isinstance(raw_item, RadarItem) else RadarItem.from_dict(raw_item)
+
+        if not _is_recent_item(item):
+            continue
+
         item.trend_score = calculate_score(item.to_dict())
+        scored.append(item)
 
+    scored.sort(key=lambda x: x.trend_score, reverse=True)
+    candidates = scored[:MAX_REPORT_ITEMS]
+
+    for item in candidates:
         try:
             item.analysis = analyze_item(item.to_dict()) or {}
         except Exception as error:
             logger.exception("analysis failed item=%s", item.title)
             item.analysis = fallback_analysis(item, error)
 
-        analyzed.append(item)
-
-    analyzed.sort(key=lambda x: x.trend_score, reverse=True)
-    return analyzed[:MAX_REPORT_ITEMS]
+    return candidates
 
 
 def filter_existing_items(db, items):
     return [item for item in items if not item.url or not exists(db, item.url)]
 
 
+def _format_age(item: RadarItem) -> str:
+    hours = age_hours(item.to_dict())
+    if hours is None:
+        return "上线时间未知"
+    if hours < 1:
+        return "1 小时内上线"
+    if hours < 24:
+        return f"约 {int(hours)} 小时前上线"
+    return f"约 {max(int(hours // 24), 1)} 天前上线"
+
+
+def _format_metrics(item: RadarItem) -> str:
+    metrics = item.metrics or {}
+
+    if item.source == "github":
+        return f"星标 {metrics.get('stars', 0)} · 分支 {metrics.get('forks', 0)}"
+    if item.source in {"producthunt", "hackernews"}:
+        return f"热度票 {metrics.get('upvotes', 0)} · 评论 {metrics.get('comments', 0)}"
+    if item.source == "huggingface":
+        return f"下载 {metrics.get('downloads', 0)} · 点赞 {metrics.get('likes', 0)}"
+    if item.source == "arxiv":
+        return "最新发布研究"
+
+    return "早期增长信号"
+
+
 def build_feishu_message(items):
-    message = "🔥 AI Intelligence Radar Daily\n\n"
+    lines = [
+        "🚀 **AI 新项目雷达｜今日早期热点**",
+        "",
+        f"> 本期发现 **{len(items)}** 个值得关注的新项目。",
+        "> 筛选逻辑：只看最近 14 天上线项目，优先最近 7 天且单位时间增长更快的早期项目。",
+        "",
+    ]
 
     for index, item in enumerate(items, start=1):
         analysis = item.analysis or {}
-        message += (
-            f"{index}. {item.title}\n"
-            f"Source: {item.source}\n"
-            f"Trend Score: {item.trend_score}\n"
-            f"Business Opportunity: {analysis.get('opportunity', 'medium')}\n"
-            f"{analysis.get('summary', item.description[:120])}\n\n"
+        opportunity = OPPORTUNITY_NAMES.get(
+            str(analysis.get("opportunity", "medium")).lower(),
+            "中",
+        )
+        summary = analysis.get("summary") or "暂无 AI 分析摘要。"
+        source_name = SOURCE_NAMES.get(item.source, item.source)
+
+        lines.extend(
+            [
+                "---",
+                f"**{index:02d}｜{item.title}**",
+                f"📍 来源：{source_name}",
+                f"🕒 {_format_age(item)}",
+                f"🔥 新项目热度：**{item.trend_score:.1f}/100**",
+                f"📈 早期信号：{_format_metrics(item)}",
+                f"💼 商业机会：**{opportunity}**",
+                f"🧠 AI 判断：{summary}",
+                f"🔗 [查看项目]({item.url})" if item.url else "🔗 暂无项目链接",
+                "",
+            ]
         )
 
-    return message
+    lines.extend(
+        [
+            "---",
+            "*说明：这里的“热度”强调早期增长速度，不代表历史累计热度。*",
+        ]
+    )
+
+    return "\n".join(lines)
 
 
 def run_daily_radar():
@@ -141,8 +223,11 @@ def run_daily_radar():
 
     if report:
         try:
-            send_feishu(build_feishu_message(report))
-            logger.info("feishu sent execution_id=%s", execution_id)
+            sent = send_feishu(build_feishu_message(report))
+            if sent:
+                logger.info("feishu sent execution_id=%s", execution_id)
+            else:
+                logger.warning("feishu not sent execution_id=%s", execution_id)
         except Exception:
             logger.exception("feishu failed execution_id=%s", execution_id)
 
