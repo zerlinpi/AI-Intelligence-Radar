@@ -20,7 +20,7 @@ def test_producthunt_missing_token_returns_empty(monkeypatch):
     assert producthunt.ProductHuntCollector().collect() == []
 
 
-def test_producthunt_collects_recent_ai_products(monkeypatch):
+def test_producthunt_collects_recent_relevant_ai_products(monkeypatch):
     monkeypatch.setenv("PRODUCT_HUNT_TOKEN", "test-token")
 
     now = datetime.now(timezone.utc)
@@ -34,11 +34,11 @@ def test_producthunt_collects_recent_ai_products(monkeypatch):
                     {
                         "node": {
                             "id": "1",
-                            "name": "Fresh AI Agent",
-                            "tagline": "An AI agent for developers",
-                            "description": "Automates browser workflows and repetitive research tasks.",
-                            "url": "https://www.producthunt.com/posts/fresh-ai-agent",
-                            "website": "https://example.com/fresh-ai-agent",
+                            "name": "Fresh Amazon Seller AI",
+                            "tagline": "An AI agent for Amazon sellers",
+                            "description": "Automates product listing optimization and seller research workflows.",
+                            "url": "https://www.producthunt.com/posts/fresh-amazon-seller-ai",
+                            "website": "https://example.com/fresh-amazon-seller-ai",
                             "votesCount": 120,
                             "commentsCount": 20,
                             "createdAt": recent,
@@ -87,9 +87,10 @@ def test_producthunt_collects_recent_ai_products(monkeypatch):
     result = producthunt.ProductHuntCollector().collect(limit=10)
 
     assert len(result) == 1
-    assert result[0]["title"] == "Fresh AI Agent"
+    assert result[0]["title"] == "Fresh Amazon Seller AI"
     assert result[0]["upvotes"] == 120
     assert result[0]["metrics"]["comments"] == 20
     assert result[0]["metrics"]["momentum"] > 0
-    assert "An AI agent for developers" in result[0]["description"]
-    assert "Automates browser workflows" in result[0]["description"]
+    assert result[0]["metrics"]["report_eligible"] is True
+    assert "Amazon sellers" in result[0]["description"]
+    assert "product listing optimization" in result[0]["description"]
