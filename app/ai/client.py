@@ -9,20 +9,19 @@ NON_RETRYABLE_STATUS_CODES = {400, 401, 403, 404, 422}
 
 
 def get_llm_client() -> OpenAI:
-    """Create an OpenAI-compatible client.
+    """创建兼容 OpenAI 接口格式的模型客户端。
 
-    Supports OpenAI, DeepSeek and any provider exposing an
-    OpenAI-compatible API endpoint. Retries are handled by this project
-    rather than by both the SDK and project code at the same time.
+    支持 OpenAI、DeepSeek 以及其他兼容服务。重试只由项目自身处理，
+    避免 SDK 重试与项目重试叠加造成等待时间和请求次数增加。
     """
     if not LLM_API_KEY:
         raise RuntimeError(
-            "LLM API key is missing. Set LLM_API_KEY or OPENAI_API_KEY."
+            "缺少模型 API 密钥，请配置 LLM_API_KEY 或 OPENAI_API_KEY。"
         )
 
     if not LLM_BASE_URL:
         raise RuntimeError(
-            "LLM base URL is missing. Set LLM_BASE_URL."
+            "缺少模型接口地址，请配置 LLM_BASE_URL。"
         )
 
     return OpenAI(
@@ -34,12 +33,12 @@ def get_llm_client() -> OpenAI:
 
 
 def get_llm_model() -> str:
-    """Return configured LLM model name."""
+    """返回当前配置的模型名称。"""
     return LLM_MODEL
 
 
 def get_llm_model_usage(response):
-    """Extract token usage from OpenAI-compatible responses."""
+    """读取兼容接口返回的 Token 使用量。"""
     usage = getattr(response, "usage", None)
 
     if not usage:
@@ -62,7 +61,7 @@ def _get_status_code(exc):
 
 
 def _is_retryable(exc) -> bool:
-    """Retry transient network/server/rate-limit failures only."""
+    """只重试网络、限流和服务端临时错误。"""
     status_code = _get_status_code(exc)
 
     if status_code in NON_RETRYABLE_STATUS_CODES:
@@ -75,7 +74,7 @@ def _is_retryable(exc) -> bool:
 
 
 def call_llm_with_retry(request_func, retries=2, delay=2):
-    """Execute an LLM request with bounded retry protection."""
+    """以受控次数执行模型请求。"""
     last_error = None
     attempts = 0
 
