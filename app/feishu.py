@@ -13,11 +13,7 @@ MAX_RETRIES = 3
 
 
 def send_feishu(message: str) -> bool:
-    """Send AI Radar report to Feishu bot.
-
-    Includes retry handling, timeout protection and response validation.
-    Notification failure will not interrupt the radar pipeline.
-    """
+    """Send the Chinese AI new-project radar report to Feishu."""
     if not FEISHU_WEBHOOK:
         logger.warning("feishu webhook is not configured")
         return False
@@ -26,10 +22,11 @@ def send_feishu(message: str) -> bool:
         "msg_type": "interactive",
         "card": {
             "header": {
+                "template": "orange",
                 "title": {
                     "tag": "plain_text",
-                    "content": "AI Intelligence Radar Daily",
-                }
+                    "content": "AI 新项目雷达｜早期热点",
+                },
             },
             "elements": [
                 {
