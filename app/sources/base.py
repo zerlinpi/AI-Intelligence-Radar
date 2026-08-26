@@ -4,16 +4,16 @@ from typing import List, Dict
 from app.core.logger import get_logger
 
 
-logger = get_logger("collector")
+logger = get_logger("采集器")
 
 
 class BaseCollector(ABC):
-    """Common interface for all intelligence data collectors."""
+    """所有情报采集器的公共接口。"""
 
     name = "unknown"
 
     def collect_safe(self, *args, **kwargs) -> List[Dict]:
-        """Run collector safely and always return a list."""
+        """安全执行采集器，并确保始终返回列表。"""
         try:
             result = self.collect(*args, **kwargs)
 
@@ -22,7 +22,7 @@ class BaseCollector(ABC):
 
             if not isinstance(result, list):
                 logger.warning(
-                    "collector=%s returned invalid type=%s",
+                    "采集器返回类型无效：采集器=%s 类型=%s",
                     self.__class__.__name__,
                     type(result).__name__,
                 )
@@ -32,7 +32,7 @@ class BaseCollector(ABC):
 
         except Exception:
             logger.exception(
-                "collector execution failed=%s",
+                "采集器执行失败：采集器=%s",
                 self.__class__.__name__,
             )
             return []
