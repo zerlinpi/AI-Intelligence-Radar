@@ -164,7 +164,7 @@ def test_batch_analyzer_uses_json_mode_max_thinking_and_four_value_paths(monkeyp
     assert "unused" not in prompt
     assert "CPSC" in prompt
     assert "CPC/GCC/eFiling" in prompt
-    assert "目标用户" in prompt
+    assert "给谁用" in prompt
     assert "完整、准确、有决策价值优先" in prompt
     assert "跨境电商实用性" in prompt
     assert "技术前沿/工程创新" in prompt
