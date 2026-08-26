@@ -15,6 +15,12 @@ on:
 
   workflow_dispatch:
 
+# 连续优化时只保留同一分支最新一次测试，避免旧提交占用 runner，
+# 让 main 的最终 HEAD 尽快得到真实验收结果。
+concurrency:
+  group: ai-radar-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   TESTING: "true"
   DATABASE_URL: "sqlite:///:memory:"
