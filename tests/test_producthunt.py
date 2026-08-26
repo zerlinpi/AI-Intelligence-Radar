@@ -36,7 +36,7 @@ def test_producthunt_collects_recent_ai_products(monkeypatch):
                             "id": "1",
                             "name": "Fresh AI Agent",
                             "tagline": "An AI agent for developers",
-                            "description": "",
+                            "description": "Automates browser workflows and repetitive research tasks.",
                             "url": "https://www.producthunt.com/posts/fresh-ai-agent",
                             "website": "https://example.com/fresh-ai-agent",
                             "votesCount": 120,
@@ -91,3 +91,5 @@ def test_producthunt_collects_recent_ai_products(monkeypatch):
     assert result[0]["upvotes"] == 120
     assert result[0]["metrics"]["comments"] == 20
     assert result[0]["metrics"]["momentum"] > 0
+    assert "An AI agent for developers" in result[0]["description"]
+    assert "Automates browser workflows" in result[0]["description"]
