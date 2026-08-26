@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 
 from app.models.radar_item import RadarItem
@@ -36,7 +36,10 @@ def normalize_items(items) -> List[dict]:
         seen.add(key)
 
         data = item.to_dict()
-        data.setdefault("collected_at", datetime.utcnow().isoformat())
+        data.setdefault(
+            "collected_at",
+            datetime.now(timezone.utc).isoformat(),
+        )
 
         result.append(data)
 
