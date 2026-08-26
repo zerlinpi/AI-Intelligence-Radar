@@ -4,6 +4,7 @@ from typing import Dict, List
 import requests
 
 from app.sources.base import BaseCollector
+from app.relevance import attach_eligibility_metrics, report_eligibility
 
 
 class HuggingFaceCollector(BaseCollector):
@@ -11,7 +12,7 @@ class HuggingFaceCollector(BaseCollector):
 
     def collect(self, limit: int = 15) -> List[Dict]:
         api = "https://huggingface.co/api/models"
-        fetch_limit = min(max(limit * 6, 50), 100)
+        fetch_limit = min(max(limit * 8, 80), 100)
 
         params = {
             "sort": "createdAt",
@@ -27,6 +28,7 @@ class HuggingFaceCollector(BaseCollector):
             return []
 
         results = []
+        rejected = 0
 
         for item in payload:
             if not isinstance(item, dict):
@@ -71,28 +73,51 @@ class HuggingFaceCollector(BaseCollector):
             if not description_parts:
                 description_parts.append("新发布 AI 模型")
 
-            results.append(
-                {
-                    "source": self.name,
-                    "title": model_id,
-                    "url": f"https://huggingface.co/{model_id}",
-                    "description": " | ".join(description_parts),
-                    "created_at": created_at,
+            record = {
+                "source": self.name,
+                "title": model_id,
+                "url": f"https://huggingface.co/{model_id}",
+                "description": " | ".join(description_parts),
+                "created_at": created_at,
+                "downloads": downloads,
+                "metrics": {
                     "downloads": downloads,
-                    "metrics": {
-                        "downloads": downloads,
-                        "likes": likes,
-                        "momentum": round(momentum, 2),
-                        "pipeline_tag": pipeline_tag,
-                        "library_name": library_name,
-                        "tags": tags,
-                    },
-                }
-            )
+                    "likes": likes,
+                    "momentum": round(momentum, 2),
+                    "pipeline_tag": pipeline_tag,
+                    "library_name": library_name,
+                    "tags": tags,
+                },
+            }
 
+            eligibility = report_eligibility(record)
+            attach_eligibility_metrics(record, eligibility)
+            if not eligibility["eligible"]:
+                rejected += 1
+                continue
+
+            results.append(record)
+
+        # 模型首先看是否能真正进入跨境业务或实体产品开发，再看下载/点赞热度。
         results.sort(
-            key=lambda x: (x.get("metrics") or {}).get("momentum", 0),
+            key=lambda x: (
+                float((x.get("metrics") or {}).get("opportunity_score", 0) or 0),
+                float((x.get("metrics") or {}).get("momentum", 0) or 0),
+                x.get("created_at") or "",
+            ),
             reverse=True,
+        )
+
+        # 这里的“淘汰”是资格门槛，不是因为模型不够热门。
+        # 没有跨境、硬件或实体商品用途时不进入日报，也不消耗后续 DeepSeek 分析 Token。
+        from app.core.logger import get_logger
+        logger = get_logger("Hugging Face采集")
+        logger.info(
+            "Hugging Face 近期候选=%s 资格淘汰=%s 合格=%s 最终返回=%s",
+            len(payload),
+            rejected,
+            len(results),
+            min(len(results), limit),
         )
         return results[:limit]
 
