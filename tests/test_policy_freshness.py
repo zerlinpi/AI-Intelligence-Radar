@@ -7,12 +7,13 @@ from app.sources.policies import (
 )
 
 
-def _policy(title, created_at, focus="美国跨境新规"):
+def _policy(title, created_at, focus="美国跨境新规", authority="CBP"):
     return {
         "title": title,
         "created_at": created_at,
         "metrics": {
             "policy_focus": focus,
+            "policy_authority": authority,
         },
     }
 
@@ -49,13 +50,35 @@ def test_different_policy_focus_is_not_deduplicated():
         "New Product Testing Requirements",
         "2026-08-26T08:00:00+00:00",
         focus="Amazon政策与审核",
+        authority="Amazon",
     )
     cpsc = _policy(
         "New Product Testing Requirements",
         "2026-08-26T09:00:00+00:00",
         focus="产品合规审核",
+        authority="CPSC",
     )
     kept, duplicate_count = _dedupe_policy_topics([amazon, cpsc])
+    assert duplicate_count == 0
+    assert len(kept) == 2
+
+
+def test_same_focus_but_different_regulator_is_not_deduplicated():
+    cpsc = _policy(
+        "New Product Certification Requirements",
+        "2026-08-26T08:00:00+00:00",
+        focus="产品合规审核",
+        authority="CPSC",
+    )
+    fcc = _policy(
+        "New Product Certification Requirements",
+        "2026-08-26T09:00:00+00:00",
+        focus="产品合规审核",
+        authority="FCC",
+    )
+
+    assert _same_policy_topic(cpsc, fcc) is False
+    kept, duplicate_count = _dedupe_policy_topics([cpsc, fcc])
     assert duplicate_count == 0
     assert len(kept) == 2
 
