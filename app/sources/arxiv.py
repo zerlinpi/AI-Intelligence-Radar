@@ -16,9 +16,14 @@ logger = get_logger("arXiv采集")
 class ArxivCollector(BaseCollector):
     name = "arxiv"
 
-    def collect(self, limit: int = 10) -> List[Dict]:
+    def collect(self, limit: int = 15) -> List[Dict]:
         params = {
-            "search_query": "cat:cs.AI OR cat:cs.LG OR cat:cs.CL",
+            # 在通用 AI/ML/NLP 基础上加入机器人与计算机视觉，提升发现硬件、
+            # 视觉传感、边缘设备和实体产品技术机会的概率。
+            "search_query": (
+                "cat:cs.AI OR cat:cs.LG OR cat:cs.CL OR "
+                "cat:cs.RO OR cat:cs.CV"
+            ),
             "start": 0,
             "max_results": limit,
             "sortBy": "submittedDate",
@@ -53,24 +58,34 @@ class ArxivCollector(BaseCollector):
             )
             url = entry.findtext("atom:id", default="", namespaces=ATOM_NS) or ""
 
+            categories = []
+            for category in entry.findall("atom:category", ATOM_NS):
+                term = category.attrib.get("term")
+                if term:
+                    categories.append(term)
+
             if not title or not url:
                 continue
+
+            description = summary
+            if categories:
+                description = f"{summary} | categories: {' '.join(categories)}"
 
             results.append(
                 {
                     "source": self.name,
                     "title": title,
                     "url": url,
-                    # 保留 arXiv 原始摘要全文。模型输入层可独立做上下文预算控制，
-                    # 但源数据本身不应提前裁掉，确保降级展示和后续再分析都有完整材料。
-                    "description": summary,
+                    "description": description,
                     "created_at": created_at or None,
-                    "metrics": {},
+                    "metrics": {
+                        "topics": categories,
+                    },
                 }
             )
 
         return results[:limit]
 
 
-def fetch_ai_papers(limit=10):
+def fetch_ai_papers(limit=15):
     return ArxivCollector().collect_safe(limit)
