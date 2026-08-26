@@ -8,7 +8,12 @@ from app.ai.client import (
     get_llm_client,
     get_llm_model,
 )
-from app.config import LLM_API_KEY, LLM_MAX_TOKENS, LLM_TEMPERATURE
+from app.config import (
+    LLM_API_KEY,
+    LLM_MAX_TOKENS,
+    LLM_PROVIDER,
+    LLM_TEMPERATURE,
+)
 from app.core.logger import get_logger
 
 
@@ -189,7 +194,6 @@ def _compact_item(item: Dict, index: int) -> list:
     source = str(item.get("source") or "")
     item_type = "政" if _is_policy(item) else "项"
 
-    # 顺序固定：序号、类型、名称、简介、来源、时间小时、热度、指标。
     return [
         index,
         item_type,
@@ -250,6 +254,45 @@ def _read_result_row(row):
         return row
 
     return None
+
+
+def _result_indexes(raw: Dict) -> set:
+    rows = raw.get("结果") if isinstance(raw, dict) else None
+    indexes = set()
+    if not isinstance(rows, list):
+        return indexes
+
+    for raw_row in rows:
+        row = _read_result_row(raw_row)
+        if not row:
+            continue
+        try:
+            indexes.add(int(row.get("序号")))
+        except (TypeError, ValueError):
+            continue
+    return indexes
+
+
+def _merge_raw_results(base: Dict, extra: Dict) -> Dict:
+    base_rows = base.get("结果") if isinstance(base, dict) else None
+    extra_rows = extra.get("结果") if isinstance(extra, dict) else None
+
+    merged = list(base_rows) if isinstance(base_rows, list) else []
+    if isinstance(extra_rows, list):
+        merged.extend(extra_rows)
+    return {"结果": merged}
+
+
+def _merge_usage(*metas: Dict) -> Dict:
+    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    for meta in metas:
+        current = (meta or {}).get("usage") or {}
+        for key in usage:
+            try:
+                usage[key] += int(current.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                pass
+    return usage
 
 
 def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Dict]:
@@ -347,35 +390,35 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
     if not LLM_API_KEY:
         return [_fallback_result(item, "缺少 LLM API 密钥") for item in items]
 
+    output_tokens = min(max(int(LLM_MAX_TOKENS or 1), 1), MAX_OUTPUT_TOKENS)
+    client = get_llm_client()
+
+    def request_for(compact_rows):
+        compact_json = json.dumps(compact_rows, ensure_ascii=False, separators=(",", ":"))
+        kwargs = {
+            "model": get_llm_model(),
+            "messages": [{"role": "user", "content": _build_prompt(compact_json)}],
+            "temperature": LLM_TEMPERATURE,
+            "max_tokens": output_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        # V4 Pro 默认开启 high thinking。这里是严格结构化抽取任务，关闭思考模式
+        # 可以显著降低延迟与超时风险，同时不影响最终 JSON 完整性。
+        if str(LLM_PROVIDER or "").lower() == "deepseek":
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        return client.chat.completions.create(**kwargs)
+
     compact_items = [
         _compact_item(item, index)
         for index, item in enumerate(items, start=1)
     ]
-    compact_json = json.dumps(
-        compact_items,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    prompt = _build_prompt(compact_json)
-
-    output_tokens = min(max(int(LLM_MAX_TOKENS or 1), 1), MAX_OUTPUT_TOKENS)
-
-    client = get_llm_client()
-
-    def request():
-        return client.chat.completions.create(
-            model=get_llm_model(),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=LLM_TEMPERATURE,
-            max_tokens=output_tokens,
-            response_format={"type": "json_object"},
-        )
-
-    response, meta = call_llm_with_retry(request)
+    response, meta = call_llm_with_retry(lambda: request_for(compact_items))
 
     if not meta.get("success") or response is None:
         reason = meta.get("error", "模型请求失败")
         return [_fallback_result(item, reason) for item in items]
+
+    all_metas = [meta]
 
     try:
         choice = response.choices[0]
@@ -383,25 +426,56 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
         finish_reason = getattr(choice, "finish_reason", "") or ""
         parsed = _extract_json_object(content)
 
-        # DeepSeek JSON Output 偶发可能返回空内容；只在异常时额外恢复一次，
-        # 正常日报仍保持一次批量请求。
+        # DeepSeek 官方说明 JSON Output 偶发可能返回空 content。
         if not parsed:
             logger.warning(
                 "模型首次结构化结果无效，尝试恢复一次：结束原因=%s",
                 finish_reason,
             )
-            retry_response, retry_meta = call_llm_with_retry(request, retries=1)
+            retry_response, retry_meta = call_llm_with_retry(
+                lambda: request_for(compact_items),
+                retries=1,
+            )
+            all_metas.append(retry_meta)
             if retry_meta.get("success") and retry_response is not None:
                 response = retry_response
-                meta = retry_meta
                 choice = response.choices[0]
                 content = choice.message.content or ""
                 finish_reason = getattr(choice, "finish_reason", "") or ""
                 parsed = _extract_json_object(content)
 
-        results = _normalize_batch_result(parsed, items, meta)
+        # 整体 JSON 有效但遗漏个别序号时，只重试缺失项目，避免已有结果被降级。
+        present = _result_indexes(parsed)
+        missing_indexes = [
+            index
+            for index in range(1, len(items) + 1)
+            if index not in present
+        ]
+        if parsed and missing_indexes:
+            logger.warning(
+                "模型批量结果缺少序号=%s，单独恢复缺失条目",
+                missing_indexes,
+            )
+            missing_rows = [
+                _compact_item(items[index - 1], index)
+                for index in missing_indexes
+            ]
+            missing_response, missing_meta = call_llm_with_retry(
+                lambda: request_for(missing_rows),
+                retries=1,
+            )
+            all_metas.append(missing_meta)
+            if missing_meta.get("success") and missing_response is not None:
+                missing_content = missing_response.choices[0].message.content or ""
+                missing_parsed = _extract_json_object(missing_content)
+                if missing_parsed:
+                    parsed = _merge_raw_results(parsed, missing_parsed)
 
-        usage = meta.get("usage") or {}
+        combined_meta = dict(meta)
+        combined_meta["usage"] = _merge_usage(*all_metas)
+        results = _normalize_batch_result(parsed, items, combined_meta)
+
+        usage = combined_meta.get("usage") or {}
         fallback_count = sum(
             1
             for result in results
