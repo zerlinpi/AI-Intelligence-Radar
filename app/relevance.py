@@ -31,6 +31,23 @@ GITHUB_DEVELOPER_PRODUCT_SIGNALS = (
     "computer vision",
 )
 
+# 这些词经常让教程、模板、演示仓库因为同时出现 framework/runtime 等词被误判为工程突破。
+# 只用于“纯开发基础设施”路径；若项目本身有明确跨境、硬件或实体商品价值，不会被这里误杀。
+GITHUB_LOW_VALUE_SIGNALS = (
+    "demo",
+    "example project",
+    "example app",
+    "tutorial",
+    "course",
+    "workshop tutorial",
+    "boilerplate",
+    "starter template",
+    "template repo",
+    "toy project",
+    "awesome list",
+    "prompt collection",
+)
+
 
 DIMENSION_THRESHOLDS = {
     "cross_border": 12,
@@ -76,6 +93,11 @@ def _dimension(profile: Dict, name: str) -> float:
 def _has_github_developer_product_signal(item: Dict) -> bool:
     text = _text(item)
     return any(_contains(text, keyword) for keyword in GITHUB_DEVELOPER_PRODUCT_SIGNALS)
+
+
+def _has_github_low_value_signal(item: Dict) -> bool:
+    text = _text(item)
+    return any(_contains(text, keyword) for keyword in GITHUB_LOW_VALUE_SIGNALS)
 
 
 def _evidence_sufficient(item: Dict) -> bool:
@@ -127,7 +149,12 @@ def report_eligibility(item: Dict) -> Dict:
     reason = "与跨境业务、硬件开发或实体商品机会无直接关系"
 
     if source == "github":
-        developer_product = technical and _has_github_developer_product_signal(item)
+        low_value_example = _has_github_low_value_signal(item)
+        developer_product = (
+            technical
+            and _has_github_developer_product_signal(item)
+            and not low_value_example
+        )
         eligible = cross_border or hardware or physical or developer_product
         if eligible:
             if cross_border:
@@ -136,6 +163,8 @@ def report_eligibility(item: Dict) -> Dict:
                 reason = "可用于硬件/实体商品开发"
             else:
                 reason = "具备可复用的开发基础设施或工程突破"
+        elif low_value_example and technical:
+            reason = "主要是教程、模板或演示仓库，缺少可复用产品/工程价值证据"
     elif source in {"arxiv", "huggingface"}:
         # 论文和模型门槛更严格：纯技术前沿但无法服务跨境业务、硬件或实体商品时不推送。
         eligible = cross_border or hardware or physical
@@ -182,13 +211,23 @@ def attach_eligibility_metrics(item: Dict, result: Dict) -> Dict:
         metrics = {}
         item["metrics"] = metrics
 
+    # 历史层识别出的“重大更新”不能被本次重新计算机会画像时覆盖掉；
+    # 把它放到 evidence 首位，后续 DeepSeek 能知道为什么同一项目今天值得重新分析。
+    history_update_reason = str(metrics.get("history_material_update_reason") or "").strip()
+
     profile = result.get("profile") or {}
+    evidence = list(profile.get("evidence") or [])
+    if history_update_reason:
+        evidence = [f"重大更新:{history_update_reason}"] + [
+            value for value in evidence if value != history_update_reason
+        ]
+
     metrics["report_eligible"] = bool(result.get("eligible"))
     metrics["evidence_sufficient"] = bool(result.get("evidence_sufficient"))
     metrics["eligibility_reason"] = str(result.get("reason") or "")
     metrics["opportunity_score"] = profile.get("opportunity_score", 0)
     metrics["opportunity_dimensions"] = dict(profile.get("dimensions") or {})
-    metrics["opportunity_evidence"] = list(profile.get("evidence") or [])
+    metrics["opportunity_evidence"] = evidence
     metrics["product_categories"] = list(profile.get("product_categories") or [])
     metrics["priority_tags"] = list(profile.get("tags") or [])
     return item
