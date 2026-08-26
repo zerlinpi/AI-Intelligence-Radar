@@ -1,4 +1,4 @@
-name: Test
+name: 自动测试
 
 on:
   push:
@@ -21,26 +21,27 @@ env:
 
 jobs:
   test:
+    name: 项目测试
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: 获取代码
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: 配置 Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Show Python Version
+      - name: 显示 Python 版本
         run: python --version
 
-      - name: Install dependencies
+      - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pytest
 
-      - name: Run tests
+      - name: 运行测试
         run: |
           python -m pytest -v --tb=short
