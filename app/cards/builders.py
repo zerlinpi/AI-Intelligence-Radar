@@ -474,6 +474,17 @@ def _project_source_label(project) -> str:
     return project.source_name
 
 
+def _direction_label(project, is_arxiv: bool) -> str:
+    tags = set(project.tags or [])
+    if is_arxiv:
+        return "产品化方向"
+    if "硬件开发" in tags or "实体商品机会" in tags:
+        return "商品/原型方向"
+    if "技术前沿" in tags:
+        return "验证/开发方向"
+    return "可借鉴方向"
+
+
 def _project_elements(project, index: int) -> list:
     title = _text(project.title)
     opportunity = OPPORTUNITY_LABELS.get(project.opportunity, "中")
@@ -514,8 +525,7 @@ def _project_elements(project, index: int) -> list:
     if judgment:
         elements.append(_pair("价值判断", judgment, "🧠"))
     if direction:
-        direction_label = "产品化方向" if is_arxiv else "可借鉴方向"
-        elements.append(_pair(direction_label, direction, "🛠️"))
+        elements.append(_pair(_direction_label(project, is_arxiv), direction, "🛠️"))
 
     _append_button(
         elements,
@@ -526,12 +536,31 @@ def _project_elements(project, index: int) -> list:
 
 
 def _product_batch_elements(batch, start_index: int) -> list:
-    elements = []
-    cross_border = [(start_index + i, p) for i, p in enumerate(batch) if p.cross_border]
-    other = [(start_index + i, p) for i, p in enumerate(batch) if not p.cross_border]
+    """按战略价值分组；每个项目只进入优先级最高的一个板块，避免重复展示。"""
+    indexed = [(start_index + i, p) for i, p in enumerate(batch)]
 
+    cross_border = []
+    hardware_physical = []
+    frontier = []
+    other = []
+
+    for project_index, project in indexed:
+        tags = set(project.tags or [])
+        row = (project_index, project)
+        if project.cross_border or "跨境电商" in tags:
+            cross_border.append(row)
+        elif "硬件开发" in tags or "实体商品机会" in tags:
+            hardware_physical.append(row)
+        elif "技术前沿" in tags:
+            frontier.append(row)
+        else:
+            other.append(row)
+
+    elements = []
     for title, group in (
         ("🎯 跨境电商直接相关", cross_border),
+        ("🧰 硬件与实体商品机会", hardware_physical),
+        ("🧠 技术前沿与开发基础设施", frontier),
         ("🧪 其他可产品化信号", other),
     ):
         if not group:
