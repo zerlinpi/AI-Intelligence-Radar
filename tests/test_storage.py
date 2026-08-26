@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from app.storage.repository import save_batch
 
 
@@ -25,6 +27,9 @@ class FakeDB:
     def commit(self):
         pass
 
+    def rollback(self):
+        pass
+
     def refresh(self, _item):
         pass
 
@@ -46,3 +51,21 @@ def test_repository_save_batch_deduplicates_with_existing_url(monkeypatch):
     )
 
     assert len(result) == 1
+
+
+def test_repository_preserves_source_created_at():
+    db = FakeDB()
+
+    result = save_batch(
+        db,
+        [
+            {
+                "title": "Recent Project",
+                "url": "https://example.com/recent",
+                "created_at": "2026-08-25T12:30:00Z",
+            }
+        ],
+    )
+
+    assert len(result) == 1
+    assert result[0].created_at == datetime(2026, 8, 25, 12, 30, 0)
