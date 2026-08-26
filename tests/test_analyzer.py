@@ -59,6 +59,7 @@ def _mock_success(monkeypatch):
                 "usage": {
                     "prompt_tokens": 160,
                     "completion_tokens": 100,
+                    "reasoning_tokens": 60,
                     "total_tokens": 260,
                 },
             },
@@ -195,8 +196,8 @@ def test_batch_analyzer_recovers_only_missing_rows(monkeypatch):
 
 def test_batch_analyzer_allows_full_output_budget(monkeypatch):
     _mock_success(monkeypatch)
-    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 16000)
+    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 100000)
     analyzer.analyze_items(
         [{"title": "项目一", "description": "测试", "metrics": {"stars": 10}, "trend_score": 80}]
     )
-    assert FakeClient.calls[0]["max_tokens"] == 8192
+    assert FakeClient.calls[0]["max_tokens"] == 65536
