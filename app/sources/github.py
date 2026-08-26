@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import requests
 
 from app.config import GITHUB_TOKEN
@@ -13,22 +15,28 @@ logger = get_logger("collector.github")
 class GithubCollector(BaseCollector):
     name = "github"
 
-    def collect(self):
-        headers = {}
+    def collect(self, limit: int = 10):
+        headers = {
+            "Accept": "application/vnd.github+json",
+        }
         if GITHUB_TOKEN:
             headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
 
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).date().isoformat()
+        fetch_limit = min(max(limit * 5, 30), 100)
+
         params = {
-            "q": "topic:ai stars:>100",
+            "q": f"topic:ai created:>={since} stars:>=5",
             "sort": "stars",
-            "order": "desc"
+            "order": "desc",
+            "per_page": fetch_limit,
         }
 
         response = requests.get(
             API,
             headers=headers,
             params=params,
-            timeout=20
+            timeout=20,
         )
         response.raise_for_status()
 
@@ -42,22 +50,33 @@ class GithubCollector(BaseCollector):
             return []
 
         result = []
-        for item in items[:10]:
+        for item in items:
             if not isinstance(item, dict):
                 continue
 
+            created_at = item.get("created_at")
+            stars = item.get("stargazers_count", 0) or 0
+            forks = item.get("forks_count", 0) or 0
+
             result.append(
                 {
-                    "source": "github",
-                    "title": item.get("name") or "",
+                    "source": self.name,
+                    "title": item.get("full_name") or item.get("name") or "",
                     "url": item.get("html_url") or "",
-                    "stars": item.get("stargazers_count", 0),
-                    "description": item.get("description") or ""
+                    "description": item.get("description") or "",
+                    "created_at": created_at,
+                    "stars": stars,
+                    "forks": forks,
+                    "metrics": {
+                        "stars": stars,
+                        "forks": forks,
+                        "open_issues": item.get("open_issues_count", 0) or 0,
+                    },
                 }
             )
 
-        return result
+        return result[:limit]
 
 
-def fetch_ai_repositories():
-    return GithubCollector().collect_safe()
+def fetch_ai_repositories(limit: int = 10):
+    return GithubCollector().collect_safe(limit)
