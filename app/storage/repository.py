@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy.orm import Session
 
 from app.database.models import IntelligenceItem
@@ -24,6 +26,24 @@ def _safe_dict(value):
     return value if isinstance(value, dict) else {}
 
 
+def _source_created_at(value):
+    """Normalize a source launch timestamp to naive UTC for SQLite."""
+    if isinstance(value, datetime):
+        created = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            created = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if created.tzinfo is not None:
+        created = created.astimezone(timezone.utc).replace(tzinfo=None)
+
+    return created
+
+
 def save_item(db: Session, item):
     data = _to_dict(item)
     if not data:
@@ -46,6 +66,10 @@ def save_item(db: Session, item):
         metrics=metrics,
         analysis=analysis,
     )
+
+    source_created_at = _source_created_at(data.get("created_at"))
+    if source_created_at is not None:
+        record.created_at = source_created_at
 
     try:
         db.add(record)
