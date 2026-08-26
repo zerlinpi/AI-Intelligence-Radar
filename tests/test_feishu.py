@@ -53,6 +53,8 @@ def test_product_compliance_highlights_use_two_column_background_blocks():
     assert len(highlights) == 4
     assert all(item["background_style"] == "grey" for item in highlights)
     assert all(len(item["columns"]) == 2 for item in highlights)
+    assert all(item["columns"][0]["weight"] == 1 for item in highlights)
+    assert all(item["columns"][1]["weight"] == 4 for item in highlights)
 
     labels = [
         item["columns"][0]["elements"][0]["text"]["content"]
@@ -86,15 +88,38 @@ def test_long_report_fields_are_compacted_without_losing_label():
     assert "…" in body_text
     assert "**产品描述：**" in normal_text
     assert "…" in normal_text
-    assert len(body_text) <= feishu.DISPLAY_LIMITS["风险"] + 1
+    assert len(body_text) <= feishu.DISPLAY_LIMITS["风险"]
 
 
-def test_compact_limits_cover_core_decision_fields():
-    assert feishu.DISPLAY_LIMITS["影响产品"] <= 70
-    assert feishu.DISPLAY_LIMITS["风险"] <= 80
-    assert feishu.DISPLAY_LIMITS["准备资料"] <= 90
-    assert feishu.DISPLAY_LIMITS["产品描述"] <= 110
-    assert feishu.DISPLAY_LIMITS["价值判断"] <= 90
+def test_compact_limits_match_mobile_scan_budget():
+    expected = {
+        "审核简报": 72,
+        "审核要求": 72,
+        "影响产品": 48,
+        "风险": 56,
+        "准备资料": 64,
+        "建议动作": 46,
+        "产品描述": 72,
+        "价值判断": 64,
+        "可借鉴方向": 52,
+    }
+
+    for field, limit in expected.items():
+        assert feishu.DISPLAY_LIMITS[field] == limit
+
+
+def test_clip_text_prefers_complete_sentence_before_hard_cut():
+    text = (
+        "证书或申报字段错误可能导致清关延误、整改或销售受阻。"
+        "后续背景说明会更长，但不应优先占据飞书决策字段。"
+    )
+
+    compact = feishu._clip_text(text, 56)
+
+    assert compact.startswith("证书或申报字段错误")
+    assert compact.endswith("…")
+    assert len(compact) <= 56
+    assert "后续背景说明" not in compact
 
 
 def test_feishu_business_error(monkeypatch):
