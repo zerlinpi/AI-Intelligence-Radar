@@ -25,10 +25,10 @@ MAX_POLICY_DESCRIPTION_CHARS = 900
 MAX_TITLE_CHARS = 140
 MAX_BATCH_ITEMS = 14
 
-# deepseek-v4-pro 的 thinking Token 与最终正文共同占用 completion 预算。
-# 单条实测已超过 2K completion Token，因此 4 条政策 + 10 个项目预留 64K，
-# 避免最大推理强度下因 8K 上限导致整批 JSON 被截断。
-MAX_OUTPUT_TOKENS = 65536
+# DeepSeek V4 Pro 官方当前最大输出为 384K Token。
+# 项目默认通过 LLM_MAX_TOKENS 使用 131072；这里仅保留模型能力硬上限，
+# 以后需要更高预算时只改环境变量即可，无需再次改分析器代码。
+MAX_OUTPUT_TOKENS = 384000
 
 SOURCE_NAMES = {
     "github": "GitHub",
