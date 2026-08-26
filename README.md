@@ -2,7 +2,7 @@
 
 > 自动发现正在快速升温的 AI 项目，并优先追踪 Amazon 政策、美国进口规则与产品合规审核变化。
 
-系统采集公开数据，先在本地完成新鲜度、增长速度与商业优先级筛选，再使用一次 DeepSeek 批量分析，写入 SQLite，并推送中文飞书日报。
+系统采集公开数据，先在本地完成新鲜度、增长速度与商业优先级筛选，再使用一次 DeepSeek 批量分析，写入 SQLite，并将结果转换为结构化 Decision Model，最终推送 3 张中文飞书决策卡。
 
 ## 当前目标
 
@@ -30,9 +30,13 @@
         ↓
 一次 DeepSeek 批量深度分析
         ↓
-SQLite 持久化
+SQLite 保存完整分析
         ↓
-飞书中文经营日报
+Report Decision Model
+        ↓
+结构化 Card Builder
+        ↓
+3 张飞书决策卡
 ```
 
 ---
@@ -74,7 +78,7 @@ Product Hunt 会同时保留产品 `tagline + description`，尽量给模型完�
 - Forks、评论、点赞等早期互动
 - 各数据源自身 Momentum 信号
 
-热度分仍然只代表**早期增长趋势**，不会因为项目品牌大或历史规模大额外加分。
+热度分只代表**早期增长趋势**，不会因为项目品牌大或历史规模大额外加分。
 
 ### 商业优先级
 
@@ -90,7 +94,7 @@ Product Hunt 会同时保留产品 `tagline + description`，尽量给模型完�
 selection_score = trend_score + priority_score
 ```
 
-但飞书中的“早期热度”仍保持纯趋势含义。
+飞书中的“早期热度”仍保持纯趋势含义。
 
 ---
 
@@ -107,7 +111,7 @@ Thinking = enabled
 +
 reasoning_effort = max
 +
-内部 SSE 流式接收，避免长时间空闲连接被中间网络切断
+内部 SSE 流式接收
 +
 单次请求最长等待 = 900 秒（默认 15 分钟）
 +
@@ -120,38 +124,42 @@ reasoning_effort = max
 4 条政策 + 10 个项目 = 14 条
 ```
 
-DeepSeek Thinking 模式的推理 Token 与最终可见正文共同占用 completion 预算。实际单项测试已经出现 2K+ completion Token，因此 8192 对 14 条批量分析过紧；当前预留 65536 Token，仍然只是上限，实际计费按模型真实生成量计算。
+DeepSeek Thinking 模式的推理 Token 与最终可见正文共同占用 completion 预算。65536 Token 是输出上限，不代表每次固定消耗，实际仍按真实生成量计算。
 
-主批量请求默认只执行一次。因为单次请求已经允许最长 15 分钟，超时后不会自动把整批任务再次重复执行。
-
-如果模型已经成功响应，但发生以下情况，系统才会进行针对性恢复：
-
-- JSON Output 偶发为空
-- 返回结果缺少某个序号
-- 部分项目没有完整结构化结果
-
-缺少个别条目时只重试缺失条目，不重复分析已经成功的内容。
+主批量请求默认只执行一次。若模型已经成功响应，但出现 JSON 为空或个别序号缺失，系统才做针对性恢复；缺少个别条目时只重试缺失条目，不重复分析已成功内容。
 
 ### JSON 输出
 
-模型使用结构化 JSON 输出：
+模型使用结构化 JSON。政策中的美国市场产品审核额外拆出“影响产品 / 风险 / 准备资料”：
 
 ```json
 {
   "结果": [
-    [1, "用途", "判断", 90, "高", "建议"]
+    [
+      1,
+      "用途或审核要求",
+      "判断",
+      90,
+      "高",
+      "建议",
+      "影响产品",
+      "风险",
+      "准备资料"
+    ]
   ]
 }
 ```
 
-系统会记录：
+非产品合规审核条目的最后三个字段返回空字符串。
+
+系统记录：
 
 - 输入 Token
 - 输出 Token
-- 其中推理 Token
-- 推算的最终正文 Token
+- 推理 Token
+- 最终正文 Token
 - 总 Token
-- 是否有降级条目
+- 是否存在降级条目
 - `finish_reason`
 
 日志示例：
@@ -162,15 +170,7 @@ AI 批量分析完成：条目=14 降级=0 输入Token=... 输出Token=... 其�
 
 ### AI 失败时的处理
 
-模型失败不会再只显示：
-
-```text
-项目用途暂无法生成，请查看项目原始说明。
-```
-
-当前降级策略会优先展示数据源原始 description，并明确标记本条 AI 深度分析未完成。
-
-更重要的是：**AI fallback 不会被数据库当成永久成功记录。**
+AI fallback 不会被数据库当作永久成功记录：
 
 ```text
 AI 成功
@@ -178,16 +178,14 @@ AI 成功
 → 下次正常 URL 去重
 
 AI 失败
-→ 可降级发送飞书
+→ 可使用原始说明降级展示
 → 不视为已成功处理
-→ 后续采集到同一 URL 时再次分析
+→ 后续再次分析
 
 历史 fallback
 → 重新分析
-→ 成功后原地覆盖旧记录
+→ 成功后覆盖旧 fallback
 ```
-
-这样一次模型超时不会永久丢失该项目或政策。
 
 ---
 
@@ -207,59 +205,213 @@ LLM_TIMEOUT_SECONDS=900
 
 说明：
 
-- `LLM_MAX_TOKENS=65536` 是 completion 输出上限，包含 Thinking 模式中的推理 Token 与最终正文 Token，不代表每次固定消耗 65536 Token。
+- `LLM_MAX_TOKENS=65536` 是 completion 上限，不是固定消耗。
 - `LLM_TIMEOUT_SECONDS=900` 表示单次模型请求最多等待 15 分钟。
-- DeepSeek Thinking 模式下不依赖 `LLM_TEMPERATURE` 控制推理质量；该变量主要保留给其他兼容模型。
-- DeepSeek 使用内部 SSE 流式接收，但飞书仍然只在完整 JSON 汇总完成后一次发送最终日报。
-- 401、403、404、422 等不可恢复错误立即失败，不做无意义重试。
-- 429、5xx、网络问题属于可恢复错误；但主批量长任务默认只请求一次，避免 15 分钟超时后再次整批重复等待。
+- DeepSeek 使用内部 SSE 接收，但飞书只在完整分析完成后批量发送。
+- 401、403、404、422 等不可恢复错误立即失败。
+- 429、5xx、网络问题属于可恢复错误。
 
 ---
 
-## 飞书日报
+# 飞书三卡日报
 
-日报信息架构：
+生产日报已经从“一个长 Markdown 卡片”升级为固定的**三张结构化决策卡**。
 
 ```text
-美国跨境经营雷达
+① 决策摘要卡
+   ├ 今日判断
+   ├ ① 必须
+   ├ ② 关注
+   └ ③ 研究
 
-01 今日合规重点
+② 合规雷达卡
    ├ Amazon 政策与审核
    ├ 美国跨境进口新规
    └ 美国市场产品审核
 
-02 跨境电商直接相关项目
-   ├ 产品描述
-   ├ 增长信号
-   ├ 价值判断
-   └ 可借鉴方向
-
-03 其他可产品化 AI 项目
-   ├ 产品描述
-   ├ 增长信号
-   ├ 价值判断
-   └ 可借鉴方向
+③ 产品机会卡
+   ├ 跨境电商直接相关
+   └ 其他可产品化信号
 ```
 
-项目条目示例：
+## 1. 决策摘要卡
+
+目标：打开飞书后 5 秒内回答“今天有没有必须处理的事情”。
+
+- Header：`turquoise`
+- 今日判断：约 60 字以内
+- Top Actions：固定最多 3 条
+- ① 必须 / ② 关注 / ③ 研究：纵向 `grey` 决策块
+- 布局：1:4 标签 / 正文两列
+
+示意：
 
 ```text
-01｜项目名称  查看项目 →
-GitHub · 8小时前  🔥 87  💼 92 · 高
-🎯 跨境电商 · 可产品化
-产品描述：...
-增长信号：...
-价值判断：...
-可借鉴方向：...
+美国跨境经营雷达｜08月26日
+
+今日判断
+发现 1 项高风险合规变化，先处理 CPSC 准入资料。
+
+合规 4 · 高风险 1 · 新项目 10 · 重点机会 3
+
+① 必须 | 核对 CPC/GCC 与 eFiling 字段
+② 关注 | 检查 RF 产品 FCC 授权资料
+③ 研究 | 评估 Listing + 合规检查产品方向
 ```
 
-政策条目根据类别使用不同字段：
+## 2. 合规雷达卡
+
+政策分成三组：
 
 ```text
-Amazon：核心变化 / 卖家影响 / 建议动作
-CBP：新规要点 / 进口影响 / 建议动作
-CPSC/FDA/FCC：审核要求 / 影响产品或风险 / 准备资料
+A｜Amazon 政策与审核
+B｜美国跨境进口新规
+C｜美国市场产品审核
 ```
+
+其中产品审核固定按决策顺序展示：
+
+```text
+审核要求
+🎯 影响产品   ← grey
+⚠️ 风险       ← grey
+📋 准备资料   ← grey
+✅ 下一步      ← white
+官方原文 →
+```
+
+不会用大片红色背景表示普通日报风险。风险状态同时使用文字和 Emoji：
+
+```text
+🔴 高风险
+🟠 中风险
+🟢 低风险
+```
+
+## 3. 产品机会卡
+
+产品区保持“少设计”：
+
+```text
+标题
+来源 · 时间 · 热度 · 商业分
+最多 3 个标签
+一句产品描述
+增长信号
+一句判断
+一句产品方向
+查看项目 →
+```
+
+默认只在卡片中展示优先级最高的 **5 个项目**；其余候选仍进入数据库，不在飞书卡片中堆积。这样同时优化移动端扫读和 Webhook Payload 大小。
+
+## 展示预算
+
+DeepSeek 保留完整分析，飞书 Renderer 单独压缩展示：
+
+| 字段 | 展示上限 |
+| --- | ---: |
+| 今日判断 | 60 |
+| Top Action | 52 |
+| 审核要求 | 72 |
+| 影响产品 | 48 |
+| 风险 | 56 |
+| 准备资料 | 64 |
+| 下一步 | 46 |
+| 产品标题 | 32 |
+| 产品描述 | 72 |
+| 价值判断 | 64 |
+| 产品方向 | 52 |
+
+压缩优先保留完整句和完整分句，最后才使用硬截断。
+
+## 结构化 Card Builder
+
+生产链路不再使用：
+
+```text
+RadarItem
+→ 拼 Markdown
+→ feishu.py 用 Regex 猜字段
+→ 卡片 JSON
+```
+
+现在使用：
+
+```text
+RadarItem + Analysis
+→ ReportDecisionModel
+→ app/cards/builders.py
+→ CardEnvelope
+→ app/feishu.py
+→ 飞书 Webhook
+```
+
+目录：
+
+```text
+app/cards/
+├── __init__.py
+├── models.py      # Decision Model
+├── builders.py    # 3 张卡片 Builder
+├── styles.py      # 视觉语义与展示预算
+└── text.py        # 语义压缩 / Display Width / UTF-8 字节计算
+```
+
+旧 Markdown / Regex 路径只保留兼容接口，不参与正式日报发送。
+
+## Payload 与降级
+
+当前仍使用飞书自定义机器人 Webhook。项目按 **18 KiB** 软预算控制单张请求体，为官方 20 KB 边界预留安全空间。
+
+正式发送前按真实 UTF-8 JSON 字节数计算：
+
+```python
+len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+```
+
+发送策略：
+
+```text
+正常 Card Payload ≤ 18 KiB
+→ 发送 Interactive Card
+
+Payload > 18 KiB
+→ 不硬发
+→ 直接发送 Plain-text fallback
+
+卡片结构/业务发送失败
+→ 尝试 Plain-text fallback
+```
+
+HTTP 行为：
+
+- 网络 timeout / connection error：指数退避 + jitter
+- HTTP 429 / 5xx：重试
+- HTTP 400 等不可重试 4xx：立即停止，不盲目重复发送
+- 飞书业务 code 非 0：记录错误并走 fallback
+
+---
+
+## 飞书配置
+
+```env
+FEISHU_WEBHOOK=
+
+# 项目软预算；飞书自定义机器人官方硬边界仍为 20 KB
+FEISHU_MAX_PAYLOAD_BYTES=18432
+
+# 产品机会卡最多展示 5 项
+FEISHU_PROJECTS_PER_CARD=5
+
+FEISHU_MAX_RETRIES=3
+FEISHU_SEND_TIMEOUT_SECONDS=10
+
+REPORT_LOCALE=zh-CN
+REPORT_TIMEZONE=Asia/Shanghai
+```
+
+这些配置已有默认值；升级现有服务器时不强制修改 `.env`。
 
 ---
 
@@ -286,6 +438,13 @@ LLM_MAX_TOKENS=65536
 LLM_TIMEOUT_SECONDS=900
 
 FEISHU_WEBHOOK=
+FEISHU_MAX_PAYLOAD_BYTES=18432
+FEISHU_PROJECTS_PER_CARD=5
+FEISHU_MAX_RETRIES=3
+FEISHU_SEND_TIMEOUT_SECONDS=10
+REPORT_LOCALE=zh-CN
+REPORT_TIMEZONE=Asia/Shanghai
+
 DATABASE_URL=sqlite:///./data/radar.db
 
 RADAR_RUN_HOUR=8
@@ -299,9 +458,7 @@ RADAR_RUN_MINUTE=0
 - `LLM_API_KEY`：模型分析必需。
 - `FEISHU_WEBHOOK`：飞书推送必需。
 - `DATABASE_URL`：Docker 默认使用 `./data/radar.db` 持久化。
-- 调度器时区为 `Asia/Shanghai`（UTC+8）。
-
-品牌名、接口字段、环境变量、URL 等官方技术标识保留官方写法；用户可见日志、提示和飞书内容使用中文。
+- `REPORT_TIMEZONE` 控制日报日期显示；调度器当前仍按 `Asia/Shanghai` 运行。
 
 ---
 
@@ -321,8 +478,6 @@ API 默认只绑定服务器本机：
 127.0.0.1:8000->8000/tcp
 ```
 
-不会默认向公网暴露执行接口。
-
 不要使用会影响服务器其他容器的全局 Docker 清理命令。
 
 ---
@@ -333,30 +488,25 @@ API 默认只绑定服务器本机：
 docker exec ai-intelligence-radar python -m app.cli check
 ```
 
-正常输出示例：
-
-```text
-[正常] 数据库
-[正常] 飞书机器人地址
-[正常] 模型密钥
-[正常] 模型名称
-[正常] 模型接口地址
-[正常] GitHub 访问令牌
-[提醒] Product Hunt 访问令牌
-```
-
 GitHub 和 Product Hunt 为可选数据源，因此未配置时显示“提醒”而不是主程序失败。
 
-确认模型运行参数：
+确认核心运行参数：
 
 ```bash
 docker exec -i ai-intelligence-radar python - <<'PY'
-from app.config import LLM_PROVIDER, LLM_MODEL, LLM_MAX_TOKENS, LLM_TIMEOUT_SECONDS
+from app.config import (
+    LLM_MODEL,
+    LLM_MAX_TOKENS,
+    LLM_TIMEOUT_SECONDS,
+    FEISHU_MAX_PAYLOAD_BYTES,
+    FEISHU_PROJECTS_PER_CARD,
+)
 
-print("模型提供方:", LLM_PROVIDER)
 print("模型:", LLM_MODEL)
 print("输出Token上限:", LLM_MAX_TOKENS)
 print("单次请求最长等待:", LLM_TIMEOUT_SECONDS, "秒")
+print("飞书单卡软预算:", FEISHU_MAX_PAYLOAD_BYTES, "字节")
+print("产品卡展示上限:", FEISHU_PROJECTS_PER_CARD)
 PY
 ```
 
@@ -368,8 +518,6 @@ PY
 curl http://127.0.0.1:8000/health
 curl -i http://127.0.0.1:8000/ready
 ```
-
-调度器正常时 `/ready` 返回 HTTP 200；未就绪时返回 HTTP 503。
 
 ---
 
@@ -385,41 +533,15 @@ docker exec ai-intelligence-radar python -m app.cli
 docker exec ai-intelligence-radar python -m app.cli 2>&1 | tee /root/radar-test.log
 ```
 
-由于 DeepSeek 使用长时 Thinking，AI 阶段可能持续数分钟。内部会持续接收 SSE 流，最终飞书仍然只发送完整日报。
+由于 DeepSeek 使用长时 Thinking，AI 阶段可能持续数分钟；飞书只在完整分析完成后批量发送最终 3 张日报卡片。
 
----
-
-## 运行日志
-
-查看最近日志：
-
-```bash
-docker logs --tail 100 ai-intelligence-radar
-```
-
-持续查看：
-
-```bash
-docker logs -f ai-intelligence-radar
-```
-
-正常流程类似：
+正常发送日志类似：
 
 ```text
-日报开始执行：执行编号=...
-采集器=GithubCollector 数量=... 耗时=...秒
-采集器=HackerNewsCollector 数量=... 耗时=...秒
-采集器=HuggingFaceCollector 数量=... 耗时=...秒
-采集器=ArxivCollector 数量=... 耗时=...秒
-采集器=ProductHuntCollector 数量=... 耗时=...秒
-政策采集：数量=... 耗时=...秒
-去重完成：项目=... 新项目=... 政策=... 新政策=...
-DeepSeek 流式连接已建立，正在等待完整分析结果
-模型流式响应完成：数据块=... 思考字符=... 正文字符=... 结束原因=stop
-AI 批量分析完成：条目=14 降级=0 输入Token=... 输出Token=... 其中推理Token=... 正文Token=... 总Token=... 结束原因=stop
-数据库保存完成：数量=...
-飞书通知发送成功
-日报执行完成：...
+飞书卡片发送成功：类型=summary Payload=...字节
+飞书卡片发送成功：类型=compliance Payload=...字节
+飞书卡片发送成功：类型=products Payload=...字节
+飞书日报发送成功：执行编号=... 卡片=3
 ```
 
 ---
@@ -438,15 +560,11 @@ Docker Compose 挂载：
 ./data/radar.db
 ```
 
-数据库保存来源真实发布时间，用于判断项目年龄和早期增长速度。
-
 对于历史 AI fallback 记录：
 
 - 去重检查不会把它们视为已成功完成
 - 后续会重新进入模型分析
 - 分析成功后会覆盖旧 fallback 记录
-
-容器启动时会先执行数据库迁移，再启动服务。
 
 ---
 
@@ -460,14 +578,9 @@ Docker Compose 挂载：
 
 检查调度器是否就绪。
 
-- 就绪：HTTP 200
-- 未就绪：HTTP 503
-
 ### `POST /run`
 
-手动执行一次完整日报。返回内容使用中文字段。
-
-生产环境不要把 `/run` 直接暴露到公网。
+手动执行一次完整日报。生产环境不要把 `/run` 直接暴露到公网。
 
 ---
 
@@ -480,14 +593,7 @@ Docker Compose 挂载：
 时区：Asia/Shanghai
 ```
 
-配置：
-
-```env
-RADAR_RUN_HOUR=8
-RADAR_RUN_MINUTE=0
-```
-
-CLI、API 与定时调度共用执行锁；已有任务运行时，第二次执行会直接跳过，避免重复调用模型、重复保存和重复发飞书。
+CLI、API 与定时调度共用执行锁；已有任务运行时，第二次执行会直接跳过。
 
 ---
 
@@ -501,22 +607,19 @@ python -m pytest -v --tb=short
 
 当前测试重点覆盖：
 
-- DeepSeek / OpenAI 兼容模型批量分析
-- DeepSeek JSON Output
-- DeepSeek Thinking `enabled` + `reasoning_effort=max`
-- DeepSeek SSE 长任务流式聚合
-- 65536 Token 输出上限
-- 推理 Token 与正文 Token 拆分统计
-- 长任务超时配置
-- 模型返回缺失条目的定向恢复
-- 模型异常 fallback
-- fallback 记录自动重试与成功后覆盖
-- 临时错误重试与不可恢复错误快速失败
-- 数据清洗、URL 去重、早期热度评分
-- SQLite 持久化
-- 来源发布时间持久化
-- 飞书报告结构
-- Product Hunt 近期 AI 产品过滤与完整说明保留
+- DeepSeek JSON Output / Thinking / SSE 长任务
+- 65536 Token 输出上限与 Token 统计
+- 缺失条目定向恢复与 fallback 自动重试
+- 数据清洗、URL 去重、评分、SQLite 持久化
+- Product Hunt 近期项目过滤
+- `ReportDecisionModel`
+- 固定 3 张飞书日报卡
+- Top Actions 最多 3 条
+- 产品机会卡最多 5 项
+- 产品审核的影响产品 / 风险 / 准备资料灰底决策块
+- 单卡 18 KiB 安全预算
+- 超限和卡片失败时 Plain-text fallback
+- 429 / 5xx 重试与 4xx 快速失败
 - `/ready` 200 / 503
 - 防止重复并发执行
 
@@ -524,18 +627,16 @@ python -m pytest -v --tb=short
 
 ## 当前阶段
 
-当前继续优先稳定已有核心能力：
+继续优先稳定已有核心能力：
 
 - 美国跨境政策与合规采集准确性
-- 新项目发现准确性
-- 早期增长速度评分质量
+- 新项目发现与早期增长评分质量
 - DeepSeek 分析完整度与稳定性
-- fallback 自动恢复
-- 数据持久化可靠性
-- 飞书日报决策价值
+- 结构化三卡飞书日报的决策价值
+- Payload 与降级发送可靠性
 - Docker 与定时任务长期稳定运行
 
-在核心链路完成真实环境验证之前，不优先增加仪表盘、趋势可视化等无关模块。
+真正需要卡片原地更新、确认按钮或动态状态时，再考虑迁移企业应用 + CardKit / Card JSON 2.0；当前日报继续使用稳定的 Webhook 批量发送路线。
 
 ---
 
