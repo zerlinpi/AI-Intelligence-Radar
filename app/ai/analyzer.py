@@ -398,21 +398,31 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
         kwargs = {
             "model": get_llm_model(),
             "messages": [{"role": "user", "content": _build_prompt(compact_json)}],
-            "temperature": LLM_TEMPERATURE,
             "max_tokens": output_tokens,
             "response_format": {"type": "json_object"},
         }
-        # V4 Pro 默认开启 high thinking。这里是严格结构化抽取任务，关闭思考模式
-        # 可以显著降低延迟与超时风险，同时不影响最终 JSON 完整性。
+
         if str(LLM_PROVIDER or "").lower() == "deepseek":
-            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            # 日报是离线决策分析，不追求秒级响应。启用 V4 Pro 思考模式并使用最大推理强度，
+            # 让模型充分分析政策适用范围、合规风险和产品商业价值。
+            kwargs["reasoning_effort"] = "max"
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        else:
+            kwargs["temperature"] = LLM_TEMPERATURE
+
         return client.chat.completions.create(**kwargs)
 
     compact_items = [
         _compact_item(item, index)
         for index, item in enumerate(items, start=1)
     ]
-    response, meta = call_llm_with_retry(lambda: request_for(compact_items))
+
+    # 单次请求已经允许最长 15 分钟，不再因为 timeout 自动重复整个批次。
+    # 如果响应成功但 JSON 为空或漏项，后续才做针对性恢复。
+    response, meta = call_llm_with_retry(
+        lambda: request_for(compact_items),
+        retries=1,
+    )
 
     if not meta.get("success") or response is None:
         reason = meta.get("error", "模型请求失败")
