@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import time
 import uuid
+from zoneinfo import ZoneInfo
 
 from app.cleaner import normalize_items
 from app.scoring import age_hours, calculate_score
@@ -135,12 +136,12 @@ def filter_existing_items(db, items):
 def _format_age(item: RadarItem) -> str:
     hours = age_hours(item.to_dict())
     if hours is None:
-        return "上线时间未知"
+        return "时间未知"
     if hours < 1:
-        return "1 小时内上线"
+        return "1小时内"
     if hours < 24:
-        return f"约 {int(hours)} 小时前上线"
-    return f"约 {max(int(hours // 24), 1)} 天前上线"
+        return f"{int(hours)}小时前"
+    return f"{max(int(hours // 24), 1)}天前"
 
 
 def _number(value) -> float:
@@ -171,32 +172,40 @@ def _format_metrics(item: RadarItem) -> str:
         stars = metrics.get("stars", 0)
         forks = metrics.get("forks", 0)
         rate = _format_rate(_per_day(item, stars))
-        return f"星标 {stars} · 分支 {forks} · 星标增速约 {rate}/天"
+        return f"⭐ {stars} · Fork {forks} · +{rate} 星/天"
 
     if item.source in {"producthunt", "hackernews"}:
         upvotes = metrics.get("upvotes", 0)
         comments = metrics.get("comments", 0)
         rate = _format_rate(_per_day(item, upvotes))
-        return f"热度票 {upvotes} · 评论 {comments} · 热度增速约 {rate}/天"
+        return f"▲ {upvotes} 票 · 评论 {comments} · +{rate} 票/天"
 
     if item.source == "huggingface":
         downloads = metrics.get("downloads", 0)
         likes = metrics.get("likes", 0)
         rate = _format_rate(_per_day(item, downloads))
-        return f"下载 {downloads} · 点赞 {likes} · 下载增速约 {rate}/天"
+        return f"下载 {downloads} · 点赞 {likes} · +{rate}/天"
 
     if item.source == "arxiv":
         return "最新发布研究"
 
-    return "早期增长信号"
+    return "出现早期增长信号"
+
+
+def _report_date() -> str:
+    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    return now.strftime("%m月%d日")
+
+
+def _clean_text(value, fallback: str = "") -> str:
+    text = " ".join(str(value or "").split())
+    return text or fallback
 
 
 def build_feishu_message(items):
     lines = [
-        "🚀 **AI 新项目雷达｜今日早期热点**",
-        "",
-        f"> 本期发现 **{len(items)}** 个值得关注的新项目。",
-        "> 只看最近 14 天上线项目，优先最近 7 天且单位时间增长更快的早期项目。",
+        f"**{_report_date()} · 今日发现 {len(items)} 个新项目**",
+        "> 14 天内早期项目 · 优先 7 天内快速升温",
         "",
     ]
 
@@ -207,38 +216,41 @@ def build_feishu_message(items):
             "中",
         )
         business_score = _number(analysis.get("business_score", 0))
-        summary = analysis.get("summary") or "暂无 AI 分析摘要。"
+        summary = _clean_text(
+            analysis.get("summary"),
+            "暂无 AI 分析摘要。",
+        )
         source_name = SOURCE_NAMES.get(item.source, item.source)
         ideas = analysis.get("startup_ideas") or []
-        first_idea = str(ideas[0]).strip() if isinstance(ideas, list) and ideas else ""
+        first_idea = _clean_text(ideas[0]) if isinstance(ideas, list) and ideas else ""
+
+        title_line = f"**{index:02d}｜{item.title}**"
+        if item.url:
+            title_line += f"  [查看 →]({item.url})"
 
         lines.extend(
             [
-                "---",
-                f"**{index:02d}｜{item.title}**",
-                f"📍 来源：{source_name}",
-                f"🕒 {_format_age(item)}",
-                f"🔥 新项目热度：**{item.trend_score:.1f}/100**",
-                f"📈 早期信号：{_format_metrics(item)}",
-                f"💼 商业机会：**{opportunity}** · {business_score:.0f}/100",
-                f"🧠 AI 判断：{summary}",
+                title_line,
+                (
+                    f"`{source_name}` · {_format_age(item)}"
+                    f"　🔥 **{item.trend_score:.0f}**"
+                    f"　💼 **{business_score:.0f} · {opportunity}**"
+                ),
+                f"📈 {_format_metrics(item)}",
+                f"🧠 {summary}",
             ]
         )
 
         if first_idea:
-            lines.append(f"💡 可关注机会：{first_idea}")
+            lines.append(f"💡 {first_idea}")
 
-        lines.extend(
-            [
-                f"🔗 [查看项目]({item.url})" if item.url else "🔗 暂无项目链接",
-                "",
-            ]
-        )
+        if index != len(items):
+            lines.extend(["", "---", ""])
 
     lines.extend(
         [
-            "---",
-            "*说明：这里的“热度”强调早期增长速度，不代表历史累计热度。*",
+            "",
+            "*热度代表早期增长速度，不代表历史累计热度。*",
         ]
     )
 
