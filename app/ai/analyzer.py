@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime, timezone
 from typing import Dict, List
 
 from app.ai.client import (
@@ -35,15 +36,15 @@ OPPORTUNITY_MAP = {
     "low": "low",
 }
 
-METRIC_KEYS = (
-    "stars",
-    "forks",
-    "upvotes",
-    "comments",
-    "downloads",
-    "likes",
-    "momentum",
-)
+METRIC_LABELS = {
+    "stars": "星",
+    "forks": "分",
+    "upvotes": "票",
+    "comments": "评",
+    "downloads": "下",
+    "likes": "赞",
+    "momentum": "势",
+}
 
 
 def _local_trend_score(item: Dict) -> float:
@@ -71,33 +72,50 @@ def _fallback_result(item: Dict, reason: str = "") -> Dict:
     }
 
 
-def _compact_metrics(item: Dict) -> Dict:
+def _compact_metrics(item: Dict) -> str:
     metrics = item.get("metrics") or {}
     if not isinstance(metrics, dict):
         metrics = {}
 
-    result = {}
-    for key in METRIC_KEYS:
+    parts = []
+    for key, label in METRIC_LABELS.items():
         value = metrics.get(key, item.get(key))
         if value not in (None, "", 0, 0.0):
-            result[key] = value
+            parts.append(f"{label}={value}")
 
-    return result
+    return ";".join(parts)
 
 
-def _compact_item(item: Dict, index: int) -> Dict:
+def _age_hours(item: Dict):
+    created_at = item.get("created_at")
+    if not created_at:
+        return None
+
+    try:
+        created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return max(round((datetime.now(timezone.utc) - created).total_seconds() / 3600), 0)
+    except Exception:
+        return None
+
+
+def _compact_item(item: Dict, index: int) -> list:
     title = str(item.get("title") or "")[:MAX_TITLE_CHARS]
     description = " ".join(str(item.get("description") or "").split())
     description = description[:MAX_DESCRIPTION_CHARS]
+    source = str(item.get("source") or "")
 
-    return {
-        "序号": index,
-        "名称": title,
-        "简介": description,
-        "来源": SOURCE_NAMES.get(str(item.get("source") or ""), str(item.get("source") or "")),
-        "热度": round(float(item.get("trend_score") or 0), 1),
-        "指标": _compact_metrics(item),
-    }
+    # 顺序固定为：序号、名称、简介、来源、上线小时、热度、指标。
+    return [
+        index,
+        title,
+        description,
+        SOURCE_NAMES.get(source, source),
+        _age_hours(item),
+        round(float(item.get("trend_score") or 0), 1),
+        _compact_metrics(item),
+    ]
 
 
 def _extract_json_object(content: str) -> Dict:
@@ -122,14 +140,32 @@ def _extract_json_object(content: str) -> Dict:
             return {}
 
 
+def _read_result_row(row):
+    """读取紧凑数组格式，同时兼容旧字典格式。"""
+    if isinstance(row, list) and len(row) >= 5:
+        return {
+            "序号": row[0],
+            "摘要": row[1],
+            "商业分": row[2],
+            "机会": row[3],
+            "建议": row[4],
+        }
+
+    if isinstance(row, dict):
+        return row
+
+    return None
+
+
 def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Dict]:
     rows = raw.get("结果") if isinstance(raw, dict) else None
     if not isinstance(rows, list):
         return [_fallback_result(item, "模型返回格式无效") for item in items]
 
     by_index = {}
-    for row in rows:
-        if not isinstance(row, dict):
+    for raw_row in rows:
+        row = _read_result_row(raw_row)
+        if not row:
             continue
         try:
             index = int(row.get("序号"))
@@ -191,12 +227,13 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
     )
 
     prompt = (
-        "你是早期AI项目分析师。只依据项目简介、上线热度和早期指标判断，"
-        "不要因历史规模或品牌知名度加分。"
-        "请用简体中文分析每项，摘要不超过45字，建议不超过25字。"
-        "仅返回JSON，不要解释。格式："
-        '{"结果":[{"序号":1,"摘要":"...","商业分":0,"机会":"高|中|低","建议":"..."}]}。'
-        f"项目：{compact_json}"
+        "你是早期AI项目分析师。项目数组每项依次为"
+        "[序号,名称,简介,来源,上线小时,热度,指标]。"
+        "只看早期价值，不因历史规模或品牌加分。"
+        "每项用简体中文：摘要≤45字，建议≤25字。"
+        "只返回JSON："
+        '{"结果":[[序号,"摘要",商业分,"高|中|低","建议"]]}。'
+        f"项目={compact_json}"
     )
 
     output_tokens = min(max(int(LLM_MAX_TOKENS or 1), 1), MAX_OUTPUT_TOKENS)
