@@ -118,4 +118,32 @@ def test_batch_analyzer_uses_one_request_for_multiple_items(monkeypatch):
     prompt = FakeClient.calls[0]["messages"][0]["content"]
     assert "A" * 241 not in prompt
     assert "unused" not in prompt
-    assert FakeClient.calls[0]["max_tokens"] == analyzer.LLM_MAX_TOKENS
+    assert FakeClient.calls[0]["max_tokens"] == min(
+        analyzer.LLM_MAX_TOKENS,
+        analyzer.MAX_OUTPUT_TOKENS,
+    )
+
+
+def test_batch_analyzer_caps_old_environment_token_value(monkeypatch):
+    FakeClient.calls.clear()
+    monkeypatch.setattr(analyzer, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 1200)
+    monkeypatch.setattr(analyzer, "get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        analyzer,
+        "call_llm_with_retry",
+        lambda func: (func(), {"success": True, "usage": {}}),
+    )
+
+    analyzer.analyze_items(
+        [
+            {
+                "title": "项目一",
+                "description": "测试",
+                "metrics": {"stars": 10},
+                "trend_score": 80,
+            }
+        ]
+    )
+
+    assert FakeClient.calls[0]["max_tokens"] == 700
