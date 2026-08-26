@@ -23,21 +23,27 @@ def _env_int(name: str, default: int) -> int:
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 FEISHU_WEBHOOK = os.getenv("FEISHU_WEBHOOK")
 
-# 飞书自定义机器人官方请求体硬限制为 20 KB；项目默认使用 18 KiB 软预算，
-# 为 JSON 编码、标题和未来字段增长保留安全余量。
-FEISHU_MAX_PAYLOAD_BYTES = max(
-    _env_int("FEISHU_MAX_PAYLOAD_BYTES", 18 * 1024),
-    4096,
+# 飞书自定义机器人官方请求体硬限制为 20 KB。项目默认使用 18 KiB 软预算，
+# 同时硬性钳制在 20 KiB 以下，避免错误环境变量绕过发送前保护。
+FEISHU_MAX_PAYLOAD_BYTES = min(
+    max(_env_int("FEISHU_MAX_PAYLOAD_BYTES", 18 * 1024), 4096),
+    20 * 1024,
 )
 FEISHU_PROJECTS_PER_CARD = min(
     max(_env_int("FEISHU_PROJECTS_PER_CARD", 5), 1),
     5,
 )
 FEISHU_MAX_RETRIES = min(max(_env_int("FEISHU_MAX_RETRIES", 3), 1), 5)
-FEISHU_SEND_TIMEOUT_SECONDS = max(
-    _env_float("FEISHU_SEND_TIMEOUT_SECONDS", 10),
-    3,
+FEISHU_SEND_TIMEOUT_SECONDS = min(
+    max(_env_float("FEISHU_SEND_TIMEOUT_SECONDS", 10), 3),
+    60,
 )
+# 发送队列位于 Docker 持久化 data 目录；进程重启后可继续补发尚未成功的卡片。
+FEISHU_OUTBOX_DIR = (
+    os.getenv("FEISHU_OUTBOX_DIR", "./data/feishu-outbox")
+    or "./data/feishu-outbox"
+).strip()
+
 REPORT_LOCALE = (os.getenv("REPORT_LOCALE", "zh-CN") or "zh-CN").strip()
 REPORT_TIMEZONE = (
     os.getenv("REPORT_TIMEZONE", "Asia/Shanghai") or "Asia/Shanghai"
