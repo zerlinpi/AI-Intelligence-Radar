@@ -15,6 +15,7 @@ from app.cards.models import (
 from app.cleaner import normalize_items
 from app.config import FEISHU_PROJECTS_PER_CARD, REPORT_TIMEZONE
 from app.core.logger import get_logger
+from app.core.preflight import run_preflight
 from app.core.run_lock import execution_lock
 from app.database.session import SessionLocal, init_database
 from app.feishu import send_feishu_cards
@@ -66,12 +67,6 @@ OPPORTUNITY_NAMES = {
     "high": "高",
     "medium": "中",
     "low": "低",
-}
-
-RISK_MARKERS = {
-    "high": "🔴 高",
-    "medium": "🟠 中",
-    "low": "🟢 低",
 }
 
 POLICY_FOCUS_ORDER = (
@@ -142,6 +137,7 @@ def collect_policies():
 
 
 def fallback_analysis(item, error=None):
+    reason = str(error) if error else "AI 结构化分析未完成"
     if getattr(item, "category", "") == "policy":
         return {
             "purpose": "政策或审核要求暂无法生成，请查看官方原文。",
@@ -152,7 +148,8 @@ def fallback_analysis(item, error=None):
             "business_score": 50,
             "opportunity": "medium",
             "startup_ideas": ["核对官方原文并准备对应合规资料"],
-            "error": str(error) if error else None,
+            "error": reason,
+            "llm_meta": {"success": False, "fallback": True, "reason": reason},
         }
 
     original = " ".join(str(getattr(item, "description", "") or "").split())
@@ -162,8 +159,18 @@ def fallback_analysis(item, error=None):
         "business_score": 50,
         "opportunity": "medium",
         "startup_ideas": [],
-        "error": str(error) if error else None,
+        "error": reason,
+        "llm_meta": {"success": False, "fallback": True, "reason": reason},
     }
+
+
+def _analysis_is_fallback(analysis) -> bool:
+    if not isinstance(analysis, dict):
+        return True
+    meta = analysis.get("llm_meta") or {}
+    if isinstance(meta, dict) and meta.get("fallback") is True:
+        return True
+    return bool(analysis.get("error"))
 
 
 def _is_recent_item(item: RadarItem) -> bool:
@@ -179,7 +186,6 @@ def select_project_candidates(items):
 
     for raw_item in items:
         item = raw_item if isinstance(raw_item, RadarItem) else RadarItem.from_dict(raw_item)
-
         if not _is_recent_item(item):
             continue
 
@@ -189,14 +195,10 @@ def select_project_candidates(items):
 
         tags = priority_tags(item_data)
         priority_score = calculate_priority_score(item_data)
-
         item.metrics = dict(item.metrics or {})
         item.metrics["priority_tags"] = tags
         item.metrics["priority_score"] = priority_score
-        item.metrics["selection_score"] = round(
-            item.trend_score + priority_score,
-            2,
-        )
+        item.metrics["selection_score"] = round(item.trend_score + priority_score, 2)
         scored.append(item)
 
     scored.sort(
@@ -231,7 +233,6 @@ def select_policy_candidates(items):
 
     selected = []
     selected_ids = set()
-
     for focus in POLICY_FOCUS_ORDER:
         match = next((item for item in policies if _policy_focus(item) == focus), None)
         if match is not None:
@@ -258,15 +259,20 @@ def select_policy_candidates(items):
 
 
 def analyze_digest(projects, policies):
-    """政策与项目共用一次 DeepSeek 批量请求。"""
+    """政策与项目共用一次 DeepSeek 批量请求，并保证每条输入都有结果。"""
     combined = list(policies or []) + list(projects or [])
     if not combined:
         return
 
     try:
         analyses = analyze_items([item.to_dict() for item in combined])
-        for item, analysis in zip(combined, analyses):
-            item.analysis = analysis or fallback_analysis(item)
+        analyses = analyses if isinstance(analyses, list) else []
+        for index, item in enumerate(combined):
+            analysis = analyses[index] if index < len(analyses) else None
+            item.analysis = analysis if isinstance(analysis, dict) and analysis else fallback_analysis(
+                item,
+                f"模型结果缺少第 {index + 1} 条",
+            )
     except Exception as error:
         logger.exception("AI 批量分析失败，本轮使用降级结果")
         for item in combined:
@@ -318,28 +324,23 @@ def _format_rate(value: float) -> str:
 
 def _format_metrics(item: RadarItem) -> str:
     metrics = item.metrics or {}
-
     if item.source == "github":
         stars = metrics.get("stars", 0)
         forks = metrics.get("forks", 0)
         rate = _format_rate(_per_day(item, stars))
         return f"⭐ {stars} · Fork {forks} · +{rate} 星/天"
-
     if item.source in {"producthunt", "hackernews"}:
         upvotes = metrics.get("upvotes", 0)
         comments = metrics.get("comments", 0)
         rate = _format_rate(_per_day(item, upvotes))
         return f"▲ {upvotes} 票 · 评论 {comments} · +{rate} 票/天"
-
     if item.source == "huggingface":
         downloads = metrics.get("downloads", 0)
         likes = metrics.get("likes", 0)
         rate = _format_rate(_per_day(item, downloads))
         return f"下载 {downloads} · 点赞 {likes} · +{rate}/天"
-
     if item.source == "arxiv":
         return "最新发布研究"
-
     return "出现早期增长信号"
 
 
@@ -397,15 +398,27 @@ def _to_compliance_decision(item: RadarItem) -> ComplianceDecision:
         impact_score=_number(analysis.get("business_score", 50)),
         requirement=_clean_text(analysis.get("purpose"), item.description),
         impact=impact,
-        affected_products=_clean_text(
-            analysis.get("affected_products"),
-            "需依据官方原文确认具体适用产品与豁免范围。",
-        ) if focus == "产品合规审核" else "",
-        risk=_clean_text(analysis.get("risk"), impact) if focus == "产品合规审核" else "",
-        preparation=_clean_text(
-            analysis.get("preparation"),
-            action or "按官方要求整理对应测试、证书、注册或申报资料。",
-        ) if focus == "产品合规审核" else "",
+        affected_products=(
+            _clean_text(
+                analysis.get("affected_products"),
+                "需依据官方原文确认具体适用产品与豁免范围。",
+            )
+            if focus == "产品合规审核"
+            else ""
+        ),
+        risk=(
+            _clean_text(analysis.get("risk"), impact)
+            if focus == "产品合规审核"
+            else ""
+        ),
+        preparation=(
+            _clean_text(
+                analysis.get("preparation"),
+                action or "按官方要求整理对应测试、证书、注册或申报资料。",
+            )
+            if focus == "产品合规审核"
+            else ""
+        ),
         action=action,
     )
 
@@ -449,9 +462,7 @@ def _build_summary_actions(compliance, products):
         must_text = first.action or first.preparation or first.requirement
     elif ordered_policies:
         first = ordered_policies[0]
-        must_text = (
-            "今日无新增高风险事项；完成最高影响合规变化的适用范围核对。"
-        )
+        must_text = "今日无新增高风险事项；完成最高影响合规变化的适用范围核对。"
     else:
         must_text = "今日无新增高影响合规事项，维持常规审核与准入资料检查。"
 
@@ -465,9 +476,7 @@ def _build_summary_actions(compliance, products):
         focus_text = "关注 Amazon、CBP、CPSC、FDA、FCC 后续新增要求。"
 
     if top_product:
-        research_text = top_product.direction or (
-            f"研究 {top_product.title} 的产品化与跨境电商适配价值。"
-        )
+        research_text = top_product.direction or f"研究 {top_product.title} 的产品化与跨境电商适配价值。"
     else:
         research_text = "今日暂无达到优先展示阈值的新产品机会。"
 
@@ -484,7 +493,11 @@ def _build_daily_judgment(compliance, products) -> str:
     top_product = products[0] if products else None
 
     if high_risk:
-        authority = top_policy.authority or top_policy.source_name if top_policy else "美国合规"
+        authority = (
+            top_policy.authority or top_policy.source_name
+            if top_policy
+            else "美国合规"
+        )
         base = f"发现 {len(high_risk)} 项高风险合规变化，先处理 {authority} 相关准入或审核要求。"
     elif compliance:
         base = "今日有合规变化，但未发现新增高风险事项；先确认适用范围和资料完整性。"
@@ -500,7 +513,6 @@ def build_decision_model(items, policies=None) -> ReportDecisionModel:
     """将完整 AI 分析转换为飞书展示所需的结构化决策模型。"""
     items = list(items or [])
     policies = list(policies or [])
-
     compliance = [_to_compliance_decision(item) for item in policies]
     products = [_to_product_decision(item) for item in items]
 
@@ -540,6 +552,7 @@ def build_feishu_message(items, policies=None):
         "**🚨 今日合规重点**",
     ]
 
+    seen_groups = set()
     for decision in model.compliance:
         if decision.focus == "Amazon政策与审核":
             group_title = "A｜Amazon 政策与审核"
@@ -547,7 +560,12 @@ def build_feishu_message(items, policies=None):
             group_title = "B｜美国跨境进口新规"
         else:
             group_title = "C｜美国市场产品审核"
-        lines.extend(["", f"**{group_title}**", f"**{decision.source_name}｜{decision.title}**"])
+
+        if group_title not in seen_groups:
+            lines.extend(["", f"**{group_title}**"])
+            seen_groups.add(group_title)
+        lines.append(f"**{decision.source_name}｜{decision.title}**")
+
         if decision.focus == "产品合规审核":
             lines.extend([
                 f"**审核要求：** {decision.requirement}",
@@ -570,7 +588,6 @@ def build_feishu_message(items, policies=None):
 
     cross_border = [item for item in model.products if item.cross_border]
     other = [item for item in model.products if not item.cross_border]
-
     for title, group in (
         ("🎯 跨境电商直接相关项目", cross_border),
         ("🧪 其他可产品化 AI 信号", other),
@@ -591,21 +608,52 @@ def build_feishu_message(items, policies=None):
     return "\n".join(lines)
 
 
+def _base_result(execution_id: str, started: float, status: str, **extra):
+    result = {
+        "execution_id": execution_id,
+        "time": datetime.now(timezone.utc).isoformat(),
+        "duration": round(time.time() - started, 2),
+        "status": status,
+        "items": [],
+        "policies": [],
+        "feishu_cards": 0,
+        "feishu_sent": False,
+        "errors": [],
+    }
+    result.update(extra)
+    return result
+
+
 def _execute_daily_radar(execution_id: str, started: float):
-    init_database()
+    errors = []
+
+    try:
+        init_database()
+    except Exception as exc:
+        logger.exception("数据库初始化失败：执行编号=%s", execution_id)
+        return _base_result(
+            execution_id,
+            started,
+            "failed",
+            errors=[f"数据库初始化失败：{exc}"],
+        )
 
     items = collect_sources()
     policy_items = collect_policies()
 
-    cleaned = normalize_items([item.to_dict() for item in items])
-    radar_items = [RadarItem.from_dict(item) for item in cleaned]
+    try:
+        cleaned = normalize_items([item.to_dict() for item in items])
+        radar_items = [RadarItem.from_dict(item) for item in cleaned]
+    except Exception as exc:
+        logger.exception("数据清洗失败：执行编号=%s", execution_id)
+        return _base_result(
+            execution_id,
+            started,
+            "failed",
+            errors=[f"数据清洗失败：{exc}"],
+        )
 
     db = SessionLocal()
-    report = []
-    policy_report = []
-    saved_count = 0
-    card_count = 0
-
     try:
         new_items = filter_existing_items(db, radar_items)
         new_policies = filter_existing_items(db, policy_items)
@@ -616,61 +664,89 @@ def _execute_daily_radar(execution_id: str, started: float):
             len(policy_items),
             len(new_policies),
         )
+    except Exception as exc:
+        db.rollback()
+        db.close()
+        logger.exception("数据库去重失败：执行编号=%s", execution_id)
+        return _base_result(
+            execution_id,
+            started,
+            "failed",
+            errors=[f"数据库去重失败：{exc}"],
+        )
 
-        report = select_project_candidates(new_items)
-        policy_report = select_policy_candidates(new_policies)
-        analyze_digest(report, policy_report)
+    report = select_project_candidates(new_items)
+    policy_report = select_policy_candidates(new_policies)
+    analyze_digest(report, policy_report)
 
-        to_save = [item.to_dict() for item in policy_report + report]
-        saved_records = save_batch(db, to_save)
+    fallback_count = sum(
+        1
+        for item in policy_report + report
+        if _analysis_is_fallback(item.analysis)
+    )
+    if fallback_count:
+        errors.append(f"AI 分析降级 {fallback_count} 条")
+
+    saved_count = 0
+    eligible_to_save = [
+        item
+        for item in policy_report + report
+        if not _analysis_is_fallback(item.analysis)
+    ]
+    try:
+        saved_records = save_batch(db, [item.to_dict() for item in policy_report + report])
         saved_count = len(saved_records)
-
-        if saved_count != len(to_save):
-            logger.warning(
-                "数据库保存不完整：成功=%s 计划=%s 执行编号=%s",
-                saved_count,
-                len(to_save),
-                execution_id,
-            )
+        if saved_count != len(eligible_to_save):
+            message = f"数据库保存不完整：成功={saved_count} 计划={len(eligible_to_save)}"
+            logger.warning("%s 执行编号=%s", message, execution_id)
+            errors.append(message)
         else:
             logger.info(
                 "数据库保存完成：数量=%s 执行编号=%s",
                 saved_count,
                 execution_id,
             )
-    except Exception:
-        logger.exception("数据库阶段失败：执行编号=%s", execution_id)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("数据库保存阶段失败：执行编号=%s", execution_id)
+        errors.append(f"数据库保存阶段失败：{exc}")
     finally:
         db.close()
 
-    if report or policy_report:
-        try:
-            decision_model = build_decision_model(report, policy_report)
-            cards = build_daily_cards(
-                decision_model,
-                max_projects=FEISHU_PROJECTS_PER_CARD,
+    card_count = 0
+    feishu_sent = False
+    try:
+        decision_model = build_decision_model(report, policy_report)
+        cards = build_daily_cards(
+            decision_model,
+            max_projects=FEISHU_PROJECTS_PER_CARD,
+        )
+        card_count = len(cards)
+        feishu_sent = send_feishu_cards(
+            cards,
+            run_id=execution_id,
+            durable=True,
+        )
+        if feishu_sent:
+            logger.info(
+                "飞书日报发送成功：执行编号=%s 卡片=%s",
+                execution_id,
+                card_count,
             )
-            card_count = len(cards)
-            sent = send_feishu_cards(cards)
-            if sent:
-                logger.info(
-                    "飞书日报发送成功：执行编号=%s 卡片=%s",
-                    execution_id,
-                    card_count,
-                )
-            else:
-                logger.warning(
-                    "飞书日报存在发送失败：执行编号=%s 卡片=%s",
-                    execution_id,
-                    card_count,
-                )
-        except Exception:
-            logger.exception("飞书日报发送失败：执行编号=%s", execution_id)
+        else:
+            message = "飞书日报未全部送达，已保留持久化队列等待补发"
+            logger.warning("%s：执行编号=%s 卡片=%s", message, execution_id, card_count)
+            errors.append(message)
+    except Exception as exc:
+        logger.exception("飞书日报构建或发送失败：执行编号=%s", execution_id)
+        errors.append(f"飞书日报构建或发送失败：{exc}")
 
+    status = "success" if not errors else "partial"
     duration = round(time.time() - started, 2)
     logger.info(
-        "日报执行完成：执行编号=%s 耗时=%s秒 项目=%s 政策=%s 保存=%s 飞书卡片=%s",
+        "日报执行完成：执行编号=%s 状态=%s 耗时=%s秒 项目=%s 政策=%s 保存=%s 飞书卡片=%s",
         execution_id,
+        status,
         duration,
         len(report),
         len(policy_report),
@@ -682,9 +758,12 @@ def _execute_daily_radar(execution_id: str, started: float):
         "execution_id": execution_id,
         "time": datetime.now(timezone.utc).isoformat(),
         "duration": duration,
+        "status": status,
         "items": [item.to_dict() for item in report],
         "policies": [item.to_dict() for item in policy_report],
         "feishu_cards": card_count,
+        "feishu_sent": feishu_sent,
+        "errors": errors,
     }
 
 
@@ -703,11 +782,38 @@ def run_daily_radar():
                 "execution_id": execution_id,
                 "time": datetime.now(timezone.utc).isoformat(),
                 "duration": duration,
+                "status": "skipped",
                 "items": [],
                 "policies": [],
+                "feishu_cards": 0,
+                "feishu_sent": False,
+                "errors": [],
                 "skipped": True,
                 "reason": "已有任务正在运行",
             }
 
+        preflight = run_preflight()
+        if not preflight.ok:
+            logger.error(
+                "日报预检失败，已停止执行：执行编号=%s 失败项=%s",
+                execution_id,
+                "、".join(preflight.failures),
+            )
+            return _base_result(
+                execution_id,
+                started,
+                "failed",
+                errors=[f"生产预检失败：{name}" for name in preflight.failures],
+            )
+
         logger.info("日报开始执行：执行编号=%s", execution_id)
-        return _execute_daily_radar(execution_id, started)
+        try:
+            return _execute_daily_radar(execution_id, started)
+        except Exception as exc:
+            logger.exception("日报发生未捕获异常：执行编号=%s", execution_id)
+            return _base_result(
+                execution_id,
+                started,
+                "failed",
+                errors=[f"未捕获异常：{exc}"],
+            )
