@@ -258,6 +258,13 @@ def _dedupe_policy_topics(items):
     return kept, duplicate_count
 
 
+def _candidate_key(title: str, authority: str, link: str) -> str:
+    """候选字典在主题去重前也必须隔离监管机构，防止同名 CPSC/FDA/FCC 互相覆盖。"""
+    normalized = re.sub(r"\W+", "", str(title or "").lower())[:160]
+    authority_key = re.sub(r"\W+", "", str(authority or "").lower()) or "unknown"
+    return f"{authority_key}:{normalized or link}"
+
+
 def _recency_first_score(created: datetime, source_weight: int, relevance: int) -> float:
     """生成时间优先的内部排序键；每晚一小时都比旧内容优先，质量只用于同小时附近破平局。"""
     hour_rank = created.timestamp() / 3600
@@ -326,7 +333,7 @@ class PolicyCollector(BaseCollector):
                 age_hours = max((now - created).total_seconds() / 3600, 0)
                 score = _recency_first_score(created, source["weight"], relevance)
 
-                key = re.sub(r"\W+", "", title.lower())[:160] or link
+                key = _candidate_key(title, source["authority"], link)
                 existing = candidates.get(key)
                 if existing:
                     existing_time = existing.get("created_at") or ""
