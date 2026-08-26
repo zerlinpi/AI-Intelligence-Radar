@@ -22,6 +22,21 @@ HIGHLIGHT_MARKERS = (
     "**准备资料：**",
 )
 
+# 展示层再做一次轻量截断，避免 DeepSeek 回答正确但过长，影响日报扫读效率。
+LINE_LIMITS = {
+    "**审核简报：**": 120,
+    "**重点影响产品：**": 100,
+    "**优先准备：**": 110,
+    "**审核要求：**": 120,
+    "**影响产品：**": 90,
+    "**风险：**": 100,
+    "**准备资料：**": 110,
+    "**建议动作：**": 80,
+    "**产品描述：**": 140,
+    "**价值判断：**": 110,
+    "**可借鉴方向：**": 90,
+}
+
 
 def _markdown_element(content: str) -> dict:
     return {
@@ -31,6 +46,29 @@ def _markdown_element(content: str) -> dict:
             "content": content,
         },
     }
+
+
+def _compact_line(line: str) -> str:
+    """只压缩字段值，不破坏字段名和 Markdown 结构。"""
+    for marker, limit in LINE_LIMITS.items():
+        if marker not in line:
+            continue
+
+        prefix, value = line.split(marker, 1)
+        value = value.strip()
+        wrapped_bold = value.startswith("**") and value.endswith("**") and len(value) >= 4
+        if wrapped_bold:
+            value = value[2:-2].strip()
+
+        if len(value) > limit:
+            value = value[: max(limit - 1, 1)].rstrip() + "…"
+
+        if wrapped_bold:
+            value = f"**{value}**"
+
+        return f"{prefix}{marker} {value}".rstrip()
+
+    return line
 
 
 def _highlight_element(content: str) -> dict:
@@ -56,7 +94,7 @@ def _highlight_element(content: str) -> dict:
 
 
 def build_card_elements(message: str) -> list:
-    """把一整段日报拆成普通内容、分隔线和带背景色的高亮块。"""
+    """把日报拆成普通内容、分隔线和带背景色的高亮块。"""
     elements = []
     buffer = []
 
@@ -68,7 +106,8 @@ def build_card_elements(message: str) -> list:
         if content:
             elements.append(_markdown_element(content))
 
-    for line in str(message or "").splitlines():
+    for raw_line in str(message or "").splitlines():
+        line = _compact_line(raw_line)
         stripped = line.strip()
 
         if stripped == "---":
