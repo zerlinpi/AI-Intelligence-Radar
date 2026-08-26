@@ -19,15 +19,14 @@ from app.core.logger import get_logger
 
 logger = get_logger("AI分析")
 
-# 输入仍做必要去噪，但不再为了省 Token 过度截断有效上下文。
-MAX_PROJECT_DESCRIPTION_CHARS = 520
-MAX_POLICY_DESCRIPTION_CHARS = 900
-MAX_TITLE_CHARS = 140
+# DeepSeek V4 Pro 上下文足够大。这里只保留防止异常抓取内容无限膨胀的安全预算，
+# 不再用几百字符的限制损失论文摘要、模型标签和项目技术说明。
+MAX_PROJECT_DESCRIPTION_CHARS = 6000
+MAX_POLICY_DESCRIPTION_CHARS = 12000
+MAX_TITLE_CHARS = 500
 MAX_BATCH_ITEMS = 14
 
-# DeepSeek V4 Pro 官方当前最大输出为 384K Token。
-# 项目默认通过 LLM_MAX_TOKENS 使用 131072；这里仅保留模型能力硬上限，
-# 以后需要更高预算时只改环境变量即可，无需再次改分析器代码。
+# DeepSeek V4 Pro 模型能力硬上限；实际请求仍由 LLM_MAX_TOKENS 控制。
 MAX_OUTPUT_TOKENS = 384000
 
 SOURCE_NAMES = {
@@ -61,6 +60,8 @@ METRIC_LABELS = {
     "likes": "赞",
     "momentum": "势",
     "policy_score": "政",
+    "opportunity_score": "机",
+    "selection_score": "选",
 }
 
 
@@ -75,11 +76,11 @@ def _is_policy(item: Dict) -> bool:
     return str(item.get("category") or "").lower() == "policy"
 
 
-def _clean_original_description(item: Dict, limit: int = 360) -> str:
-    """在模型异常时尽量保留数据源自己的有效说明，而不是展示空占位。"""
+def _clean_original_description(item: Dict) -> str:
+    """模型异常时保留数据源原始说明，不主动截断业务正文。"""
     description = " ".join(str(item.get("description") or "").split())
     if description:
-        return description[:limit]
+        return description
 
     title = " ".join(str(item.get("title") or "").split())
     if title:
@@ -121,12 +122,10 @@ def _fallback_result(item: Dict, reason: str = "") -> Dict:
     if tag_text:
         summary = (
             f"本条 AI 深度分析未完成；本地筛选已将其识别为“{tag_text}”候选，"
-            "可先结合原始说明与增长信号判断是否继续跟进。"
+            "可先结合原始说明、技术信号和增长数据判断是否继续跟进。"
         )
     else:
-        summary = (
-            "本条 AI 深度分析未完成；可先结合项目原始说明与增长信号判断是否继续跟进。"
-        )
+        summary = "本条 AI 深度分析未完成；可先结合项目原始说明与增长信号判断是否继续跟进。"
 
     return {
         "purpose": f"项目原始说明：{original}",
@@ -159,7 +158,23 @@ def _compact_metrics(item: Dict) -> str:
 
     tags = metrics.get("priority_tags") or []
     if isinstance(tags, list) and tags:
-        parts.append("标=" + "/".join(str(tag) for tag in tags[:2]))
+        parts.append("标=" + "/".join(str(tag) for tag in tags))
+
+    dimensions = metrics.get("opportunity_dimensions") or {}
+    if isinstance(dimensions, dict) and dimensions:
+        dimension_labels = {
+            "cross_border": "跨",
+            "technical_frontier": "技",
+            "hardware_enablement": "硬",
+            "physical_product": "实",
+        }
+        dimension_text = "/".join(
+            f"{dimension_labels.get(key, key)}{value}"
+            for key, value in dimensions.items()
+            if value not in (None, "", 0, 0.0)
+        )
+        if dimension_text:
+            parts.append("维=" + dimension_text)
 
     if _is_policy(item):
         focus = str(metrics.get("policy_focus") or "").strip()
@@ -386,37 +401,41 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
 
 def _build_prompt(compact_json: str) -> str:
     return (
-        "你是美国跨境电商合规与早期AI产品分析师。数组每项为"
+        "你是美国跨境电商合规、早期技术和产品机会分析师。数组每项为"
         "[序号,类型(政/项),名称,简介,来源,时间小时,热度,指标]。"
-        "总原则：完整、准确、有决策价值优先，不要为了精简而省略关键条件、适用对象、"
-        "产品类别、日期、阈值、证书、测试要求或实际经营影响；同时避免重复、空话和泛泛而谈。"
-        "类型=政时，优先级依次是Amazon政策与审核、美国进口清关新规、美国市场产品合规审核。"
-        "Amazon重点看商品合规、Testing/Inspection/Certification、Account Health、"
-        "Listing前置审核、受限产品、e-mobility/儿童用品/膳食补充剂等高风险品类。"
-        "美国进口重点看CBP、关税、de minimis、电子申报、进口商责任。"
-        "产品审核重点看CPSC的CPC/GCC/eFiling与实验室测试、FDA的注册/产品列名/进口要求、"
-        "FCC的RF设备Equipment Authorization。"
-        "政策用途建议80-140字：说明政策或审核到底改了什么、适用什么产品/卖家，"
-        "尽量保留生效日期、阈值、测试标准、证书或注册要求；信息不足时不得编造。"
-        "政策判断建议70-120字：说明对美国销售、上架、进口、清关或账号的具体影响，"
-        "以及不处理可能造成的后果。"
-        "政策建议建议40-80字：给出最优先的实际动作。"
-        "若指标中焦=产品合规审核，必须额外拆分三个字段："
-        "影响产品建议30-90字，只写官方信息能够支持的具体产品类别、功能特征、设备类型或适用范围；"
-        "风险建议40-100字，单独说明不满足要求可能造成的上架、进口、清关、召回、整改或执法后果，"
-        "不确定时使用可能/需核实，不得把推测写成事实；"
-        "准备资料建议40-110字，列出需要核对或准备的测试报告、CPC/GCC、eFiling字段、FDA注册/列名、"
-        "FCC授权、标签、说明书或其他资料，只保留与该条规则相关的内容。"
-        "若不是产品合规审核，影响产品、风险、准备资料三个字段返回空字符串。"
-        "类型=项时，重点判断Amazon、Shopify、TikTok Shop、独立站、选品、Listing、广告、"
-        "本地化、客服、SEO、竞品、定价、物流、库存、评论、达人营销，以及是否能成为SaaS、"
-        "Agent、插件、API或自动化产品。"
-        "项目用途建议90-150字：完整说明目标用户、核心功能、输入输出/工作方式、"
-        "解决的问题和至少一个典型跨境电商使用场景，让读者不用打开链接也知道项目做什么。"
-        "项目判断建议60-100字：综合早期增长信号、用户价值、跨境电商适配度、"
-        "竞争壁垒和产品化/付费潜力，说明为什么值得关注或为什么暂不值得追。"
-        "项目建议建议35-70字：给出最值得借鉴、组合或开发的具体产品方向，"
-        "尽量说明面向哪类卖家或运营环节。"
+        "总原则：完整、准确、有决策价值优先；不要为了精简而省略关键条件，也不要为了写长而重复。"
+        "所有判断必须基于提供的数据；证据不足时明确写需验证，不得把猜测或营销措辞写成事实。"
+        "类型=政时，优先分析Amazon政策与审核、美国进口清关新规、美国市场产品合规审核。"
+        "Amazon重点看商品合规、Testing/Inspection/Certification、Account Health、Listing前置审核、"
+        "受限产品和高风险品类；美国进口重点看CBP、关税、de minimis、电子申报、进口商责任；"
+        "产品审核重点看CPSC的CPC/GCC/eFiling与实验室测试、FDA注册/产品列名/进口要求、"
+        "FCC RF设备Equipment Authorization。"
+        "政策用途必须说明政策到底改了什么、适用什么产品/卖家，并尽量保留生效日期、阈值、"
+        "测试标准、证书、注册或申报要求；政策判断说明对美国销售、上架、进口、清关或账号的具体影响；"
+        "政策建议给出最优先的实际动作。"
+        "若指标中焦=产品合规审核，必须额外拆分影响产品、风险、准备资料三个字段。"
+        "影响产品只写官方信息能够支持的具体产品类别、功能特征、设备类型或适用范围；"
+        "风险单独说明不满足要求可能造成的上架、进口、清关、召回、整改或执法后果；"
+        "准备资料列出与该规则直接相关的测试报告、CPC/GCC、eFiling字段、FDA注册/列名、FCC授权、"
+        "标签、说明书或其他资料。若不是产品合规审核，这三个字段返回空字符串。"
+        "类型=项时，不得只按热度和发布时间判断。必须同时审视四条机会路径："
+        "第一，跨境电商实用性：是否能直接改善Amazon、Shopify、TikTok Shop、独立站的选品、Listing、"
+        "广告、SEO、本地化、客服、竞品、定价、物流、库存、评论、达人营销或运营自动化；"
+        "第二，技术前沿/工程创新：是否提出新的Agent、Memory、RAG、推理、模型、运行时、编译、"
+        "多模态、机器人、视觉/语音或开发框架范式，是否能显著降低成本或提升能力。"
+        "只有材料能支持时才能称为首创/突破，不得因为标题出现novel/new就自动判定开创性；"
+        "第三，硬件开发价值：是否可用于嵌入式、MCU、BLE/IoT、边缘AI、传感器、摄像头、机器人、"
+        "运动控制、语音、视觉或其他真实硬件系统；"
+        "第四，美国市场实体商品机会：技术是否能形成或升级消费者可购买的家居、厨房、宠物、运动、"
+        "户外、汽车、工具、穿戴、健康辅助、智能设备等实体产品，并说明实现路径及工程/合规不确定性。"
+        "GitHub项目重点看代码是否真实可复用、工程门槛和开发效率；Hugging Face模型重点看模型任务能力、"
+        "部署条件、端侧/边缘可能性和可嵌入产品的场景；arXiv重点看研究新颖性、可复现性、技术成熟度及"
+        "从论文到产品还缺什么。Product Hunt重点看用户需求和现有产品验证。"
+        "商业分不是‘电商相关度分’：只要四条路径中至少一条价值强、落地路径清晰，就可以高分；"
+        "但仅有热度、普通套壳、没有技术差异或没有真实使用路径的项目不应高分。"
+        "用途字段要让读者不用打开链接也能知道目标用户、核心能力、输入输出/工作方式和实际场景；"
+        "判断字段要说明为什么值得或不值得关注，并明确属于跨境、技术前沿、硬件或实体商品中的哪条价值；"
+        "建议字段给出最值得验证、组合、开发或商品化的具体下一步。"
         "不要因历史规模或品牌知名度加分。必须返回合法 JSON，且不得遗漏输入中的任何序号。"
         "JSON结构严格为："
         '{"结果":[[序号,"用途","判断",分数,"高|中|低","建议","影响产品","风险","准备资料"]]}。'
@@ -447,8 +466,6 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
         }
 
         if str(LLM_PROVIDER or "").lower() == "deepseek":
-            # 日报是离线决策分析，不追求秒级响应。启用 V4 Pro 思考模式并使用最大推理强度，
-            # 让模型充分分析政策适用范围、合规风险和产品商业价值。
             kwargs["reasoning_effort"] = "max"
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
         else:
@@ -461,8 +478,6 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
         for index, item in enumerate(items, start=1)
     ]
 
-    # 单次请求已经允许最长 15 分钟，不再因为 timeout 自动重复整个批次。
-    # 如果响应成功但 JSON 为空或漏项，后续才做针对性恢复。
     response, meta = call_llm_with_retry(
         lambda: request_for(compact_items),
         retries=1,
@@ -480,7 +495,6 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
         finish_reason = getattr(choice, "finish_reason", "") or ""
         parsed = _extract_json_object(content)
 
-        # DeepSeek 官方说明 JSON Output 偶发可能返回空 content。
         if not parsed:
             logger.warning(
                 "模型首次结构化结果无效，尝试恢复一次：结束原因=%s",
@@ -498,7 +512,6 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
                 finish_reason = getattr(choice, "finish_reason", "") or ""
                 parsed = _extract_json_object(content)
 
-        # 整体 JSON 有效但遗漏个别序号时，只重试缺失项目，避免已有结果被降级。
         present = _result_indexes(parsed)
         missing_indexes = [
             index
