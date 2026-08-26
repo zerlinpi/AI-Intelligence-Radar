@@ -213,10 +213,15 @@ def _topic_tokens(title: str):
 
 
 def _same_policy_topic(left: dict, right: dict) -> bool:
-    """判断两条政策标题是否在同一板块描述同一主题。"""
+    """同一监管机构、同一板块内才允许按标题相似度判为同一政策主题。"""
     left_metrics = left.get("metrics") or {}
     right_metrics = right.get("metrics") or {}
     if left_metrics.get("policy_focus") != right_metrics.get("policy_focus"):
+        return False
+
+    left_authority = str(left_metrics.get("policy_authority") or "").strip().lower()
+    right_authority = str(right_metrics.get("policy_authority") or "").strip().lower()
+    if left_authority and right_authority and left_authority != right_authority:
         return False
 
     left_title = re.sub(r"\W+", " ", str(left.get("title") or "").lower()).strip()
@@ -237,7 +242,7 @@ def _same_policy_topic(left: dict, right: dict) -> bool:
 
 
 def _dedupe_policy_topics(items):
-    """同一政策主题只保留发布时间最新的一条。"""
+    """同一监管机构的同一政策主题只保留发布时间最新的一条。"""
     ordered = sorted(
         items,
         key=lambda item: item.get("created_at") or "",
