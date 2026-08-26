@@ -5,19 +5,19 @@ set -e
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-echo "== AI Intelligence Radar Installation Check =="
+echo "== AI 情报雷达安装检查 =="
 
 if ! command -v python >/dev/null 2>&1; then
-  echo "Python is required"
+  echo "缺少 Python，无法继续检查"
   exit 1
 fi
 
 python --version
 
 if [ -f .env ]; then
-  echo "Environment file: OK"
+  echo "环境配置文件：正常"
 else
-  echo "Warning: .env not found. Copy .env.example to .env first."
+  echo "提醒：未找到 .env，请先从 .env.example 复制并完成配置。"
 fi
 
 python - <<'PY'
@@ -37,12 +37,12 @@ for module in modules:
         missing.append(module)
 
 if missing:
-    print("Missing modules:", ", ".join(missing))
+    print("缺少 Python 模块：", ", ".join(missing))
     raise SystemExit(1)
 
-print("Python dependencies: OK")
+print("Python 依赖：正常")
 PY
 
 python -m app.cli check
 
-echo "Installation check completed successfully"
+echo "安装检查完成"
