@@ -3,9 +3,19 @@ import time
 from openai import OpenAI
 
 from app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from app.core.logger import get_logger
 
+
+logger = get_logger("模型客户端")
 
 NON_RETRYABLE_STATUS_CODES = {400, 401, 403, 404, 422}
+
+# DeepSeek 已于 2026-07-24 停止旧模型名。保留自动映射，避免服务器旧 .env
+# 继续使用 deepseek-chat / deepseek-reasoner 时整批分析直接降级。
+LEGACY_MODEL_ALIASES = {
+    "deepseek-chat": "deepseek-v4-flash",
+    "deepseek-reasoner": "deepseek-v4-flash",
+}
 
 
 def get_llm_client() -> OpenAI:
@@ -24,17 +34,28 @@ def get_llm_client() -> OpenAI:
             "缺少模型接口地址，请配置 LLM_BASE_URL。"
         )
 
+    # 当前日报一次最多分析 14 条内容，完整输出可能明显超过旧版 45 秒。
     return OpenAI(
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
-        timeout=45.0,
+        timeout=180.0,
         max_retries=0,
     )
 
 
 def get_llm_model() -> str:
-    """返回当前配置的模型名称。"""
-    return LLM_MODEL
+    """返回当前有效模型名称，并兼容已经停用的 DeepSeek 旧别名。"""
+    configured = str(LLM_MODEL or "").strip()
+    resolved = LEGACY_MODEL_ALIASES.get(configured, configured)
+
+    if resolved != configured:
+        logger.warning(
+            "检测到已停用模型名 %s，自动切换为 %s；请同步更新 .env",
+            configured,
+            resolved,
+        )
+
+    return resolved
 
 
 def get_llm_model_usage(response):
