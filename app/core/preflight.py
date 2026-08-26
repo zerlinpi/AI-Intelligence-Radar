@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.config import (
     DATABASE_URL,
     FEISHU_MAX_PAYLOAD_BYTES,
+    FEISHU_OUTBOX_DIR,
     FEISHU_WEBHOOK,
     LLM_API_KEY,
     LLM_BASE_URL,
@@ -95,11 +96,22 @@ def _database_path_check() -> PreflightCheck:
         return PreflightCheck("数据库目录可写", False, str(exc))
 
 
+def _directory_check(name: str, value: str) -> PreflightCheck:
+    try:
+        path = Path(str(value or "")).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        writable = os.access(path, os.W_OK)
+        return PreflightCheck(name, bool(writable), str(path.resolve()))
+    except Exception as exc:
+        return PreflightCheck(name, False, str(exc))
+
+
 def run_preflight() -> PreflightResult:
     checks: List[PreflightCheck] = []
 
     checks.append(_database_check())
     checks.append(_database_path_check())
+    checks.append(_directory_check("飞书持久化队列目录", FEISHU_OUTBOX_DIR))
 
     checks.append(
         PreflightCheck(
@@ -158,9 +170,7 @@ def run_preflight() -> PreflightResult:
     except ZoneInfoNotFoundError:
         timezone_ok = False
         timezone_detail = f"未知时区：{REPORT_TIMEZONE}"
-    checks.append(
-        PreflightCheck("日报时区", timezone_ok, timezone_detail)
-    )
+    checks.append(PreflightCheck("日报时区", timezone_ok, timezone_detail))
 
     checks.extend(
         [
