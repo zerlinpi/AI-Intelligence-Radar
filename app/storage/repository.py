@@ -51,7 +51,6 @@ def _analysis_is_fallback(value) -> bool:
     if meta.get("fallback") is True:
         return True
 
-    # 兼容较早版本由主流程生成、尚未带 llm_meta 的降级结果。
     if analysis.get("error"):
         return True
 
@@ -75,6 +74,11 @@ def _find_by_url(db: Session, url: str):
         .filter(IntelligenceItem.url == url)
         .first()
     )
+
+
+def _is_material_update(data: dict) -> bool:
+    metrics = _safe_dict(data.get("metrics"))
+    return metrics.get("history_material_update") is True
 
 
 def _fill_record(record: IntelligenceItem, data: dict):
@@ -108,12 +112,29 @@ def save_item(db: Session, item):
 
     url = data.get("url", "") or ""
     existing = _find_by_url(db, url) if url else None
+    material_update = _is_material_update(data)
 
-    # 旧记录若是模型失败的降级结果，本次成功分析后直接原地覆盖，
-    # 避免 unique URL 约束产生重复记录或让失败结果永久封死。
-    if existing is not None and _analysis_is_fallback(getattr(existing, "analysis", {})):
+    # 两种情况必须原地覆盖：
+    # 1) 旧记录是 AI fallback，本轮成功后替换失败快照；
+    # 2) 历史新颖性判断确认同 URL 存在重大更新，用最新快照替换旧快照。
+    if existing is not None and (
+        _analysis_is_fallback(getattr(existing, "analysis", {}))
+        or material_update
+    ):
         record = _fill_record(existing, data)
-        logger.info("覆盖旧降级记录：标题=%s 链接=%s", record.title, record.url)
+        reason = str((_safe_dict(data.get("metrics"))).get("history_material_update_reason") or "")
+        if material_update:
+            logger.info(
+                "覆盖重大更新历史快照：标题=%s 链接=%s 原因=%s",
+                record.title,
+                record.url,
+                reason or "检测到实质更新",
+            )
+        else:
+            logger.info("覆盖旧降级记录：标题=%s 链接=%s", record.title, record.url)
+    elif existing is not None:
+        # 正常成功记录不应重复插入，避免触发 URL 唯一键异常。
+        return existing
     else:
         record = _fill_record(IntelligenceItem(), data)
 
@@ -153,9 +174,9 @@ def save_batch(db: Session, items: list):
         url = data.get("url", "") or ""
         title = data.get("title", "") or ""
         analysis = _safe_dict(data.get("analysis"))
+        material_update = _is_material_update(data)
 
-        # AI 失败不等于该项目已处理完成。失败条目仍可发到飞书作为降级展示，
-        # 但不新建“成功历史”；已有旧 fallback 也保留为可重试状态。
+        # AI 失败不等于该项目已处理完成；失败记录不进入成功历史，方便后续自动重试。
         if _analysis_is_fallback(analysis):
             logger.warning(
                 "未保存AI降级结果，后续将自动重试：标题=%s 链接=%s",
@@ -165,7 +186,7 @@ def save_batch(db: Session, items: list):
             continue
 
         try:
-            if not exists(db, url):
+            if material_update or not exists(db, url):
                 saved.append(save_item(db, item))
         except Exception:
             db.rollback()
