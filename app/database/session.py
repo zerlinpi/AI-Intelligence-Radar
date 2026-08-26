@@ -83,4 +83,10 @@ def get_session():
 
 
 def init_database():
+    """初始化表结构，并在文件型 SQLite 进入本轮写入前创建一致性备份。"""
     Base.metadata.create_all(engine)
+
+    # 延迟导入避免数据库模块加载阶段形成循环依赖。
+    from app.database.backup import backup_database
+
+    return backup_database()
