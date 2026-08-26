@@ -1,6 +1,6 @@
-"""Production scheduler for AI Intelligence Radar.
+"""生产环境定时调度器。
 
-Runs the daily radar pipeline automatically.
+每天自动执行 AI 情报日报流程。
 """
 
 import os
@@ -12,7 +12,7 @@ from app.pipeline import run_daily_radar
 from app.core.logger import get_logger
 
 
-logger = get_logger("scheduler")
+logger = get_logger("调度器")
 
 
 def _read_schedule_value(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -21,11 +21,11 @@ def _read_schedule_value(name: str, default: int, minimum: int, maximum: int) ->
     try:
         value = int(raw)
     except (TypeError, ValueError):
-        logger.warning("invalid %s=%r; using default=%s", name, raw, default)
+        logger.warning("配置无效：%s=%r，已使用默认值=%s", name, raw, default)
         return default
 
     if value < minimum or value > maximum:
-        logger.warning("out-of-range %s=%s; using default=%s", name, value, default)
+        logger.warning("配置超出范围：%s=%s，已使用默认值=%s", name, value, default)
         return default
 
     return value
@@ -40,20 +40,20 @@ _job_lock = threading.Lock()
 
 
 def daily_radar_job():
-    """Execute radar pipeline with duplicate-run protection."""
+    """执行日报并避免同一进程内重复运行。"""
     if not _job_lock.acquire(blocking=False):
-        logger.warning("daily radar job skipped: previous execution still running")
+        logger.warning("定时日报已跳过：上一轮任务仍在运行")
         return
 
     try:
-        logger.info("daily radar job started")
+        logger.info("定时日报开始执行")
         result = run_daily_radar() or {}
         logger.info(
-            "daily radar job finished, items=%s",
+            "定时日报执行结束：项目数量=%s",
             len(result.get("items", [])) if isinstance(result, dict) else 0,
         )
     except Exception:
-        logger.exception("daily radar job failed")
+        logger.exception("定时日报执行失败")
     finally:
         _job_lock.release()
 
@@ -76,7 +76,7 @@ def start_scheduler():
 
     scheduler.start()
     logger.info(
-        "scheduler started at %02d:%02d daily",
+        "调度器已启动：每天 %02d:%02d 执行",
         RUN_HOUR,
         RUN_MINUTE,
     )
@@ -85,3 +85,4 @@ def start_scheduler():
 def stop_scheduler():
     if scheduler.running:
         scheduler.shutdown()
+        logger.info("调度器已停止")
