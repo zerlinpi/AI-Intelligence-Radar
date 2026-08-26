@@ -53,6 +53,7 @@ def test_collect_streamed_chat_completion_merges_reasoning_content_and_usage():
         prompt_tokens=120,
         completion_tokens=80,
         total_tokens=200,
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=55),
     )
     stream = [
         SimpleNamespace(
@@ -102,6 +103,7 @@ def test_collect_streamed_chat_completion_merges_reasoning_content_and_usage():
     assert client.get_llm_model_usage(response) == {
         "prompt_tokens": 120,
         "completion_tokens": 80,
+        "reasoning_tokens": 55,
         "total_tokens": 200,
     }
 
@@ -140,6 +142,7 @@ def test_deepseek_client_forces_streaming_and_collects(monkeypatch):
                         prompt_tokens=10,
                         completion_tokens=5,
                         total_tokens=15,
+                        completion_tokens_details=SimpleNamespace(reasoning_tokens=3),
                     ),
                 ),
             ]
@@ -166,3 +169,4 @@ def test_deepseek_client_forces_streaming_and_collects(monkeypatch):
     assert response.choices[0].message.content == '{"结果":[]}'
     assert response.choices[0].message.reasoning_content == "分析中"
     assert response.usage.total_tokens == 15
+    assert client.get_llm_model_usage(response)["reasoning_tokens"] == 3
