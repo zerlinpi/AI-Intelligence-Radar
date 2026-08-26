@@ -11,6 +11,12 @@ API = "https://api.github.com/search/repositories"
 
 logger = get_logger("collector.github")
 
+SEARCH_TERMS = (
+    "topic:ai",
+    "llm in:name,description",
+    '"ai agent" in:name,description',
+)
+
 
 class GithubCollector(BaseCollector):
     name = "github"
@@ -24,37 +30,59 @@ class GithubCollector(BaseCollector):
 
         now = datetime.now(timezone.utc)
         since = (now - timedelta(days=7)).date().isoformat()
-        fetch_limit = min(max(limit * 5, 30), 100)
+        fetch_limit = min(max(limit * 3, 20), 50)
 
-        params = {
-            "q": f"topic:ai created:>={since} stars:>=5",
-            "sort": "stars",
-            "order": "desc",
-            "per_page": fetch_limit,
-        }
+        candidates = {}
 
-        response = requests.get(
-            API,
-            headers=headers,
-            params=params,
-            timeout=20,
-        )
-        response.raise_for_status()
+        for search_term in SEARCH_TERMS:
+            params = {
+                "q": (
+                    f"{search_term} created:>={since} stars:>=5 fork:false"
+                ),
+                "sort": "stars",
+                "order": "desc",
+                "per_page": fetch_limit,
+            }
 
-        payload = response.json()
-        if not isinstance(payload, dict):
-            logger.warning("github api returned invalid payload")
-            return []
+            try:
+                response = requests.get(
+                    API,
+                    headers=headers,
+                    params=params,
+                    timeout=20,
+                )
+                response.raise_for_status()
 
-        items = payload.get("items", [])
-        if not isinstance(items, list):
-            return []
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    logger.warning(
+                        "github api returned invalid payload query=%s",
+                        search_term,
+                    )
+                    continue
 
-        result = []
-        for item in items:
-            if not isinstance(item, dict):
+                items = payload.get("items", [])
+                if not isinstance(items, list):
+                    continue
+
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+
+                    key = item.get("id") or item.get("html_url")
+                    if key:
+                        candidates[key] = item
+
+            except Exception:
+                logger.exception(
+                    "github search failed query=%s",
+                    search_term,
+                )
                 continue
 
+        result = []
+
+        for item in candidates.values():
             created_at = item.get("created_at")
             if not created_at:
                 continue
@@ -97,6 +125,13 @@ class GithubCollector(BaseCollector):
             key=lambda x: (x.get("metrics") or {}).get("momentum", 0),
             reverse=True,
         )
+
+        logger.info(
+            "github recent candidates=%s selected=%s",
+            len(candidates),
+            min(len(result), limit),
+        )
+
         return result[:limit]
 
 
