@@ -11,12 +11,30 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.pipeline import run_daily_radar
 from app.core.logger import get_logger
 
+
 logger = get_logger("scheduler")
+
+
+def _read_schedule_value(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name, str(default))
+
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("invalid %s=%r; using default=%s", name, raw, default)
+        return default
+
+    if value < minimum or value > maximum:
+        logger.warning("out-of-range %s=%s; using default=%s", name, value, default)
+        return default
+
+    return value
+
 
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
-RUN_HOUR = int(os.getenv("RADAR_RUN_HOUR", "8"))
-RUN_MINUTE = int(os.getenv("RADAR_RUN_MINUTE", "0"))
+RUN_HOUR = _read_schedule_value("RADAR_RUN_HOUR", 8, 0, 23)
+RUN_MINUTE = _read_schedule_value("RADAR_RUN_MINUTE", 0, 0, 59)
 
 _job_lock = threading.Lock()
 
