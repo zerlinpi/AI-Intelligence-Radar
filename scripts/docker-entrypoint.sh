@@ -1,14 +1,14 @@
 #!/bin/sh
 set -e
 
-# Run database migration before starting application
+# 启动应用前先执行数据库迁移。
 if [ -f scripts/migrate_db.py ]; then
-  echo "Running database migration..."
+  echo "正在执行数据库迁移..."
   python scripts/migrate_db.py || {
-    echo "Database migration failed"
+    echo "数据库迁移失败"
     exit 1
   }
 fi
 
-echo "Starting AI Intelligence Radar..."
+echo "正在启动 AI 情报雷达..."
 exec "$@"
