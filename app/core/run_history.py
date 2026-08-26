@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.config import RUN_HISTORY_FILE, RUN_HISTORY_LIMIT
+from app.core.logger import get_logger
+
+
+logger = get_logger("运行历史")
 
 
 def _history_path() -> Path:
@@ -78,6 +82,15 @@ def record_run(result: Dict) -> Dict:
     keep = max(int(RUN_HISTORY_LIMIT or 100), 10)
     _atomic_write(path, history[-keep:])
     return row
+
+
+def record_run_safe(result: Dict) -> Optional[Dict]:
+    """运行历史属于可观测性能力；写入失败不应覆盖日报真实执行结果。"""
+    try:
+        return record_run(result)
+    except Exception:
+        logger.exception("保存运行历史失败")
+        return None
 
 
 def recent_runs(limit: int = 10) -> List[Dict]:
