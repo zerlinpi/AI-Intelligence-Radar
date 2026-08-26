@@ -33,8 +33,8 @@ class FakeClient:
                 FakeClient.calls.append(kwargs)
                 return FakeResponse(
                     '{"结果":['
-                    '[1,"正在快速增长",90,"高","关注开发者工具"],'
-                    '[2,"早期需求明显",75,"中","观察付费转化"]'
+                    '[1,"帮卖家自动生成商品Listing","跨境卖家场景明确且易做成SaaS",90,"高","做Listing优化工具"],'
+                    '[2,"自动分析广告与转化数据","具备独立工具形态和付费空间",75,"中","做广告诊断助手"]'
                     ']}'
                 )
 
@@ -48,6 +48,7 @@ def test_analyzer_fallback_without_key(monkeypatch):
 
     assert result["llm_meta"]["fallback"] is True
     assert "缺少" in result["llm_meta"]["reason"]
+    assert result["purpose"]
 
 
 def test_analyzer_success(monkeypatch):
@@ -79,10 +80,11 @@ def test_analyzer_success(monkeypatch):
         }
     )
 
-    assert result["summary"] == "正在快速增长"
+    assert result["purpose"] == "帮卖家自动生成商品Listing"
+    assert result["summary"] == "跨境卖家场景明确且易做成SaaS"
     assert result["business_score"] == 90
     assert result["opportunity"] == "high"
-    assert result["startup_ideas"] == ["关注开发者工具"]
+    assert result["startup_ideas"] == ["做Listing优化工具"]
     assert result["trend_score"] == 70
 
 
@@ -122,6 +124,8 @@ def test_batch_analyzer_uses_one_request_for_multiple_items(monkeypatch):
     assert '"名称"' not in prompt
     assert '"简介"' not in prompt
     assert '"商业分"' not in prompt.split("项目=")[-1]
+    assert "跨境电商" in prompt
+    assert "可直接做成SaaS" in prompt
     assert FakeClient.calls[0]["max_tokens"] == min(
         analyzer.LLM_MAX_TOKENS,
         analyzer.MAX_OUTPUT_TOKENS,
