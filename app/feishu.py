@@ -25,7 +25,7 @@ def send_feishu(message: str) -> bool:
                 "template": "orange",
                 "title": {
                     "tag": "plain_text",
-                    "content": "AI 新项目雷达｜早期热点",
+                    "content": "AI 新项目雷达",
                 },
             },
             "elements": [
