@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from app.core.logger import get_logger
 
 
 logger = get_logger("运行历史")
+_FALLBACK_PATTERN = re.compile(r"AI 分析降级\s*(\d+)\s*条")
 
 
 def _history_path() -> Path:
@@ -53,23 +55,42 @@ def _read_all() -> List[Dict]:
     return data if isinstance(data, list) else []
 
 
+def _infer_fallback_count(errors) -> int:
+    for error in errors or []:
+        match = _FALLBACK_PATTERN.search(str(error))
+        if match:
+            return int(match.group(1))
+    return 0
+
+
 def _summary(result: Dict) -> Dict:
     result = result if isinstance(result, dict) else {}
-    errors = result.get("errors") or []
+    errors = [str(item) for item in (result.get("errors") or [])[:20]]
+    item_count = len(result.get("items") or [])
+    policy_count = len(result.get("policies") or [])
+    ai_fallbacks = int(result.get("ai_fallbacks") or _infer_fallback_count(errors))
+
+    raw_saved = result.get("saved_count")
+    if raw_saved is None:
+        has_database_error = any("数据库保存" in error for error in errors)
+        saved_count = 0 if has_database_error else max(item_count + policy_count - ai_fallbacks, 0)
+    else:
+        saved_count = int(raw_saved or 0)
+
     return {
         "execution_id": str(result.get("execution_id") or ""),
         "time": str(result.get("time") or datetime.now(timezone.utc).isoformat()),
         "duration": float(result.get("duration") or 0),
         "status": str(result.get("status") or "unknown"),
-        "item_count": len(result.get("items") or []),
-        "policy_count": len(result.get("policies") or []),
-        "saved_count": int(result.get("saved_count") or 0),
-        "ai_fallbacks": int(result.get("ai_fallbacks") or 0),
+        "item_count": item_count,
+        "policy_count": policy_count,
+        "saved_count": saved_count,
+        "ai_fallbacks": ai_fallbacks,
         "feishu_cards": int(result.get("feishu_cards") or 0),
         "feishu_sent": bool(result.get("feishu_sent", False)),
         "skipped": bool(result.get("skipped", False)),
         "reason": str(result.get("reason") or ""),
-        "errors": [str(item) for item in errors[:20]],
+        "errors": errors,
     }
 
 
