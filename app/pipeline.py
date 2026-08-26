@@ -4,7 +4,12 @@ import uuid
 from zoneinfo import ZoneInfo
 
 from app.cleaner import normalize_items
-from app.scoring import age_hours, calculate_score
+from app.scoring import (
+    age_hours,
+    calculate_priority_score,
+    calculate_score,
+    priority_tags,
+)
 from app.ai.analyzer import analyze_items
 from app.feishu import send_feishu
 from app.core.logger import get_logger
@@ -83,6 +88,7 @@ def collect_sources():
 
 def fallback_analysis(item, error=None):
     return {
+        "purpose": "项目用途暂无法生成，请查看项目原始说明。",
         "summary": "AI 分析暂不可用，建议直接查看项目页面了解最新进展。",
         "business_score": 50,
         "opportunity": "medium",
@@ -99,7 +105,7 @@ def _is_recent_item(item: RadarItem) -> bool:
 
 
 def build_report(items):
-    """先完成本地评分，再用一次 LLM 请求批量分析最终前 10 条。"""
+    """先算热度与业务优先级，再批量分析最终前 10 条。"""
     scored = []
 
     for raw_item in items:
@@ -108,10 +114,29 @@ def build_report(items):
         if not _is_recent_item(item):
             continue
 
-        item.trend_score = calculate_score(item.to_dict())
+        item_data = item.to_dict()
+        item.trend_score = calculate_score(item_data)
+        item_data["trend_score"] = item.trend_score
+
+        tags = priority_tags(item_data)
+        priority_score = calculate_priority_score(item_data)
+
+        item.metrics = dict(item.metrics or {})
+        item.metrics["priority_tags"] = tags
+        item.metrics["priority_score"] = priority_score
+        item.metrics["selection_score"] = round(
+            item.trend_score + priority_score,
+            2,
+        )
         scored.append(item)
 
-    scored.sort(key=lambda x: x.trend_score, reverse=True)
+    scored.sort(
+        key=lambda x: (
+            (x.metrics or {}).get("selection_score", x.trend_score),
+            x.trend_score,
+        ),
+        reverse=True,
+    )
     candidates = scored[:MAX_REPORT_ITEMS]
 
     if not candidates:
@@ -202,10 +227,18 @@ def _clean_text(value, fallback: str = "") -> str:
     return text or fallback
 
 
+def _format_priority_tags(item: RadarItem) -> str:
+    tags = (item.metrics or {}).get("priority_tags") or []
+    if not isinstance(tags, list):
+        return ""
+    clean_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+    return " · ".join(clean_tags)
+
+
 def build_feishu_message(items):
     lines = [
         f"**{_report_date()} · 今日发现 {len(items)} 个新项目**",
-        "> 14 天内早期项目 · 优先 7 天内快速升温",
+        "> 优先：跨境电商相关 · 可产品化 · 7 天内快速升温",
         "",
     ]
 
@@ -216,11 +249,16 @@ def build_feishu_message(items):
             "中",
         )
         business_score = _number(analysis.get("business_score", 0))
+        purpose = _clean_text(
+            analysis.get("purpose"),
+            "项目用途暂不明确。",
+        )
         summary = _clean_text(
             analysis.get("summary"),
             "暂无 AI 分析摘要。",
         )
         source_name = SOURCE_NAMES.get(item.source, item.source)
+        priority_text = _format_priority_tags(item)
         ideas = analysis.get("startup_ideas") or []
         first_idea = _clean_text(ideas[0]) if isinstance(ideas, list) and ideas else ""
 
@@ -236,13 +274,22 @@ def build_feishu_message(items):
                     f"　🔥 **{item.trend_score:.0f}**"
                     f"　💼 **{business_score:.0f} · {opportunity}**"
                 ),
+            ]
+        )
+
+        if priority_text:
+            lines.append(f"🎯 {priority_text}")
+
+        lines.extend(
+            [
+                f"🧩 **做什么：** {purpose}",
                 f"📈 {_format_metrics(item)}",
-                f"🧠 {summary}",
+                f"🧠 **值得看：** {summary}",
             ]
         )
 
         if first_idea:
-            lines.append(f"💡 {first_idea}")
+            lines.append(f"💡 **产品机会：** {first_idea}")
 
         if index != len(items):
             lines.extend(["", "---", ""])
@@ -250,7 +297,7 @@ def build_feishu_message(items):
     lines.extend(
         [
             "",
-            "*热度代表早期增长速度，不代表历史累计热度。*",
+            "*热度只代表早期增长速度；排序额外优先跨境电商相关和可产品化项目。*",
         ]
     )
 
