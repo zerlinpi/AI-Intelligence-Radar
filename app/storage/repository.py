@@ -44,35 +44,82 @@ def _source_created_at(value):
     return created
 
 
-def save_item(db: Session, item):
-    data = _to_dict(item)
-    if not data:
-        raise ValueError("待保存项目必须是 RadarItem 或字典")
+def _analysis_is_fallback(value) -> bool:
+    analysis = _safe_dict(value)
+    meta = _safe_dict(analysis.get("llm_meta"))
 
+    if meta.get("fallback") is True:
+        return True
+
+    # 兼容较早版本由主流程生成、尚未带 llm_meta 的降级结果。
+    if analysis.get("error"):
+        return True
+
+    purpose = str(analysis.get("purpose") or "")
+    summary = str(analysis.get("summary") or "")
+    fallback_markers = (
+        "暂无法生成",
+        "AI 分析暂不可用",
+        "AI 深度分析未完成",
+        "AI 结构化分析未完成",
+    )
+    return any(marker in purpose or marker in summary for marker in fallback_markers)
+
+
+def _find_by_url(db: Session, url: str):
+    if not url:
+        return None
+
+    return (
+        db.query(IntelligenceItem)
+        .filter(IntelligenceItem.url == url)
+        .first()
+    )
+
+
+def _fill_record(record: IntelligenceItem, data: dict):
     analysis = _safe_dict(data.get("analysis"))
     metrics = _safe_dict(data.get("metrics"))
 
-    record = IntelligenceItem(
-        source=data.get("source", "unknown") or "unknown",
-        title=data.get("title", "") or "",
-        url=data.get("url", "") or "",
-        description=data.get("description", "") or "",
-        category=data.get("category", "ai") or "ai",
-        trend_score=data.get("trend_score", 0) or 0,
-        business_score=analysis.get(
-            "business_score",
-            data.get("business_score", 0) or 0,
-        ),
-        metrics=metrics,
-        analysis=analysis,
+    record.source = data.get("source", "unknown") or "unknown"
+    record.title = data.get("title", "") or ""
+    record.url = data.get("url", "") or ""
+    record.description = data.get("description", "") or ""
+    record.category = data.get("category", "ai") or "ai"
+    record.trend_score = data.get("trend_score", 0) or 0
+    record.business_score = analysis.get(
+        "business_score",
+        data.get("business_score", 0) or 0,
     )
+    record.metrics = metrics
+    record.analysis = analysis
 
     source_created_at = _source_created_at(data.get("created_at"))
     if source_created_at is not None:
         record.created_at = source_created_at
 
+    return record
+
+
+def save_item(db: Session, item):
+    data = _to_dict(item)
+    if not data:
+        raise ValueError("待保存项目必须是 RadarItem 或字典")
+
+    url = data.get("url", "") or ""
+    existing = _find_by_url(db, url) if url else None
+
+    # 旧记录若是模型失败的降级结果，本次成功分析后直接原地覆盖，
+    # 避免 unique URL 约束产生重复记录或让失败结果永久封死。
+    if existing is not None and _analysis_is_fallback(getattr(existing, "analysis", {})):
+        record = _fill_record(existing, data)
+        logger.info("覆盖旧降级记录：标题=%s 链接=%s", record.title, record.url)
+    else:
+        record = _fill_record(IntelligenceItem(), data)
+
     try:
-        db.add(record)
+        if existing is None:
+            db.add(record)
         db.commit()
         db.refresh(record)
     except Exception:
@@ -83,15 +130,15 @@ def save_item(db: Session, item):
 
 
 def exists(db: Session, url: str):
-    if not url:
+    """只有已经成功分析的 URL 才算真正完成。
+
+    历史记录若是 AI fallback，则返回 False，让下一次采集重新进入分析流程。
+    """
+    record = _find_by_url(db, url)
+    if record is None:
         return False
 
-    return (
-        db.query(IntelligenceItem)
-        .filter(IntelligenceItem.url == url)
-        .first()
-        is not None
-    )
+    return not _analysis_is_fallback(getattr(record, "analysis", {}))
 
 
 def save_batch(db: Session, items: list):
@@ -105,6 +152,17 @@ def save_batch(db: Session, items: list):
 
         url = data.get("url", "") or ""
         title = data.get("title", "") or ""
+        analysis = _safe_dict(data.get("analysis"))
+
+        # AI 失败不等于该项目已处理完成。失败条目仍可发到飞书作为降级展示，
+        # 但不新建“成功历史”；已有旧 fallback 也保留为可重试状态。
+        if _analysis_is_fallback(analysis):
+            logger.warning(
+                "未保存AI降级结果，后续将自动重试：标题=%s 链接=%s",
+                title,
+                url,
+            )
+            continue
 
         try:
             if not exists(db, url):
