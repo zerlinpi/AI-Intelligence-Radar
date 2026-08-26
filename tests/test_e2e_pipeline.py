@@ -19,15 +19,13 @@ class MockCollector:
 
 def test_collect_sources_converts_items(monkeypatch):
     monkeypatch.setattr(pipeline, "COLLECTORS", [MockCollector()])
-
     items = pipeline.collect_sources()
-
     assert len(items) == 1
     assert isinstance(items[0], RadarItem)
     assert items[0].title == "Test AI Project"
 
 
-def test_build_feishu_message_groups_policy_and_cross_border_project():
+def test_build_feishu_message_groups_compliance_and_projects():
     project = RadarItem(
         title="Seller AI Tool",
         source="github",
@@ -44,43 +42,72 @@ def test_build_feishu_message_groups_policy_and_cross_border_project():
     project.analysis = {
         "opportunity": "high",
         "business_score": 86,
-        "purpose": "帮Amazon卖家优化商品Listing",
-        "summary": "卖家场景直接，适合做订阅SaaS。",
-        "startup_ideas": ["做Listing优化工具"],
+        "purpose": "面向Amazon卖家的Listing运营工具，自动生成标题、卖点并优化多站点本地化内容。",
+        "summary": "卖家需求直接，可嵌入日常上新流程并形成订阅SaaS。",
+        "startup_ideas": ["做多站点Listing优化工具"],
     }
 
-    policy = RadarItem(
-        title="Update your shipping template settings",
+    amazon_policy = RadarItem(
+        title="Testing and certification requirements",
         source="amazon_policy",
-        url="https://example.com/policy",
-        description="Amazon shipping policy update",
+        url="https://example.com/amazon-policy",
+        description="Amazon product testing requirement",
         category="policy",
         created_at=datetime.now(timezone.utc),
         metrics={
             "policy_source": "Amazon",
+            "policy_authority": "Amazon",
+            "policy_focus": "Amazon政策与审核",
             "policy_kind": "平台政策",
-            "policy_score": 90,
+            "policy_score": 96,
         },
     )
-    policy.analysis = {
+    amazon_policy.analysis = {
         "opportunity": "high",
         "business_score": 94,
-        "purpose": "8月24日起调整自配送运费模板规则。",
-        "summary": "仍用价格阶梯运费的卖家需要检查模板。",
-        "startup_ideas": ["立即检查Shipping settings"],
+        "purpose": "部分高风险品类需通过Amazon认可的第三方检测、检验和认证流程。",
+        "summary": "未按要求验证可能导致商品不可售或合规问题持续出现在Account Health。",
+        "startup_ideas": ["提前准备测试样品并选择认可服务商"],
     }
 
-    message = pipeline.build_feishu_message([project], [policy])
+    cpsc_policy = RadarItem(
+        title="CPSC eFiling certificates",
+        source="cpsc_compliance",
+        url="https://example.com/cpsc",
+        description="CPSC eFiling requirement",
+        category="policy",
+        created_at=datetime.now(timezone.utc),
+        metrics={
+            "policy_source": "美国消费品安全委员会 CPSC",
+            "policy_authority": "CPSC",
+            "policy_focus": "产品合规审核",
+            "policy_kind": "消费品安全",
+            "policy_score": 98,
+        },
+    )
+    cpsc_policy.analysis = {
+        "opportunity": "high",
+        "business_score": 98,
+        "purpose": "受监管消费品进口时需按要求电子申报CPC或GCC等合规证书数据。",
+        "summary": "进口商未准备正确证书和申报数据可能造成清关延误或合规风险。",
+        "startup_ideas": ["核对适用标准、测试报告及证书申报数据"],
+    }
 
-    assert "跨境 AI 情报简报" in message
-    assert "先处理｜政策与规则" in message
-    assert "Amazon" in message
-    assert "变化：" in message
-    assert "影响：" in message
-    assert "动作：" in message
-    assert "优先看｜跨境电商机会" in message
-    assert "Seller AI Tool" in message
-    assert "做什么：" in message
-    assert "为什么看：" in message
-    assert "可做产品：" in message
-    assert message.index("先处理｜政策与规则") < message.index("优先看｜跨境电商机会")
+    message = pipeline.build_feishu_message(
+        [project],
+        [amazon_policy, cpsc_policy],
+    )
+
+    assert "美国跨境经营雷达" in message
+    assert "今日合规重点" in message
+    assert "A｜Amazon 政策与审核" in message
+    assert "C｜美国市场产品审核" in message
+    assert "核心变化：" in message
+    assert "审核要求：" in message
+    assert "准备资料：" in message
+    assert "跨境电商直接相关项目" in message
+    assert "产品描述：" in message
+    assert "增长信号：" in message
+    assert "价值判断：" in message
+    assert "可借鉴方向：" in message
+    assert message.index("今日合规重点") < message.index("跨境电商直接相关项目")
