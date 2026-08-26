@@ -12,92 +12,137 @@ from app.core.logger import get_logger
 
 logger = get_logger("政策采集")
 
-MAX_POLICY_AGE_DAYS = 30
-
-# 通过 Google News RSS 发现公开页面，但查询严格限定到官方域名。
+# 不同监管主题变化频率不同。Amazon 关注更近期，CPSC/FDA/FCC 等产品准入规则
+# 使用更长窗口，避免错过已经开始执行但仍直接影响新品进入美国市场的重要要求。
 POLICY_QUERIES = (
     {
         "source": "amazon_policy",
         "source_name": "Amazon",
+        "authority": "Amazon",
+        "focus": "Amazon政策与审核",
         "kind": "平台政策",
-        "weight": 30,
+        "weight": 44,
+        "lookback_days": 60,
         "query": (
-            'site:sellercentral.amazon.com/seller-forums/discussions '
-            'News_Amazon (update OR requirement OR policy OR effective OR enforcement)'
+            'site:sellercentral.amazon.com/seller-forums/discussions News_Amazon '
+            '(compliance OR "product safety" OR testing OR certification OR '
+            'restricted OR requirement OR policy OR effective OR enforcement)'
         ),
     },
     {
         "source": "amazon_policy",
         "source_name": "Amazon",
+        "authority": "Amazon",
+        "focus": "Amazon政策与审核",
         "kind": "平台政策",
-        "weight": 26,
-        "query": 'site:sell.amazon.com/blog/announcements Amazon seller update',
-    },
-    {
-        "source": "tiktok_policy",
-        "source_name": "TikTok Shop",
-        "kind": "平台政策",
-        "weight": 28,
-        "query": 'site:seller-us.tiktok.com/university "Policy Pulse" TikTok Shop',
-    },
-    {
-        "source": "us_regulation",
-        "source_name": "美国跨境法规",
-        "kind": "跨境法规",
-        "weight": 22,
+        "weight": 40,
+        "lookback_days": 60,
         "query": (
-            'site:cbp.gov (ecommerce OR e-commerce OR import OR de minimis) '
-            '(rule OR regulation OR requirement OR update)'
+            'site:sell.amazon.com/blog/announcements '
+            '(compliance OR policy OR requirement OR "product safety" OR listing)'
         ),
     },
     {
-        "source": "us_regulation",
-        "source_name": "美国跨境法规",
-        "kind": "跨境法规",
-        "weight": 20,
+        "source": "us_import_rule",
+        "source_name": "美国海关 CBP",
+        "authority": "CBP",
+        "focus": "美国跨境新规",
+        "kind": "进口与清关",
+        "weight": 38,
+        "lookback_days": 120,
         "query": (
-            'site:cpsc.gov (ecommerce OR online marketplace OR consumer product) '
-            '(rule OR regulation OR requirement OR safety)'
+            'site:cbp.gov (ecommerce OR e-commerce OR import OR de minimis OR customs) '
+            '(rule OR regulation OR requirement OR tariff OR compliance OR update)'
+        ),
+    },
+    {
+        "source": "cpsc_compliance",
+        "source_name": "美国消费品安全委员会 CPSC",
+        "authority": "CPSC",
+        "focus": "产品合规审核",
+        "kind": "消费品安全",
+        "weight": 42,
+        "lookback_days": 120,
+        "query": (
+            'site:cpsc.gov (eFiling OR certificate OR certification OR testing OR '
+            '"consumer product" OR importer) '
+            '(requirement OR compliance OR rule OR effective OR safety)'
+        ),
+    },
+    {
+        "source": "fda_compliance",
+        "source_name": "美国食品药品监督管理局 FDA",
+        "authority": "FDA",
+        "focus": "产品合规审核",
+        "kind": "FDA准入",
+        "weight": 36,
+        "lookback_days": 120,
+        "query": (
+            'site:fda.gov (cosmetic OR cosmetics OR "medical device" OR food OR '
+            '"dietary supplement") '
+            '(registration OR listing OR import OR compliance OR requirement OR rule)'
+        ),
+    },
+    {
+        "source": "fcc_compliance",
+        "source_name": "美国联邦通信委员会 FCC",
+        "authority": "FCC",
+        "focus": "产品合规审核",
+        "kind": "无线与电子设备",
+        "weight": 34,
+        "lookback_days": 180,
+        "query": (
+            'site:fcc.gov ("equipment authorization" OR "RF device" OR radiofrequency) '
+            '(import OR marketing OR certification OR compliance OR requirement)'
         ),
     },
 )
 
 POLICY_SIGNAL_WORDS = (
     "policy",
-    "update",
     "requirement",
     "effective",
     "enforcement",
     "rule",
     "regulation",
     "compliance",
-    "shipping",
-    "fulfillment",
-    "handling time",
-    "listing",
-    "title",
-    "fee",
+    "testing",
+    "inspection",
+    "certification",
+    "certificate",
+    "laboratory",
+    "lab",
+    "registration",
+    "product listing",
+    "authorization",
+    "efiling",
+    "efile",
+    "restricted",
+    "prohibited",
+    "recall",
     "safety",
-    "appeal",
-    "settlement",
-    "reserve",
-    "tariff",
-    "customs",
-    "de minimis",
     "import",
+    "customs",
+    "tariff",
+    "de minimis",
     "labeling",
+    "documentation",
+    "appeal",
 )
 
 URGENT_WORDS = (
     "effective",
     "deadline",
-    "before",
     "starting",
-    "begin",
     "enforcement",
     "required",
     "requirement",
     "must",
+    "prohibited",
+    "suspend",
+    "remove",
+    "cannot",
+    "no longer",
 )
 
 
@@ -112,8 +157,9 @@ def _clean_title(value: str) -> str:
     for suffix in (
         " - Amazon Seller Forums",
         " - Sell on Amazon",
-        " - TikTok Shop Academy",
-        " - TikTok Shop",
+        " | CPSC.gov",
+        " | FDA",
+        " | Federal Communications Commission",
     ):
         if title.endswith(suffix):
             title = title[: -len(suffix)].strip()
@@ -131,21 +177,28 @@ def _entry_datetime(entry):
     return None
 
 
-def _count_signals(text: str, words) -> int:
-    normalized = str(text or "").lower()
-    return sum(1 for word in words if word in normalized)
+def _signal_counts(title: str, description: str):
+    title_text = title.lower()
+    body_text = description.lower()
+    title_hits = sum(1 for word in POLICY_SIGNAL_WORDS if word in title_text)
+    body_hits = sum(1 for word in POLICY_SIGNAL_WORDS if word in body_text)
+    urgent_hits = sum(
+        1
+        for word in URGENT_WORDS
+        if word in title_text or word in body_text
+    )
+    return title_hits, body_hits, urgent_hits
 
 
 def _policy_relevance(title: str, description: str) -> int:
-    """要求标题有政策信号，或正文至少出现两个政策信号，减少普通内容误报。"""
-    title_matches = _count_signals(title, POLICY_SIGNAL_WORDS)
-    description_matches = _count_signals(description, POLICY_SIGNAL_WORDS)
+    title_hits, body_hits, urgent_hits = _signal_counts(title, description)
 
-    if title_matches == 0 and description_matches < 2:
+    # 标题明确出现规则/合规信号时直接保留；否则正文至少需要两个不同信号，
+    # 避免普通营销文章因为偶然出现 policy/update 等单词进入日报。
+    if title_hits == 0 and body_hits < 2:
         return 0
 
-    urgent = _count_signals(f"{title} {description}", URGENT_WORDS)
-    return title_matches * 7 + description_matches * 2 + min(urgent * 3, 12)
+    return title_hits * 7 + body_hits * 3 + min(urgent_hits * 4, 16)
 
 
 def _google_news_rss(query: str) -> str:
@@ -169,12 +222,13 @@ def _fetch_feed(query: str):
 class PolicyCollector(BaseCollector):
     name = "policy"
 
-    def collect(self, limit: int = 5):
+    def collect(self, limit: int = 8):
         now = datetime.now(timezone.utc)
-        oldest = now - timedelta(days=MAX_POLICY_AGE_DAYS)
         candidates = {}
 
         for source in POLICY_QUERIES:
+            oldest = now - timedelta(days=source["lookback_days"])
+
             try:
                 feed = _fetch_feed(source["query"])
             except Exception:
@@ -206,10 +260,14 @@ class PolicyCollector(BaseCollector):
                     continue
 
                 age_days = max((now - created).total_seconds() / 86400, 0)
-                recency = max(30 - age_days, 0)
+                recency_ratio = max(
+                    1 - age_days / max(source["lookback_days"], 1),
+                    0,
+                )
+                recency = recency_ratio * 24
                 score = round(source["weight"] + relevance + recency, 2)
 
-                key = re.sub(r"\W+", "", title.lower())[:140] or link
+                key = re.sub(r"\W+", "", title.lower())[:160] or link
                 existing = candidates.get(key)
                 if existing and existing["metrics"]["policy_score"] >= score:
                     continue
@@ -218,13 +276,16 @@ class PolicyCollector(BaseCollector):
                     "source": source["source"],
                     "title": title,
                     "url": link,
-                    "description": description[:800],
+                    "description": description[:1200],
                     "category": "policy",
                     "created_at": created.isoformat(),
                     "metrics": {
                         "policy_source": source["source_name"],
+                        "policy_authority": source["authority"],
+                        "policy_focus": source["focus"],
                         "policy_kind": source["kind"],
                         "policy_score": score,
+                        "lookback_days": source["lookback_days"],
                     },
                 }
 
@@ -245,5 +306,5 @@ class PolicyCollector(BaseCollector):
         return results[:limit]
 
 
-def fetch_policies(limit: int = 5):
+def fetch_policies(limit: int = 8):
     return PolicyCollector().collect_safe(limit)
