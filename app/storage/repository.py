@@ -2,6 +2,10 @@ from sqlalchemy.orm import Session
 
 from app.database.models import IntelligenceItem
 from app.models.radar_item import RadarItem
+from app.core.logger import get_logger
+
+
+logger = get_logger("storage")
 
 
 def _to_dict(item):
@@ -9,7 +13,10 @@ def _to_dict(item):
     if isinstance(item, RadarItem):
         return item.to_dict()
 
-    return item or {}
+    if isinstance(item, dict):
+        return item
+
+    return {}
 
 
 def _safe_dict(value):
@@ -19,6 +26,8 @@ def _safe_dict(value):
 
 def save_item(db: Session, item):
     data = _to_dict(item)
+    if not data:
+        raise ValueError("storage item must be a RadarItem or dictionary")
 
     analysis = _safe_dict(data.get("analysis"))
     metrics = _safe_dict(data.get("metrics"))
@@ -66,12 +75,23 @@ def save_batch(db: Session, items: list):
 
     for item in items or []:
         data = _to_dict(item)
+        if not data:
+            logger.warning("storage skipped invalid item type=%s", type(item).__name__)
+            continue
+
+        url = data.get("url", "") or ""
+        title = data.get("title", "") or ""
 
         try:
-            if not exists(db, data.get("url", "")):
+            if not exists(db, url):
                 saved.append(save_item(db, item))
         except Exception:
             db.rollback()
+            logger.exception(
+                "storage failed title=%s url=%s",
+                title,
+                url,
+            )
             continue
 
     return saved
