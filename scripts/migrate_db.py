@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS intelligence_items (
     url TEXT DEFAULT '',
     source VARCHAR(50) DEFAULT '',
     description TEXT DEFAULT '',
-    trend_score INTEGER DEFAULT 0,
-    business_score INTEGER DEFAULT 0,
+    trend_score REAL DEFAULT 0,
+    business_score REAL DEFAULT 0,
     created_at DATETIME,
     category VARCHAR(50) DEFAULT 'ai',
     metrics JSON DEFAULT '{}',
@@ -28,12 +28,12 @@ CREATE TABLE IF NOT EXISTS intelligence_items (
 
 MIGRATIONS = [
     (
-        "business_score",
-        "ALTER TABLE intelligence_items ADD COLUMN business_score INTEGER DEFAULT 0",
-    ),
-    (
         "category",
         "ALTER TABLE intelligence_items ADD COLUMN category VARCHAR(50) DEFAULT 'ai'",
+    ),
+    (
+        "business_score",
+        "ALTER TABLE intelligence_items ADD COLUMN business_score REAL DEFAULT 0",
     ),
     (
         "metrics",
@@ -46,24 +46,53 @@ MIGRATIONS = [
 ]
 
 
+def resolve_database_path() -> str:
+    """Resolve the same file-backed SQLite database used by the application."""
+    sqlite_path = (os.getenv("SQLITE_PATH") or "").strip()
+    if sqlite_path:
+        return sqlite_path
+
+    database_url = (
+        os.getenv("DATABASE_URL") or "sqlite:///./data/radar.db"
+    ).strip()
+    prefix = "sqlite:///"
+
+    if not database_url.startswith(prefix):
+        raise RuntimeError(
+            "scripts/migrate_db.py supports SQLite only; "
+            "set DATABASE_URL to a sqlite:/// URL or provide SQLITE_PATH."
+        )
+
+    database_path = database_url[len(prefix):]
+    if not database_path or database_path == ":memory:":
+        raise RuntimeError("A file-backed SQLite database is required for migration.")
+
+    return database_path
+
+
 def migrate(database_path: str):
+    parent = os.path.dirname(os.path.abspath(database_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
     conn = sqlite3.connect(database_path)
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(CREATE_TABLE)
 
-    cursor.execute(CREATE_TABLE)
+        cursor.execute("PRAGMA table_info(intelligence_items)")
+        existing = {row[1] for row in cursor.fetchall()}
 
-    cursor.execute("PRAGMA table_info(intelligence_items)")
-    existing = {row[1] for row in cursor.fetchall()}
+        for column, sql in MIGRATIONS:
+            if column not in existing:
+                cursor.execute(sql)
 
-    for column, sql in MIGRATIONS:
-        if column not in existing:
-            cursor.execute(sql)
-
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
-    db_path = os.getenv("SQLITE_PATH", "radar.db")
+    db_path = resolve_database_path()
     migrate(db_path)
-    print("Database migration completed")
+    print(f"Database migration completed: {db_path}")
