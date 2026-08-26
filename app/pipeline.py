@@ -4,7 +4,7 @@ import uuid
 
 from app.cleaner import normalize_items
 from app.scoring import age_hours, calculate_score
-from app.ai.analyzer import analyze_item
+from app.ai.analyzer import analyze_items
 from app.feishu import send_feishu
 from app.core.logger import get_logger
 from app.core.run_lock import execution_lock
@@ -20,7 +20,7 @@ from app.database.session import SessionLocal, init_database
 from app.storage.repository import save_batch, exists
 
 
-logger = get_logger("pipeline")
+logger = get_logger("主流程")
 
 MAX_REPORT_ITEMS = 10
 MAX_PROJECT_AGE_DAYS = 14
@@ -65,14 +65,14 @@ def collect_sources():
                     items.append(RadarItem.from_dict(raw_item))
 
             logger.info(
-                "collector=%s items=%s duration=%.2fs",
+                "采集器=%s 数量=%s 耗时=%.2f秒",
                 collector.__class__.__name__,
                 len(data),
                 time.time() - start,
             )
         except Exception:
             logger.exception(
-                "collector failed=%s duration=%.2fs",
+                "采集失败：采集器=%s 耗时=%.2f秒",
                 collector.__class__.__name__,
                 time.time() - start,
             )
@@ -83,7 +83,6 @@ def collect_sources():
 def fallback_analysis(item, error=None):
     return {
         "summary": "AI 分析暂不可用，建议直接查看项目页面了解最新进展。",
-        "trend_score": item.trend_score or 50,
         "business_score": 50,
         "opportunity": "medium",
         "startup_ideas": [],
@@ -99,7 +98,7 @@ def _is_recent_item(item: RadarItem) -> bool:
 
 
 def build_report(items):
-    """Score all recent items first, then analyze only the final Top 10."""
+    """先完成本地评分，再用一次 LLM 请求批量分析最终前 10 条。"""
     scored = []
 
     for raw_item in items:
@@ -114,11 +113,16 @@ def build_report(items):
     scored.sort(key=lambda x: x.trend_score, reverse=True)
     candidates = scored[:MAX_REPORT_ITEMS]
 
-    for item in candidates:
-        try:
-            item.analysis = analyze_item(item.to_dict()) or {}
-        except Exception as error:
-            logger.exception("analysis failed item=%s", item.title)
+    if not candidates:
+        return []
+
+    try:
+        analyses = analyze_items([item.to_dict() for item in candidates])
+        for item, analysis in zip(candidates, analyses):
+            item.analysis = analysis or fallback_analysis(item)
+    except Exception as error:
+        logger.exception("AI 批量分析失败，本轮使用降级结果")
+        for item in candidates:
             item.analysis = fallback_analysis(item, error)
 
     return candidates
@@ -192,7 +196,7 @@ def build_feishu_message(items):
         "🚀 **AI 新项目雷达｜今日早期热点**",
         "",
         f"> 本期发现 **{len(items)}** 个值得关注的新项目。",
-        "> 筛选逻辑：只看最近 14 天上线项目，优先最近 7 天且单位时间增长更快的早期项目。",
+        "> 只看最近 14 天上线项目，优先最近 7 天且单位时间增长更快的早期项目。",
         "",
     ]
 
@@ -254,25 +258,31 @@ def _execute_daily_radar(execution_id: str, started: float):
 
     try:
         new_items = filter_existing_items(db, radar_items)
+        logger.info(
+            "去重完成：采集=%s 新项目=%s",
+            len(radar_items),
+            len(new_items),
+        )
+
         report = build_report(new_items)
         saved_records = save_batch(db, [item.to_dict() for item in report])
         saved_count = len(saved_records)
 
         if saved_count != len(report):
             logger.warning(
-                "database save incomplete saved=%s requested=%s execution_id=%s",
+                "数据库保存不完整：成功=%s 计划=%s 执行编号=%s",
                 saved_count,
                 len(report),
                 execution_id,
             )
         else:
             logger.info(
-                "saved=%s execution_id=%s",
+                "数据库保存完成：数量=%s 执行编号=%s",
                 saved_count,
                 execution_id,
             )
     except Exception:
-        logger.exception("pipeline database stage failed execution_id=%s", execution_id)
+        logger.exception("数据库阶段失败：执行编号=%s", execution_id)
     finally:
         db.close()
 
@@ -280,15 +290,15 @@ def _execute_daily_radar(execution_id: str, started: float):
         try:
             sent = send_feishu(build_feishu_message(report))
             if sent:
-                logger.info("feishu sent execution_id=%s", execution_id)
+                logger.info("飞书通知发送成功：执行编号=%s", execution_id)
             else:
-                logger.warning("feishu not sent execution_id=%s", execution_id)
+                logger.warning("飞书通知未发送：执行编号=%s", execution_id)
         except Exception:
-            logger.exception("feishu failed execution_id=%s", execution_id)
+            logger.exception("飞书通知发送失败：执行编号=%s", execution_id)
 
     duration = round(time.time() - started, 2)
     logger.info(
-        "daily radar finished execution_id=%s duration=%ss items=%s saved=%s",
+        "日报执行完成：执行编号=%s 耗时=%s秒 报告=%s 保存=%s",
         execution_id,
         duration,
         len(report),
@@ -311,7 +321,7 @@ def run_daily_radar():
         if not acquired:
             duration = round(time.time() - started, 2)
             logger.warning(
-                "daily radar skipped: another execution is already running execution_id=%s",
+                "日报跳过：已有任务正在运行，执行编号=%s",
                 execution_id,
             )
             return {
@@ -320,8 +330,8 @@ def run_daily_radar():
                 "duration": duration,
                 "items": [],
                 "skipped": True,
-                "reason": "already_running",
+                "reason": "已有任务正在运行",
             }
 
-        logger.info("daily radar started execution_id=%s", execution_id)
+        logger.info("日报开始执行：执行编号=%s", execution_id)
         return _execute_daily_radar(execution_id, started)
