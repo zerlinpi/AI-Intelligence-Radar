@@ -1,6 +1,7 @@
 import random
 import re
 import time
+import uuid
 
 import requests
 
@@ -13,6 +14,13 @@ from app.config import (
     FEISHU_WEBHOOK,
 )
 from app.core.logger import get_logger
+from app.core.outbox import (
+    list_pending,
+    mark_sent,
+    pending_cards,
+    quarantine,
+    queue_cards,
+)
 
 
 logger = get_logger("飞书通知")
@@ -153,9 +161,10 @@ def build_card_elements(message: str) -> list:
 
 
 def _plain_text_payload(text: str) -> dict:
+    value = str(text or "").strip() or "美国跨境经营雷达：卡片正文构建失败，请检查服务日志。"
     return {
         "msg_type": "text",
-        "content": {"text": str(text or "")},
+        "content": {"text": value},
     }
 
 
@@ -218,54 +227,144 @@ def _post_payload(payload: dict, card_type: str) -> bool:
             logger.error("飞书响应解析失败：卡片=%s 错误=%s", card_type, exc)
             return False
 
-        if data.get("code", 0) != 0:
+        business_code = data.get("code", data.get("StatusCode", 0))
+        if business_code not in (0, "0", None):
             logger.error("飞书业务返回异常：卡片=%s 返回=%s", card_type, data)
             return False
 
+        try:
+            size = payload_bytes(payload)
+        except Exception:
+            size = -1
         logger.info(
             "飞书卡片发送成功：类型=%s Payload=%s字节",
             card_type,
-            payload_bytes(payload),
+            size,
         )
         return True
 
     return False
 
 
-def send_feishu_cards(cards) -> bool:
-    """按顺序发送结构化日报卡片；卡片失败时自动发送纯文本 fallback。"""
+def _send_envelope(card: CardEnvelope) -> bool:
+    """严格校验卡片；无效或超预算时直接使用纯文本降级。"""
+    payload = card.payload if isinstance(card.payload, dict) else {}
+    try:
+        size = payload_bytes(payload)
+        valid = payload.get("msg_type") in {"interactive", "text"}
+    except Exception as exc:
+        logger.error("飞书卡片JSON无效：类型=%s 错误=%s", card.card_type, exc)
+        size = -1
+        valid = False
+
+    if not valid:
+        logger.warning("飞书卡片结构无效，改发纯文本：类型=%s", card.card_type)
+        return _post_payload(
+            _plain_text_payload(card.fallback_text),
+            f"{card.card_type}:text",
+        )
+
+    if size > FEISHU_MAX_PAYLOAD_BYTES:
+        logger.warning(
+            "飞书卡片超过安全预算，改发纯文本：类型=%s Payload=%s字节 预算=%s字节",
+            card.card_type,
+            size,
+            FEISHU_MAX_PAYLOAD_BYTES,
+        )
+        return _post_payload(
+            _plain_text_payload(card.fallback_text),
+            f"{card.card_type}:text",
+        )
+
+    sent = _post_payload(payload, card.card_type)
+    if sent:
+        return True
+
+    logger.warning("飞书卡片发送失败，尝试纯文本降级：类型=%s", card.card_type)
+    return _post_payload(
+        _plain_text_payload(card.fallback_text),
+        f"{card.card_type}:text",
+    )
+
+
+def _send_outbox_file(path) -> bool:
+    """按原顺序补发一个持久化 run；失败后保留未发送部分。"""
+    try:
+        pending = pending_cards(path)
+    except Exception as exc:
+        try:
+            target = quarantine(path)
+            logger.error("飞书发送队列损坏，已隔离：文件=%s 错误=%s", target, exc)
+        except Exception:
+            logger.exception("飞书发送队列损坏且隔离失败：文件=%s", path)
+        return False
+
+    for index, card in pending:
+        if not _send_envelope(card):
+            logger.warning("飞书持久化队列暂停：文件=%s 卡片=%s", path, card.card_type)
+            return False
+        try:
+            mark_sent(path, index)
+        except FileNotFoundError:
+            # 最后一张成功后 mark_sent 会删除已完成队列文件。
+            pass
+        except Exception:
+            logger.exception("飞书发送成功但队列状态写入失败：文件=%s 卡片=%s", path, card.card_type)
+            return False
+
+    return True
+
+
+def flush_feishu_outbox() -> bool:
+    """启动新日报前先补发历史未完成卡片，避免部分通知永久丢失。"""
+    if not FEISHU_WEBHOOK:
+        logger.warning("未配置飞书机器人地址，无法补发历史队列")
+        return False
+
+    success = True
+    try:
+        paths = list_pending()
+    except Exception:
+        logger.exception("读取飞书持久化发送队列失败")
+        return False
+
+    for path in paths:
+        if not _send_outbox_file(path):
+            success = False
+            # 旧日报未恢复时不继续发送更晚的队列，保证消息顺序。
+            break
+    return success
+
+
+def send_feishu_cards(cards, run_id: str = "", durable: bool = False) -> bool:
+    """发送结构化日报；生产模式可先写入持久化 outbox 再发送。"""
     if not FEISHU_WEBHOOK:
         logger.warning("未配置飞书机器人地址")
         return False
 
+    normalized = [
+        raw_card if isinstance(raw_card, CardEnvelope) else CardEnvelope(**raw_card)
+        for raw_card in list(cards or [])
+    ]
+    if not normalized:
+        logger.warning("飞书日报没有可发送卡片")
+        return False
+
+    if durable:
+        try:
+            path = queue_cards(run_id or str(uuid.uuid4()), normalized)
+            return _send_outbox_file(path)
+        except Exception:
+            # outbox 自身异常不能让已经生成的日报完全丢失，退回内存直接发送。
+            logger.exception("飞书持久化入队失败，已退回直接发送")
+
     all_success = True
-    for raw_card in list(cards or []):
-        card = raw_card if isinstance(raw_card, CardEnvelope) else CardEnvelope(**raw_card)
-        size = payload_bytes(card.payload)
-
-        if size > FEISHU_MAX_PAYLOAD_BYTES:
-            logger.warning(
-                "飞书卡片超过安全预算，改发纯文本：类型=%s Payload=%s字节 预算=%s字节",
-                card.card_type,
-                size,
-                FEISHU_MAX_PAYLOAD_BYTES,
-            )
-            sent = _post_payload(
-                _plain_text_payload(card.fallback_text),
-                f"{card.card_type}:text",
-            )
-            all_success = all_success and sent
-            continue
-
-        sent = _post_payload(card.payload, card.card_type)
-        if not sent:
-            logger.warning("飞书卡片发送失败，尝试纯文本降级：类型=%s", card.card_type)
-            sent = _post_payload(
-                _plain_text_payload(card.fallback_text),
-                f"{card.card_type}:text",
-            )
+    for card in normalized:
+        sent = _send_envelope(card)
         all_success = all_success and sent
-
+        if not sent:
+            # 保持卡片顺序；上一张完全失败时不继续发送后续卡片。
+            break
     return all_success
 
 
