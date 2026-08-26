@@ -94,6 +94,14 @@ def test_policy_fallback_uses_original_policy_text(monkeypatch):
     assert result["preparation"]
 
 
+def test_fallback_does_not_hard_truncate_original_description(monkeypatch):
+    monkeypatch.setattr(analyzer, "LLM_API_KEY", "")
+    original = "BEGIN " + ("完整源数据 " * 800) + " END"
+    result = analyzer.analyze_item({"title": "Demo", "description": original})
+    assert "BEGIN" in result["purpose"]
+    assert "END" in result["purpose"]
+
+
 def test_analyzer_success(monkeypatch):
     _mock_success(monkeypatch)
     result = analyzer.analyze_item(
@@ -119,7 +127,7 @@ def test_analyzer_success(monkeypatch):
     assert "测试报告" in result["preparation"]
 
 
-def test_batch_analyzer_uses_json_mode_and_max_deepseek_thinking(monkeypatch):
+def test_batch_analyzer_uses_json_mode_max_thinking_and_four_value_paths(monkeypatch):
     _mock_success(monkeypatch)
     results = analyzer.analyze_items(
         [
@@ -137,10 +145,13 @@ def test_batch_analyzer_uses_json_mode_and_max_deepseek_thinking(monkeypatch):
                 },
             },
             {
-                "title": "项目二",
-                "description": "第二个项目",
+                "title": "ESP32 Edge AI Camera",
+                "description": "Embedded on-device computer vision with BLE sensors",
                 "source": "github",
-                "metrics": {"stars": 50, "priority_tags": ["跨境电商", "可产品化"]},
+                "metrics": {
+                    "stars": 50,
+                    "priority_tags": ["技术前沿", "硬件开发", "实体商品机会", "可产品化"],
+                },
                 "trend_score": 70,
             },
         ]
@@ -149,16 +160,19 @@ def test_batch_analyzer_uses_json_mode_and_max_deepseek_thinking(monkeypatch):
     assert len(FakeClient.calls) == 1
     call = FakeClient.calls[0]
     prompt = call["messages"][0]["content"]
-    assert "A" * 901 not in prompt
+    assert "A" * 1400 in prompt
     assert "unused" not in prompt
     assert "CPSC" in prompt
     assert "CPC/GCC/eFiling" in prompt
     assert "目标用户" in prompt
     assert "完整、准确、有决策价值优先" in prompt
-    assert "跨境电商" in prompt
-    assert "影响产品" in prompt
-    assert "准备资料" in prompt
-    assert "不得把推测写成事实" in prompt
+    assert "跨境电商实用性" in prompt
+    assert "技术前沿/工程创新" in prompt
+    assert "硬件开发价值" in prompt
+    assert "美国市场实体商品机会" in prompt
+    assert "不得把猜测或营销措辞写成事实" in prompt
+    assert "Hugging Face模型重点看" in prompt
+    assert "arXiv重点看" in prompt
     assert call["response_format"] == {"type": "json_object"}
     assert call["reasoning_effort"] == "max"
     assert call["extra_body"] == {"thinking": {"type": "enabled"}}
