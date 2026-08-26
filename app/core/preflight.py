@@ -1,4 +1,5 @@
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List
@@ -8,6 +9,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from sqlalchemy import text
 
 from app.config import (
+    DATA_MIN_FREE_MB,
+    DATABASE_BACKUP_DIR,
     DATABASE_URL,
     FEISHU_MAX_PAYLOAD_BYTES,
     FEISHU_OUTBOX_DIR,
@@ -18,6 +21,7 @@ from app.config import (
     LLM_MODEL,
     LLM_TIMEOUT_SECONDS,
     REPORT_TIMEZONE,
+    RUN_HISTORY_FILE,
 )
 from app.database.session import engine
 
@@ -106,12 +110,45 @@ def _directory_check(name: str, value: str) -> PreflightCheck:
         return PreflightCheck(name, False, str(exc))
 
 
+def _file_parent_check(name: str, value: str) -> PreflightCheck:
+    try:
+        path = Path(str(value or "")).expanduser()
+        parent = path.parent if str(path.parent) else Path(".")
+        parent.mkdir(parents=True, exist_ok=True)
+        writable = os.access(parent, os.W_OK)
+        if path.exists():
+            writable = writable and os.access(path, os.W_OK)
+        return PreflightCheck(name, bool(writable), str(path.resolve()))
+    except Exception as exc:
+        return PreflightCheck(name, False, str(exc))
+
+
+def _disk_space_check() -> PreflightCheck:
+    """data 目录空间不足时在进入付费模型调用前阻止执行。"""
+    try:
+        path = Path(FEISHU_OUTBOX_DIR).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(path)
+        free_mb = usage.free / (1024 * 1024)
+        threshold = max(int(DATA_MIN_FREE_MB or 0), 64)
+        return PreflightCheck(
+            "数据磁盘剩余空间",
+            free_mb >= threshold,
+            f"可用 {free_mb:.0f} MB，最低要求 {threshold} MB",
+        )
+    except Exception as exc:
+        return PreflightCheck("数据磁盘剩余空间", False, str(exc))
+
+
 def run_preflight() -> PreflightResult:
     checks: List[PreflightCheck] = []
 
     checks.append(_database_check())
     checks.append(_database_path_check())
     checks.append(_directory_check("飞书持久化队列目录", FEISHU_OUTBOX_DIR))
+    checks.append(_directory_check("数据库备份目录", DATABASE_BACKUP_DIR))
+    checks.append(_file_parent_check("运行历史文件", RUN_HISTORY_FILE))
+    checks.append(_disk_space_check())
 
     checks.append(
         PreflightCheck(
