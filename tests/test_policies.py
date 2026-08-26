@@ -20,14 +20,14 @@ def test_policy_collector_keeps_recent_relevant_items(monkeypatch):
     feed = SimpleNamespace(
         entries=[
             _entry(
-                "New seller shipping requirement - Amazon Seller Forums",
+                "New seller compliance requirement - Amazon Seller Forums",
                 12,
                 "https://example.com/new",
-                "Starting August 24 sellers must update shipping requirements.",
+                "Starting August 24 sellers must submit product compliance documentation.",
             ),
             _entry(
                 "Old seller policy update - Amazon Seller Forums",
-                24 * 45,
+                24 * 90,
                 "https://example.com/old",
                 "Policy requirement update.",
             ),
@@ -35,7 +35,7 @@ def test_policy_collector_keeps_recent_relevant_items(monkeypatch):
                 "General marketing story",
                 8,
                 "https://example.com/story",
-                "A seller success story without any rule changes.",
+                "A seller success story without any meaningful regulatory change.",
             ),
         ]
     )
@@ -48,7 +48,37 @@ def test_policy_collector_keeps_recent_relevant_items(monkeypatch):
     assert len(result) == 1
     assert result[0]["category"] == "policy"
     assert result[0]["metrics"]["policy_source"] == "Amazon"
-    assert "shipping requirement" in result[0]["title"].lower()
+    assert result[0]["metrics"]["policy_focus"] == "Amazon政策与审核"
+    assert result[0]["metrics"]["policy_authority"] == "Amazon"
+    assert "compliance requirement" in result[0]["title"].lower()
+
+
+def test_cpsc_policy_is_tagged_as_product_compliance(monkeypatch):
+    cpsc_source = next(
+        source
+        for source in policies.POLICY_QUERIES
+        if source["source"] == "cpsc_compliance"
+    )
+    feed = SimpleNamespace(
+        entries=[
+            _entry(
+                "eFiling certificate requirement for consumer products | CPSC.gov",
+                24,
+                "https://example.com/cpsc",
+                "Importers must eFile certificates of compliance through CBP beginning July 8, 2026.",
+            )
+        ]
+    )
+
+    monkeypatch.setattr(policies, "POLICY_QUERIES", (cpsc_source,))
+    monkeypatch.setattr(policies, "_fetch_feed", lambda _query: feed)
+
+    result = policies.PolicyCollector().collect(limit=5)
+
+    assert len(result) == 1
+    assert result[0]["source"] == "cpsc_compliance"
+    assert result[0]["metrics"]["policy_focus"] == "产品合规审核"
+    assert result[0]["metrics"]["policy_authority"] == "CPSC"
 
 
 def test_policy_title_cleanup():
