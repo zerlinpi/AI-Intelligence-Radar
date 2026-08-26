@@ -7,6 +7,7 @@ from app.cards.models import (
     ReportDecisionModel,
 )
 from app.cards.text import payload_bytes
+from app.config import FEISHU_MAX_PAYLOAD_BYTES
 
 
 def _model(project_count=7):
@@ -86,8 +87,12 @@ def _model(project_count=7):
     )
 
 
-def test_daily_report_is_exactly_three_cards():
-    cards = build_daily_cards(_model())
+def _serialized(cards):
+    return "\n".join(str(card.payload) for card in cards)
+
+
+def test_short_daily_report_keeps_three_logical_cards():
+    cards = build_daily_cards(_model(project_count=2))
     assert [card.card_type for card in cards] == [
         "summary",
         "compliance",
@@ -96,7 +101,7 @@ def test_daily_report_is_exactly_three_cards():
 
 
 def test_summary_contains_only_three_actions_and_grey_blocks():
-    summary_card = build_daily_cards(_model())[0].payload
+    summary_card = build_daily_cards(_model(project_count=2))[0].payload
     blocks = [
         item
         for item in summary_card["card"]["elements"]
@@ -113,7 +118,7 @@ def test_summary_contains_only_three_actions_and_grey_blocks():
 
 
 def test_compliance_card_highlights_only_decision_fields():
-    compliance_card = build_daily_cards(_model())[1].payload
+    compliance_card = build_daily_cards(_model(project_count=2))[1].payload
     blocks = [
         item
         for item in compliance_card["card"]["elements"]
@@ -130,20 +135,62 @@ def test_compliance_card_highlights_only_decision_fields():
     assert "查看官方原文" in serialized
 
 
-def test_product_card_shows_at_most_five_projects():
-    product_card = build_daily_cards(_model(project_count=9), max_projects=5)[2]
-    serialized = str(product_card.payload)
+def test_all_projects_are_paginated_instead_of_omitted():
+    cards = build_daily_cards(_model(project_count=9), max_projects=5)
+    serialized = _serialized(cards)
 
     assert "Project 1" in serialized
     assert "Project 5" in serialized
-    assert "Project 6" not in serialized
-    assert "其余 4 个候选已入库" in serialized
+    assert "Project 6" in serialized
+    assert "Project 9" in serialized
+    assert "其余 4 个候选已入库" not in serialized
+    assert any(card.card_type.startswith("products-") for card in cards)
 
 
-def test_generated_cards_stay_under_18_kib_for_normal_report():
-    cards = build_daily_cards(_model(project_count=10), max_projects=5)
+def test_long_business_copy_is_never_hard_truncated():
+    model = _model(project_count=1)
+    long_requirement = (
+        "BEGIN-审核要求。"
+        + "这是必须完整保留的美国市场产品审核说明，包含适用对象、条件、证书和执行要求。" * 500
+        + "END-审核要求。"
+    )
+    long_risk = (
+        "BEGIN-风险。"
+        + "这是必须完整保留的风险说明，不能因为飞书展示预算直接裁掉。" * 500
+        + "END-风险。"
+    )
+    long_description = (
+        "BEGIN-产品描述。"
+        + "这是必须完整保留的产品能力、工作方式和跨境电商应用场景。" * 500
+        + "END-产品描述。"
+    )
+
+    compliance = model.compliance[-1]
+    compliance.requirement = long_requirement
+    compliance.risk = long_risk
+    model.products[0].description = long_description
+
+    cards = build_daily_cards(model, max_projects=5)
+    serialized = _serialized(cards)
+
+    assert "BEGIN-审核要求" in serialized
+    assert "END-审核要求" in serialized
+    assert "BEGIN-风险" in serialized
+    assert "END-风险" in serialized
+    assert "BEGIN-产品描述" in serialized
+    assert "END-产品描述" in serialized
+    # 长文必须通过增加物理卡片承载，而不是字段末尾加省略号。
+    assert len(cards) > 3
+
+
+def test_every_generated_page_stays_inside_payload_budget():
+    model = _model(project_count=10)
+    model.products[0].description = "完整长文。" * 3000
+    model.compliance[-1].preparation = "准备资料必须完整展示。" * 2000
+
+    cards = build_daily_cards(model, max_projects=5)
     for card in cards:
-        assert payload_bytes(card.payload) <= 18 * 1024
+        assert payload_bytes(card.payload) <= FEISHU_MAX_PAYLOAD_BYTES
 
 
 def test_all_daily_headers_are_turquoise():
