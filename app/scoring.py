@@ -1,4 +1,78 @@
 from datetime import datetime, timezone
+import re
+
+
+CROSS_BORDER_KEYWORDS = (
+    "ecommerce",
+    "e-commerce",
+    "shopify",
+    "amazon",
+    "etsy",
+    "walmart",
+    "tiktok shop",
+    "seller",
+    "merchant",
+    "storefront",
+    "product listing",
+    "listing optimization",
+    "cross-border",
+    "cross border",
+    "dropshipping",
+    "fulfillment",
+    "inventory",
+    "warehouse",
+    "shipping",
+    "logistics",
+    "returns",
+    "customer support",
+    "customer service",
+    "localization",
+    "translation",
+    "product research",
+    "market research",
+    "competitor research",
+    "keyword research",
+    "pricing",
+    "price tracking",
+    "advertising",
+    "ad creative",
+    "meta ads",
+    "google ads",
+    "seo",
+    "affiliate",
+    "influencer",
+    "ugc",
+    "review analysis",
+    "reviews",
+    "sourcing",
+    "procurement",
+)
+
+PRODUCTIZABLE_KEYWORDS = (
+    "saas",
+    "platform",
+    "tool",
+    "app",
+    "api",
+    "sdk",
+    "agent",
+    "copilot",
+    "assistant",
+    "automation",
+    "workflow",
+    "dashboard",
+    "browser",
+    "extension",
+    "plugin",
+    "integration",
+    "crm",
+    "analytics",
+    "generator",
+    "monitor",
+    "search",
+    "scraper",
+    "service",
+)
 
 
 def _normalize(value, divisor, weight):
@@ -26,6 +100,70 @@ def _metric(item, key):
         return metrics.get(key) or 0
 
     return 0
+
+
+def _search_text(item) -> str:
+    if not isinstance(item, dict):
+        return ""
+
+    parts = [
+        item.get("title"),
+        item.get("description"),
+        item.get("category"),
+        item.get("source"),
+    ]
+    return " ".join(str(part or "") for part in parts).lower()
+
+
+def _contains_keyword(text: str, keyword: str) -> bool:
+    if keyword == "app":
+        return bool(re.search(r"\bapp\b", text))
+    if keyword == "api":
+        return bool(re.search(r"\bapi\b", text))
+    if keyword == "sdk":
+        return bool(re.search(r"\bsdk\b", text))
+    if keyword == "seo":
+        return bool(re.search(r"\bseo\b", text))
+    if keyword == "crm":
+        return bool(re.search(r"\bcrm\b", text))
+    return keyword in text
+
+
+def priority_tags(item):
+    """识别跨境电商相关性与产品化潜力，仅用于选品优先级。"""
+    text = _search_text(item)
+    tags = []
+
+    if any(_contains_keyword(text, keyword) for keyword in CROSS_BORDER_KEYWORDS):
+        tags.append("跨境电商")
+
+    source = str(item.get("source") or "").lower() if isinstance(item, dict) else ""
+    product_signal = any(
+        _contains_keyword(text, keyword)
+        for keyword in PRODUCTIZABLE_KEYWORDS
+    )
+
+    if source == "producthunt" or product_signal:
+        tags.append("可产品化")
+
+    return tags
+
+
+def calculate_priority_score(item):
+    """计算业务选品优先分，不改变原有早期热度分语义。
+
+    - 跨境电商直接相关：+20
+    - 具备 SaaS / 工具 / Agent / API 等产品化形态：+10
+    """
+    tags = priority_tags(item)
+    score = 0
+
+    if "跨境电商" in tags:
+        score += 20
+    if "可产品化" in tags:
+        score += 10
+
+    return score
 
 
 def age_hours(item):
