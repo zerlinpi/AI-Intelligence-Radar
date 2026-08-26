@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS intelligence_items (
     source VARCHAR(50) DEFAULT '',
     description TEXT DEFAULT '',
     trend_score INTEGER DEFAULT 0,
+    business_score INTEGER DEFAULT 0,
     created_at DATETIME,
     category VARCHAR(50) DEFAULT 'ai',
     metrics JSON DEFAULT '{}',
@@ -26,6 +27,10 @@ CREATE TABLE IF NOT EXISTS intelligence_items (
 
 
 MIGRATIONS = [
+    (
+        "business_score",
+        "ALTER TABLE intelligence_items ADD COLUMN business_score INTEGER DEFAULT 0",
+    ),
     (
         "category",
         "ALTER TABLE intelligence_items ADD COLUMN category VARCHAR(50) DEFAULT 'ai'",
