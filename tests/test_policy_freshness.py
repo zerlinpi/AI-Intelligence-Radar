@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from app.sources.policies import (
+    _candidate_key,
     _dedupe_policy_topics,
     _recency_first_score,
     _same_policy_topic,
@@ -81,6 +82,15 @@ def test_same_focus_but_different_regulator_is_not_deduplicated():
     kept, duplicate_count = _dedupe_policy_topics([cpsc, fcc])
     assert duplicate_count == 0
     assert len(kept) == 2
+
+
+def test_candidate_key_prevents_same_title_from_overwriting_different_regulators():
+    title = "New Product Certification Requirements"
+    cpsc_key = _candidate_key(title, "CPSC", "https://example.com/cpsc")
+    fcc_key = _candidate_key(title, "FCC", "https://example.com/fcc")
+    assert cpsc_key != fcc_key
+    assert cpsc_key.startswith("cpsc:")
+    assert fcc_key.startswith("fcc:")
 
 
 def test_recency_sort_score_prioritizes_newer_policy_even_with_lower_quality():
