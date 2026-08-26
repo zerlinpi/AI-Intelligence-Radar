@@ -1,133 +1,84 @@
 # AI Intelligence Radar
 
-> AI 情报自动化系统
+> 面向“刚上线、正在快速升温”的 AI 项目与产品的自动化情报雷达。
 >
-> 自动采集 AI 领域公开信息，通过趋势评分、LLM 分析生成每日情报，并推送到飞书。
+> 系统自动采集公开数据，计算早期增长热度，通过 DeepSeek / OpenAI Compatible LLM 生成中文分析，并写入 SQLite、推送飞书日报。
 
-## 项目定位
+## 当前目标
 
-AI Intelligence Radar 是一个自动化 AI 情报系统，面向：
+本项目当前优先完成和稳定以下核心链路，不以“历史累计最热门项目”为目标：
 
-- AI 开发者
-- 创业团队
-- 技术研究人员
-- 投资与市场分析人员
-
-核心目标：
-
-```
-发现 AI 信号
+```text
+发现近期上线 AI 项目
         ↓
-理解技术价值
+计算单位时间增长速度
         ↓
-判断商业机会
+筛选早期热点 Top 10
         ↓
-生成每日行动建议
+LLM 中文机会分析
+        ↓
+SQLite 持久化
+        ↓
+飞书中文日报
 ```
 
----
-
-# 系统架构
-
-```
-                 Data Sources
-
- GitHub | HackerNews | HuggingFace | arXiv | Product Hunt
-
-                         ↓
-
-                Collector Layer
-
-                         ↓
-
-                  RadarItem Model
-
-                         ↓
-
-              Cleaning + Deduplication
-
-                         ↓
-
-                Radar Score Engine
-
-                         ↓
-
-          LLM Intelligence Layer
-
-       OpenAI Compatible / DeepSeek
-
-                         ↓
-
-              SQLite Historical DB
-
-                         ↓
-
-                Feishu Daily Report
-```
+“新项目热度”强调上线后的早期增长速度，不等同于历史累计 Stars、Votes 或 Downloads。
 
 ---
 
-# 核心模块说明
+## 数据源
 
-## Collector
+当前已有数据源：
 
-负责采集外部 AI 信息。
+- **GitHub**：最近 7 天新建的 AI / LLM / AI Agent 项目，综合 Stars、Forks 与上线时间判断增长速度。
+- **Hacker News / Show HN**：近期发布的 AI 项目，综合 Votes、Comments 与发布时间判断早期热度。
+- **Hugging Face**：最近 7 天新发布模型，综合 Downloads、Likes 与发布时间判断增长速度。
+- **arXiv**：最新 cs.AI / cs.LG / cs.CL 研究论文。
+- **Product Hunt**：近期 AI 产品，综合 Votes、Comments 与发布时间判断早期热度。需要 `PRODUCT_HUNT_TOKEN`。
 
-当前支持：
-
-- GitHub AI 项目
-- Hacker News 技术趋势
-- HuggingFace 模型动态
-- arXiv AI 论文
-- Product Hunt 产品信号
-
-所有数据统一转换为 RadarItem。
+所有来源最终统一转换为 `RadarItem`。
 
 ---
 
-## Radar Score Engine
+## 早期热度评分
 
-综合：
+当前评分重点：
 
-- 社区热度
-- 开发活跃度
-- AI 相关性
-- 市场信号
-- 时间新鲜度
+- 新鲜度
+- Stars / 天、Votes / 天、Downloads / 天等增长速度
+- Forks、Comments、Likes 等早期互动
+- 数据源自身 Momentum 信号
 
-生成趋势评分。
+当前只进入报告的项目再调用 LLM，避免对全部采集结果逐条请求模型。
+
+默认日报最多输出 **10 条**。
 
 ---
 
-## AI Intelligence Layer
+## LLM
 
-支持所有 OpenAI Compatible API。
+支持 OpenAI Compatible 接口，包括：
 
-包括：
-
-- OpenAI
 - DeepSeek
-- 本地兼容 OpenAI API 的模型服务
+- OpenAI
+- 其他兼容 OpenAI Chat Completions 的服务
 
-配置：
+DeepSeek 示例：
 
 ```env
 LLM_PROVIDER=deepseek
 LLM_API_KEY=your_key
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-chat
+LLM_TEMPERATURE=0.2
+LLM_MAX_TOKENS=1200
 ```
+
+LLM 请求使用受控重试：401/403/404 等不可恢复配置错误会立即失败并使用 fallback；网络错误、429、5xx 等临时错误才会重试。
 
 ---
 
-# 飞书通知
-
-系统自动生成：
-
-- 今日 AI 热点
-- 技术价值分析
-- 商业机会判断
-- 创业方向建议
+## 飞书通知
 
 配置：
 
@@ -135,199 +86,327 @@ LLM_MODEL=deepseek-chat
 FEISHU_WEBHOOK=https://open.feishu.cn/...
 ```
 
+日报为全中文，主要包含：
+
+- 项目名称和来源
+- 大致上线时间
+- 新项目热度
+- Stars / Votes / Downloads 等早期指标
+- 单位时间增长速度
+- 商业机会等级和商业分
+- AI 中文判断
+- 首个可关注机会点
+- 项目链接
+
 ---
 
-# 本地运行
+## 环境变量
 
-## 1. 克隆项目
-
-```bash
-git clone https://github.com/zerlinpi/AI-Intelligence-Radar.git
-cd AI-Intelligence-Radar
-```
-
-## 2. 安装依赖
-
-```bash
-pip install -r requirements.txt
-```
-
-## 3. 配置环境变量
+复制样例：
 
 ```bash
 cp .env.example .env
 ```
 
-修改：
+核心配置：
 
-- LLM API Key
-- DeepSeek/OpenAI 配置
-- 飞书 Webhook
+```env
+GITHUB_TOKEN=
+PRODUCT_HUNT_TOKEN=
 
-## 4. 测试环境
+LLM_PROVIDER=deepseek
+LLM_API_KEY=
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-chat
+LLM_TEMPERATURE=0.2
+LLM_MAX_TOKENS=1200
 
-```bash
-make check
-make test
+FEISHU_WEBHOOK=
+DATABASE_URL=sqlite:///./data/radar.db
+
+RADAR_RUN_HOUR=8
+RADAR_RUN_MINUTE=0
 ```
 
-## 5. 启动服务
+说明：
 
-```bash
-make run
-```
+- `GITHUB_TOKEN`：可选；不配置时 GitHub API 速率限制更低。
+- `PRODUCT_HUNT_TOKEN`：可选；不配置时 Product Hunt Collector 会跳过并记录 WARN。
+- `LLM_API_KEY`：日报 AI 分析必需。
+- `FEISHU_WEBHOOK`：飞书推送必需。
+- `DATABASE_URL`：Docker 默认使用 `./data/radar.db` 持久化。
+- Scheduler 当前时区为 `Asia/Shanghai`（UTC+8）。
 
 ---
 
 # Docker 部署
 
-推荐生产环境使用 Docker：
+生产环境推荐使用 Docker Compose。
+
+## 首次部署 / 更新
 
 ```bash
-docker compose build
-docker compose up -d
+cd /opt/AI-Intelligence-Radar
+git pull
+docker compose up -d --build
 ```
 
-查看日志：
+查看状态：
 
 ```bash
-docker compose logs -f
+docker ps
 ```
 
-检查服务：
+正常应看到：
+
+```text
+ai-intelligence-radar   Up ... (healthy)
+```
+
+API 默认只绑定宿主机本地地址：
+
+```text
+127.0.0.1:8000->8000/tcp
+```
+
+不会默认暴露到公网。
+
+---
+
+## 配置自检
+
+```bash
+docker exec ai-intelligence-radar python -m app.cli check
+```
+
+必需项：
+
+```text
+[OK] Database
+[OK] Feishu Webhook
+[OK] LLM API Key
+[OK] LLM Model
+[OK] LLM Base URL
+```
+
+可选项未配置时显示 `WARN`：
+
+```text
+[WARN] GitHub Token
+[WARN] Product Hunt Token
+```
+
+可选项 WARN 不会阻止主程序运行。
+
+---
+
+## 健康检查
+
+进程存活：
 
 ```bash
 curl http://localhost:8000/health
-curl http://localhost:8000/ready
+```
+
+Scheduler 就绪：
+
+```bash
+curl -i http://localhost:8000/ready
+```
+
+正常 Scheduler 运行时 `/ready` 返回 HTTP 200；未就绪时返回 HTTP 503，因此 Docker healthcheck 能真实反映服务状态。
+
+---
+
+## 手动运行完整日报
+
+推荐直接从宿主机执行：
+
+```bash
+docker exec ai-intelligence-radar python -m app.cli
+```
+
+保留完整日志：
+
+```bash
+docker exec ai-intelligence-radar python -m app.cli 2>&1 | tee /root/radar-test.log
+```
+
+完整流程：
+
+```text
+Collectors
+   ↓
+Normalize / Deduplicate
+   ↓
+Early Momentum Score
+   ↓
+Top 10
+   ↓
+DeepSeek / OpenAI Compatible Analysis
+   ↓
+SQLite
+   ↓
+Feishu
+```
+
+如果手动运行与 Scheduler 正在执行的任务重叠，系统会主动跳过第二次执行，避免重复调用 LLM、重复写库和重复发飞书。
+
+---
+
+## 日志
+
+```bash
+docker logs --tail 100 ai-intelligence-radar
+```
+
+持续查看：
+
+```bash
+docker logs -f ai-intelligence-radar
+```
+
+关键成功日志通常包括：
+
+```text
+collector=GithubCollector items=...
+collector=HackerNewsCollector items=...
+collector=HuggingFaceCollector items=...
+collector=ArxivCollector items=...
+collector=ProductHuntCollector items=...
+saved=...
+feishu sent
+daily radar finished
+```
+
+Product Hunt 正常执行时还会记录：
+
+```text
+product hunt fetched=... recent_ai=...
 ```
 
 ---
 
-# API接口
+## 数据库
 
-## Health Check
+Docker Compose 挂载：
 
-```
-GET /health
-```
-
-用于 Docker 和服务监控。
-
-## Ready Check
-
-```
-GET /ready
+```text
+./data:/app/data
 ```
 
-用于确认 Scheduler 是否正常运行。
+默认数据库：
 
-## 手动执行日报
-
-```
-POST /run
+```text
+./data/radar.db
 ```
 
-立即执行一次完整 AI Radar 流程。
+数据库保存来源项目真实发布时间，用于后续判断项目年龄和早期增长速度。
+
+容器启动时会先执行数据库迁移脚本，再启动 FastAPI。
 
 ---
 
-# 自动任务
+# API
 
-系统内置 Scheduler。
+## `GET /health`
+
+确认 FastAPI 进程存活。
+
+## `GET /ready`
+
+确认 Scheduler 已启动。
+
+- Ready：HTTP 200
+- Not Ready：HTTP 503
+
+## `POST /run`
+
+手动执行一次完整 Radar 流程。
+
+Docker 默认只将 API 绑定到 `127.0.0.1:8000`，避免未经授权的公网请求触发 LLM 和飞书。
+
+---
+
+# Scheduler
 
 默认：
 
-```
+```text
 每天 08:00
+Timezone: Asia/Shanghai
 ```
 
-可通过环境变量调整：
+可配置：
 
 ```env
 RADAR_RUN_HOUR=8
 RADAR_RUN_MINUTE=0
 ```
 
+非法小时或分钟不会导致容器直接启动失败，系统会回退到默认值并记录警告。
+
 ---
 
-# 当前完成能力
+# 测试
 
-✅ 多源 AI 情报采集
+GitHub Actions 会执行：
 
-✅ Collector 统一架构
+```bash
+python -m pytest -v --tb=short
+```
 
-✅ RadarItem 数据模型
+测试范围包括：
 
-✅ 数据清洗与去重
-
-✅ 趋势评分系统
-
-✅ DeepSeek/OpenAI Compatible LLM
-
-✅ AI 商业机会分析
-
-✅ SQLite 历史存储
-
-✅ 数据库自动迁移
-
-✅ Docker 自动部署
-
-✅ Scheduler 自动运行
-
-✅ 飞书机器人通知
-
-✅ Retry 与异常恢复
-
-✅ 基础 CI 测试
+- LLM JSON 解析与 fallback
+- LLM 临时错误重试 / 不可恢复错误快速失败
+- 数据清洗与去重
+- RadarItem 转换
+- 新项目评分
+- SQLite 存储
+- 来源发布时间持久化
+- 飞书发送
+- Product Hunt 近期 AI 产品过滤
+- `/ready` 200 / 503
+- 防止重复并发执行
 
 ---
 
 # 项目目录
 
-```
+```text
 app/
-├── ai/              # LLM分析
-├── core/            # 配置和日志
-├── database/        # 数据库模型
-├── models/          # Radar数据模型
-├── sources/         # 数据采集器
-├── storage/         # 数据存储
-├── pipeline.py      # 核心流程
-├── scheduler.py     # 定时任务
+├── ai/              # LLM 分析、解析、重试
+├── core/            # 日志、执行锁
+├── database/        # SQLAlchemy 数据库
+├── models/          # RadarItem
+├── sources/         # GitHub / HN / HF / arXiv / Product Hunt
+├── storage/         # SQLite 存储
+├── pipeline.py      # 核心日报流程
+├── scheduler.py     # APScheduler
+├── main.py          # FastAPI
 └── feishu.py        # 飞书通知
 
 scripts/
 ├── migrate_db.py
-└── docker-entrypoint.sh
+├── docker-entrypoint.sh
+└── verify_install.sh
 ```
 
 ---
 
-# 开发路线
+# 当前阶段
 
-## Phase 1
+当前优先级是继续稳定现有核心能力：
 
-当前版本目标：
+- 新项目发现准确性
+- 增长速度评分质量
+- LLM 分析稳定性
+- 数据持久化可靠性
+- 飞书日报可读性
+- Docker / Scheduler 长期运行稳定性
 
-- 稳定每日 AI 情报
-- 飞书自动推送
-- 完整生产部署
-
-## Phase 2
-
-计划：
-
-- Dashboard
-- 趋势可视化
-- 更多数据源
-
-## Phase 3
-
-计划：
-
-- 行业 AI 雷达
-- API 服务
-- 个性化情报订阅
+在这些核心能力完成并经过真实环境验证之前，不优先扩展 Dashboard、趋势可视化或其他新模块。
 
 ---
 
