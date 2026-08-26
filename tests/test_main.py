@@ -9,7 +9,7 @@ def test_readiness_returns_503_when_scheduler_is_stopped(monkeypatch):
     response = main.readiness_check()
 
     assert response.status_code == 503
-    assert b'"ready":false' in response.body
+    assert '"就绪":false'.encode("utf-8") in response.body
 
 
 def test_readiness_returns_200_when_scheduler_is_running(monkeypatch):
@@ -18,4 +18,11 @@ def test_readiness_returns_200_when_scheduler_is_running(monkeypatch):
     response = main.readiness_check()
 
     assert response.status_code == 200
-    assert b'"ready":true' in response.body
+    assert '"就绪":true'.encode("utf-8") in response.body
+
+
+def test_home_uses_chinese_public_fields():
+    result = main.home()
+
+    assert result["名称"] == "AI 情报雷达"
+    assert result["状态"] == "运行中"
