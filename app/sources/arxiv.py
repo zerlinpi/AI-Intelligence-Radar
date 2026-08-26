@@ -10,7 +10,7 @@ from app.core.logger import get_logger
 API = "https://export.arxiv.org/api/query"
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 
-logger = get_logger("collector.arxiv")
+logger = get_logger("arXiv采集")
 
 
 class ArxivCollector(BaseCollector):
@@ -35,7 +35,7 @@ class ArxivCollector(BaseCollector):
         try:
             root = ElementTree.fromstring(text)
         except ElementTree.ParseError:
-            logger.exception("arxiv returned invalid atom xml")
+            logger.exception("arXiv 返回的论文数据格式无效")
             return []
 
         results = []
