@@ -1,19 +1,25 @@
+import random
 import re
 import time
 
 import requests
 
-from app.config import FEISHU_WEBHOOK
+from app.cards.models import CardEnvelope
+from app.cards.text import payload_bytes
+from app.config import (
+    FEISHU_MAX_PAYLOAD_BYTES,
+    FEISHU_MAX_RETRIES,
+    FEISHU_SEND_TIMEOUT_SECONDS,
+    FEISHU_WEBHOOK,
+)
 from app.core.logger import get_logger
 
 
 logger = get_logger("飞书通知")
 
 
-MAX_RETRIES = 3
-
-# 飞书 raw interactive card 的 column_set 已验证支持 grey 背景。
-# 关键决策信息统一用浅灰背景，不滥用高饱和色；语义通过图标与标签区分。
+# 以下解析器只保留给旧 build_feishu_message()/send_feishu() 兼容调用。
+# 正式日报已改为 Decision Model -> Card Builder -> JSON，不再依赖 Regex 猜字段。
 HIGHLIGHT_MARKERS = (
     "**审核简报：**",
     "**重点影响产品：**",
@@ -23,11 +29,9 @@ HIGHLIGHT_MARKERS = (
     "**准备资料：**",
 )
 
-# 模型保持完整分析；这里只控制飞书最终展示预算。
-# 目标：移动端 5 秒识别重点、30 秒完成主要扫读，避免单字段占据过多屏幕。
-DISPLAY_LIMITS = {
+LEGACY_DISPLAY_LIMITS = {
     "审核简报": 72,
-    "重点影响产品": 48,
+    "重点影响产品": 72,
     "优先准备": 64,
     "审核要求": 72,
     "影响产品": 48,
@@ -44,102 +48,55 @@ DISPLAY_LIMITS = {
 }
 
 LABEL_PATTERN = re.compile(r"\*\*(?P<label>[^*：]+)：\*\*")
-SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[。！？；;])")
-CLAUSE_SPLIT_PATTERN = re.compile(r"(?<=[，、,:：])")
 
 
 def _clip_text(text: str, limit: int) -> str:
-    """优先按完整句/分句压缩，最后才硬截断，避免半句话占据决策字段。"""
     value = " ".join(str(text or "").split())
     if len(value) <= limit:
         return value
-
-    if limit <= 1:
-        return "…"
-
-    target = limit - 1
-
-    def compact_by(pattern: re.Pattern) -> str:
-        selected = ""
-        for part in pattern.split(value):
-            part = part.strip()
-            if not part:
-                continue
-            candidate = f"{selected}{part}".strip()
-            if len(candidate) > target:
-                break
-            selected = candidate
-        return selected.rstrip("，。；;、:： ")
-
-    # 首选完整句；若第一句本身过长，再退到逗号/顿号级分句。
-    compact = compact_by(SENTENCE_SPLIT_PATTERN)
-    if not compact:
-        compact = compact_by(CLAUSE_SPLIT_PATTERN)
-
-    # 完整分句过短时继续使用硬截断，避免只留下没有结论的开场短语。
-    minimum_useful = min(18, max(target // 3, 8))
-    if len(compact) >= minimum_useful:
-        return compact + "…"
-
-    return value[:target].rstrip("，。；;、:： ") + "…"
+    return value[: max(limit - 1, 1)].rstrip("，。；;、 ") + "…"
 
 
 def _compact_markdown_line(line: str) -> str:
-    """按字段语义压缩正文，不改变标题、链接和数值元信息。"""
     stripped = str(line or "").strip()
     match = LABEL_PATTERN.search(stripped)
     if not match:
         return line
 
     label = match.group("label")
-    limit = DISPLAY_LIMITS.get(label)
+    limit = LEGACY_DISPLAY_LIMITS.get(label)
     if not limit:
         return line
 
-    body_start = match.end()
-    prefix = stripped[:body_start]
-    body = stripped[body_start:].strip()
-
-    # 高亮正文不再整体加粗，只保留标签加粗，降低视觉噪音。
+    prefix = stripped[: match.end()]
+    body = stripped[match.end():].strip()
     if body.startswith("**") and body.endswith("**") and len(body) >= 4:
         body = body[2:-2].strip()
-
-    compact = _clip_text(body, limit)
-    return f"{prefix} {compact}" if compact else prefix
+    return f"{prefix} {_clip_text(body, limit)}".rstrip()
 
 
 def _markdown_element(content: str) -> dict:
     return {
         "tag": "div",
-        "text": {
-            "tag": "lark_md",
-            "content": content,
-        },
+        "text": {"tag": "lark_md", "content": content},
     }
 
 
 def _split_highlight_content(content: str):
-    """将高亮行拆成标签与正文，便于两列扫描。"""
     text = content.strip()
     if text.startswith(">"):
         text = text[1:].strip()
-
     match = LABEL_PATTERN.search(text)
     if not match:
         return "重点", text
-
     icon_prefix = text[: match.start()].strip()
     label_text = match.group("label")
     body = text[match.end():].strip()
-
-    left = f"{icon_prefix} **{label_text}**".strip()
-    return left, body
+    return f"{icon_prefix} **{label_text}**".strip(), body
 
 
 def _highlight_element(content: str) -> dict:
-    """浅灰背景 + 1:4 标签/正文两列，保持桌面与移动端统一扫读节奏。"""
     label, body = _split_highlight_content(content)
-
     return {
         "tag": "column_set",
         "flex_mode": "none",
@@ -164,7 +121,7 @@ def _highlight_element(content: str) -> dict:
 
 
 def build_card_elements(message: str) -> list:
-    """把日报拆成普通内容、分隔线和少量灰底决策块。"""
+    """兼容旧 Markdown 日报；新生产路径不再调用此函数。"""
     elements = []
     buffer = []
 
@@ -179,39 +136,146 @@ def build_card_elements(message: str) -> list:
     for raw_line in str(message or "").splitlines():
         line = _compact_markdown_line(raw_line)
         stripped = line.strip()
-
         if stripped == "---":
             flush_buffer()
             elements.append({"tag": "hr"})
             continue
-
         if stripped.startswith(">") and any(
             marker in stripped for marker in HIGHLIGHT_MARKERS
         ):
             flush_buffer()
             elements.append(_highlight_element(stripped))
             continue
-
         buffer.append(line)
 
     flush_buffer()
     return elements or [_markdown_element(str(message or ""))]
 
 
-def send_feishu(message: str) -> bool:
-    """发送中文美国跨境经营雷达卡片到飞书。"""
+def _plain_text_payload(text: str) -> dict:
+    return {
+        "msg_type": "text",
+        "content": {"text": str(text or "")},
+    }
+
+
+def _retry_sleep(attempt: int):
+    delay = min(2 ** max(attempt - 1, 0), 8) + random.uniform(0, 0.35)
+    time.sleep(delay)
+
+
+def _post_payload(payload: dict, card_type: str) -> bool:
+    """分类处理网络、429/5xx 和不可重试 4xx。"""
+    for attempt in range(1, FEISHU_MAX_RETRIES + 1):
+        try:
+            response = requests.post(
+                FEISHU_WEBHOOK,
+                json=payload,
+                timeout=FEISHU_SEND_TIMEOUT_SECONDS,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            logger.warning(
+                "飞书发送网络异常：卡片=%s 第%s/%s次 错误=%s",
+                card_type,
+                attempt,
+                FEISHU_MAX_RETRIES,
+                exc,
+            )
+            if attempt < FEISHU_MAX_RETRIES:
+                _retry_sleep(attempt)
+                continue
+            return False
+        except requests.RequestException as exc:
+            logger.error("飞书发送请求失败：卡片=%s 错误=%s", card_type, exc)
+            return False
+
+        status = int(getattr(response, "status_code", 200) or 200)
+        if status == 429 or status >= 500:
+            logger.warning(
+                "飞书服务暂时不可用：卡片=%s HTTP=%s 第%s/%s次",
+                card_type,
+                status,
+                attempt,
+                FEISHU_MAX_RETRIES,
+            )
+            if attempt < FEISHU_MAX_RETRIES:
+                _retry_sleep(attempt)
+                continue
+            return False
+
+        if 400 <= status < 500:
+            logger.error(
+                "飞书请求不可重试：卡片=%s HTTP=%s",
+                card_type,
+                status,
+            )
+            return False
+
+        try:
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            logger.error("飞书响应解析失败：卡片=%s 错误=%s", card_type, exc)
+            return False
+
+        if data.get("code", 0) != 0:
+            logger.error("飞书业务返回异常：卡片=%s 返回=%s", card_type, data)
+            return False
+
+        logger.info(
+            "飞书卡片发送成功：类型=%s Payload=%s字节",
+            card_type,
+            payload_bytes(payload),
+        )
+        return True
+
+    return False
+
+
+def send_feishu_cards(cards) -> bool:
+    """按顺序发送结构化日报卡片；卡片失败时自动发送纯文本 fallback。"""
     if not FEISHU_WEBHOOK:
         logger.warning("未配置飞书机器人地址")
         return False
 
+    all_success = True
+    for raw_card in list(cards or []):
+        card = raw_card if isinstance(raw_card, CardEnvelope) else CardEnvelope(**raw_card)
+        size = payload_bytes(card.payload)
+
+        if size > FEISHU_MAX_PAYLOAD_BYTES:
+            logger.warning(
+                "飞书卡片超过安全预算，改发纯文本：类型=%s Payload=%s字节 预算=%s字节",
+                card.card_type,
+                size,
+                FEISHU_MAX_PAYLOAD_BYTES,
+            )
+            sent = _post_payload(
+                _plain_text_payload(card.fallback_text),
+                f"{card.card_type}:text",
+            )
+            all_success = all_success and sent
+            continue
+
+        sent = _post_payload(card.payload, card.card_type)
+        if not sent:
+            logger.warning("飞书卡片发送失败，尝试纯文本降级：类型=%s", card.card_type)
+            sent = _post_payload(
+                _plain_text_payload(card.fallback_text),
+                f"{card.card_type}:text",
+            )
+        all_success = all_success and sent
+
+    return all_success
+
+
+def send_feishu(message: str) -> bool:
+    """兼容旧单卡接口；正式日报请使用 send_feishu_cards。"""
     payload = {
         "msg_type": "interactive",
         "card": {
-            "config": {
-                "wide_screen_mode": True,
-            },
+            "config": {"wide_screen_mode": True},
             "header": {
-                # turquoise 仅表达日常信息层级；红/橙保留给未来独立风险告警。
                 "template": "turquoise",
                 "title": {
                     "tag": "plain_text",
@@ -221,33 +285,7 @@ def send_feishu(message: str) -> bool:
             "elements": build_card_elements(message),
         },
     }
-
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            response = requests.post(
-                FEISHU_WEBHOOK,
-                json=payload,
-                timeout=10,
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            if data.get("code", 0) != 0:
-                raise RuntimeError(f"飞书接口返回异常：{data}")
-
-            logger.info("飞书通知发送成功")
-            return True
-
-        except Exception as exc:
-            logger.warning(
-                "飞书通知发送失败：第 %s/%s 次，错误=%s",
-                attempt,
-                MAX_RETRIES,
-                exc,
-            )
-
-            if attempt < MAX_RETRIES:
-                time.sleep(attempt * 2)
-
-    logger.error("飞书通知在重试后仍发送失败")
-    return False
+    if not FEISHU_WEBHOOK:
+        logger.warning("未配置飞书机器人地址")
+        return False
+    return _post_payload(payload, "legacy")
