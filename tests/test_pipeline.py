@@ -76,8 +76,49 @@ def test_cross_border_product_is_prioritized(monkeypatch):
     result = build_report(items)
 
     assert result[0].title == "Shopify Listing Copilot"
-    assert result[0].metrics["priority_tags"] == ["跨境电商", "可产品化"]
-    assert result[0].metrics["priority_score"] == 30
+    assert "跨境电商" in result[0].metrics["priority_tags"]
+    assert "可产品化" in result[0].metrics["priority_tags"]
+    assert result[0].metrics["priority_score"] >= 50
+
+
+def test_hardware_product_can_outrank_hot_but_generic_project(monkeypatch):
+    now = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(
+        pipeline,
+        "analyze_items",
+        lambda items: [
+            {
+                "purpose": "测试用途",
+                "summary": "测试判断",
+                "business_score": 80,
+                "opportunity": "high",
+                "startup_ideas": [],
+            }
+            for _ in items
+        ],
+    )
+
+    items = [
+        {
+            "title": "Generic Chat Demo",
+            "description": "Simple AI chat demo",
+            "source": "github",
+            "created_at": now,
+            "stars": 500,
+        },
+        {
+            "title": "ESP32 Edge AI Camera",
+            "description": "Embedded on-device computer vision with BLE sensors for a smart home camera",
+            "source": "github",
+            "created_at": now,
+            "stars": 30,
+        },
+    ]
+
+    result = build_report(items)
+    assert result[0].title == "ESP32 Edge AI Camera"
+    assert "硬件开发" in result[0].metrics["priority_tags"]
+    assert "实体商品机会" in result[0].metrics["priority_tags"]
 
 
 def test_run_daily_radar_skips_when_another_execution_is_running(monkeypatch):
