@@ -47,7 +47,7 @@ def test_frontier_agent_memory_research_is_not_discarded_as_generic_research():
     assert profile["opportunity_score"] >= 20
 
 
-def test_hardware_ai_project_gets_hardware_and_physical_product_signals():
+def test_hardware_ai_project_gets_hardware_physical_category_and_evidence_signals():
     item = {
         "title": "ESP32 Edge AI Pet Camera",
         "description": (
@@ -55,12 +55,49 @@ def test_hardware_ai_project_gets_hardware_and_physical_product_signals():
             "sensor input and embedded firmware"
         ),
         "source": "github",
+        "metrics": {},
     }
     profile = business_opportunity_profile(item)
     assert "硬件开发" in profile["tags"]
     assert "实体商品机会" in profile["tags"]
+    assert "宠物用品" in profile["product_categories"]
+    assert "商品·宠物用品" in profile["tags"]
+    assert profile["evidence"]
+    assert any(tag.startswith("证据·") for tag in profile["tags"])
     assert profile["dimensions"]["hardware_enablement"] >= 10
     assert profile["dimensions"]["physical_product"] >= 8
+
+    # pipeline 先调用 priority_tags / calculate_priority_score；画像应同步写回 metrics，
+    # 以便 DeepSeek 在二次分析时看到本地筛选依据。
+    priority_tags(item)
+    calculate_priority_score(item)
+    assert item["metrics"]["product_categories"]
+    assert item["metrics"]["opportunity_evidence"]
+    assert item["metrics"]["opportunity_dimensions"]["hardware_enablement"] >= 10
+
+
+def test_health_mobility_hardware_maps_to_health_assistive_category():
+    item = {
+        "title": "On-device vision controller for smart wheelchair mobility aid",
+        "description": "Embedded sensor and camera system for wheelchair mobility assistance",
+        "source": "github",
+    }
+    profile = business_opportunity_profile(item)
+    assert "硬件开发" in profile["tags"]
+    assert "实体商品机会" in profile["tags"]
+    assert "健康辅助" in profile["product_categories"]
+
+
+def test_plain_software_tool_does_not_become_physical_tool_product():
+    item = {
+        "title": "AI Monitoring Tool",
+        "description": "Cloud SaaS dashboard and API for monitoring LLM application logs",
+        "source": "github",
+    }
+    profile = business_opportunity_profile(item)
+    assert "实体商品机会" not in profile["tags"]
+    assert "商品·工具DIY" not in profile["tags"]
+    assert profile["product_categories"] == []
 
 
 def test_plain_theoretical_research_without_application_signal_stays_low_priority():
