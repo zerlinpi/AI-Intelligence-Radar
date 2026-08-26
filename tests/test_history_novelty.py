@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -14,7 +14,17 @@ def _session():
     return sessionmaker(bind=engine)()
 
 
-def _save_success(db, *, title, url, description, category="ai", source="github", metrics=None):
+def _save_success(
+    db,
+    *,
+    title,
+    url,
+    description,
+    category="ai",
+    source="github",
+    metrics=None,
+    created_at=None,
+):
     db.add(
         IntelligenceItem(
             source=source,
@@ -30,7 +40,7 @@ def _save_success(db, *, title, url, description, category="ai", source="github"
                 "opportunity": "high",
                 "llm_meta": {"success": True, "fallback": False},
             },
-            created_at=datetime.utcnow(),
+            created_at=created_at or datetime.utcnow(),
         )
     )
     db.commit()
@@ -84,6 +94,7 @@ def test_generic_same_title_with_unrelated_description_is_not_suppressed():
 
 def test_policy_reworded_same_topic_is_suppressed_across_days():
     db = _session()
+    yesterday = datetime.utcnow() - timedelta(days=1)
     _save_success(
         db,
         title="New De Minimis Import Requirements for Ecommerce Shipments",
@@ -92,6 +103,7 @@ def test_policy_reworded_same_topic_is_suppressed_across_days():
         category="policy",
         source="us_import_rule",
         metrics={"policy_focus": "美国跨境新规", "policy_authority": "CBP"},
+        created_at=yesterday,
     )
 
     current = RadarItem(
@@ -135,4 +147,140 @@ def test_same_words_in_different_policy_focus_are_not_suppressed():
     fresh, duplicate_count = filter_recently_reported(db, [current])
     assert fresh == [current]
     assert duplicate_count == 0
+    db.close()
+
+
+def test_same_policy_focus_but_different_authority_is_not_suppressed():
+    db = _session()
+    _save_success(
+        db,
+        title="Consumer Product Certification Update",
+        url="https://example.com/cpsc-update",
+        description="CPSC certification update for regulated consumer goods imported into the United States.",
+        category="policy",
+        source="cpsc_compliance",
+        metrics={"policy_focus": "产品合规审核", "policy_authority": "CPSC"},
+    )
+
+    current = RadarItem(
+        title="Consumer Product Certification Update",
+        source="fcc_compliance",
+        url="https://example.com/fcc-update",
+        description="FCC equipment authorization update for radio frequency devices sold in the United States.",
+        category="policy",
+        metrics={"policy_focus": "产品合规审核", "policy_authority": "FCC"},
+        created_at=datetime.utcnow(),
+    )
+
+    fresh, duplicate_count = filter_recently_reported(db, [current])
+    assert fresh == [current]
+    assert duplicate_count == 0
+    db.close()
+
+
+def test_github_small_growth_is_still_suppressed():
+    db = _session()
+    yesterday = datetime.utcnow() - timedelta(days=1)
+    _save_success(
+        db,
+        title="acme/edge-camera",
+        url="https://github.com/acme/edge-camera",
+        description="ESP32 edge AI camera runtime with BLE sensor integration for embedded products",
+        metrics={
+            "stars": 80,
+            "forks": 10,
+            "pushed_at": yesterday.isoformat(),
+        },
+        created_at=yesterday,
+    )
+
+    current = RadarItem(
+        title="acme/edge-camera",
+        source="github",
+        url="https://github.com/acme/edge-camera",
+        description="ESP32 edge AI camera runtime with BLE sensor integration for embedded products",
+        metrics={
+            "stars": 120,
+            "forks": 13,
+            "pushed_at": datetime.utcnow().isoformat(),
+        },
+        created_at=datetime.utcnow(),
+    )
+
+    fresh, duplicate_count = filter_recently_reported(db, [current])
+    assert fresh == []
+    assert duplicate_count == 1
+    db.close()
+
+
+def test_github_explosive_growth_can_reenter_radar_as_material_update():
+    db = _session()
+    yesterday = datetime.utcnow() - timedelta(days=1)
+    _save_success(
+        db,
+        title="acme/edge-camera",
+        url="https://github.com/acme/edge-camera",
+        description="ESP32 edge AI camera runtime with BLE sensor integration for embedded products",
+        metrics={
+            "stars": 80,
+            "forks": 10,
+            "pushed_at": yesterday.isoformat(),
+        },
+        created_at=yesterday,
+    )
+
+    current = RadarItem(
+        title="acme/edge-camera",
+        source="github",
+        url="https://github.com/acme/edge-camera",
+        description="ESP32 edge AI camera runtime with BLE sensor integration for embedded products",
+        metrics={
+            "stars": 320,
+            "forks": 18,
+            "pushed_at": datetime.utcnow().isoformat(),
+        },
+        created_at=datetime.utcnow(),
+    )
+
+    fresh, duplicate_count = filter_recently_reported(db, [current])
+    assert fresh == [current]
+    assert duplicate_count == 0
+    assert current.metrics["history_material_update"] is True
+    assert "Star" in current.metrics["history_material_update_reason"]
+    db.close()
+
+
+def test_materially_changed_newer_policy_version_can_reenter_radar():
+    db = _session()
+    yesterday = datetime.utcnow() - timedelta(days=1)
+    _save_success(
+        db,
+        title="CBP De Minimis Ecommerce Filing Requirements",
+        url="https://example.com/cbp-v1",
+        description=(
+            "CBP guidance permits eligible low-value ecommerce shipments under $800 and describes basic entry filing fields."
+        ),
+        category="policy",
+        source="us_import_rule",
+        metrics={"policy_focus": "美国跨境新规", "policy_authority": "CBP"},
+        created_at=yesterday,
+    )
+
+    current = RadarItem(
+        title="CBP Updates De Minimis Ecommerce Filing Requirements",
+        source="us_import_rule",
+        url="https://example.com/cbp-v2",
+        description=(
+            "CBP now requires additional electronic importer, tariff classification, country-of-origin and shipment data before release; the revised filing procedure changes the information importers must submit."
+        ),
+        category="policy",
+        metrics={"policy_focus": "美国跨境新规", "policy_authority": "CBP"},
+        created_at=datetime.utcnow(),
+    )
+
+    fresh, duplicate_count = filter_recently_reported(db, [current])
+    assert fresh == [current]
+    assert duplicate_count == 0
+    assert current.metrics["history_material_update"] is True
+    assert "新版本" in current.metrics["history_material_update_reason"]
     db.close()
