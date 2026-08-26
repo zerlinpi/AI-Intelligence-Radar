@@ -18,6 +18,15 @@ on:
 env:
   TESTING: "true"
   DATABASE_URL: "sqlite:///:memory:"
+  FEISHU_WEBHOOK: "https://open.feishu.cn/open-apis/bot/v2/hook/test-ci"
+  FEISHU_OUTBOX_DIR: "/tmp/ai-radar-feishu-outbox"
+  LLM_PROVIDER: "deepseek"
+  LLM_API_KEY: "ci-placeholder"
+  LLM_BASE_URL: "https://api.deepseek.com/v1"
+  LLM_MODEL: "deepseek-v4-pro"
+  LLM_MAX_TOKENS: "65536"
+  LLM_TIMEOUT_SECONDS: "900"
+  REPORT_TIMEZONE: "Asia/Shanghai"
 
 jobs:
   test:
@@ -42,6 +51,17 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      - name: 检查依赖完整性
+        run: python -m pip check
+
+      - name: 编译全部 Python 文件
+        run: python -m compileall -q app scripts tests
+
+      - name: 校验 Docker Compose
+        run: docker compose config >/dev/null
+
+      - name: 生产预检 Smoke Test
+        run: python -m app.cli check
+
       - name: 运行测试
-        run: |
-          python -m pytest -v --tb=short
+        run: python -m pytest -v --tb=short
