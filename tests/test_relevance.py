@@ -42,7 +42,7 @@ def test_github_frontier_demo_template_is_not_treated_as_engineering_breakthroug
         {
             "source": "github",
             "title": "Agent Runtime Demo Template",
-            "description": "Tutorial example app and starter template showing a simple agent runtime framework",
+            "description": "Tutorial example app and starter template showing an on-device agent runtime framework",
         }
     )
     assert result["technical_frontier"] is True
