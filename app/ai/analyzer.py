@@ -46,12 +46,20 @@ METRIC_KEYS = (
 )
 
 
+def _local_trend_score(item: Dict) -> float:
+    try:
+        return round(float(item.get("trend_score", 50) or 50), 2)
+    except (TypeError, ValueError):
+        return 50
+
+
 def _fallback_result(item: Dict, reason: str = "") -> Dict:
     if reason:
         logger.warning("AI 分析降级：%s", reason)
 
     return {
         "summary": "AI 分析暂不可用，建议直接查看项目页面了解最新进展。",
+        "trend_score": _local_trend_score(item),
         "business_score": 50,
         "opportunity": "medium",
         "startup_ideas": [],
@@ -152,6 +160,7 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
         results.append(
             {
                 "summary": summary or "暂无 AI 分析摘要。",
+                "trend_score": _local_trend_score(item),
                 "business_score": business_score,
                 "opportunity": opportunity,
                 "startup_ideas": [idea] if idea else [],
