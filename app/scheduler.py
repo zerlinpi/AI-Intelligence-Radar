@@ -12,6 +12,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.config import REPORT_TIMEZONE
 from app.core.logger import get_logger
 from app.core.preflight import run_preflight
+from app.core.run_history import record_run_safe
 from app.pipeline import run_daily_radar
 
 
@@ -68,6 +69,7 @@ def daily_radar_job():
 
         logger.info("定时日报开始执行")
         result = run_daily_radar() or {}
+        record_run_safe(result)
         logger.info(
             "定时日报执行结束：项目数量=%s 状态=%s",
             len(result.get("items", [])) if isinstance(result, dict) else 0,
