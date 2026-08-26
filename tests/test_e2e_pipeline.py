@@ -89,7 +89,10 @@ def test_build_feishu_message_groups_compliance_and_projects():
         "opportunity": "high",
         "business_score": 98,
         "purpose": "受监管消费品进口时需按要求电子申报CPC或GCC等合规证书数据。",
-        "summary": "进口商未准备正确证书和申报数据可能造成清关延误或合规风险。",
+        "summary": "进口商需要确认商品是否落入证书和电子申报要求。",
+        "affected_products": "儿童产品及其他需要CPC或GCC的受监管消费品",
+        "risk": "证书或eFiling数据不完整可能导致清关延误、整改或销售受阻",
+        "preparation": "第三方测试报告、CPC或GCC证书及eFiling所需申报字段",
         "startup_ideas": ["核对适用标准、测试报告及证书申报数据"],
     }
 
@@ -102,9 +105,14 @@ def test_build_feishu_message_groups_compliance_and_projects():
     assert "今日合规重点" in message
     assert "A｜Amazon 政策与审核" in message
     assert "C｜美国市场产品审核" in message
+    assert "审核简报：" in message
+    assert "重点影响产品：" in message
     assert "核心变化：" in message
     assert "审核要求：" in message
-    assert "准备资料：" in message
+    assert "> 🎯 **影响产品：** **儿童产品及其他需要CPC或GCC的受监管消费品**" in message
+    assert "> ⚠️ **风险：** **证书或eFiling数据不完整可能导致清关延误、整改或销售受阻**" in message
+    assert "> 📋 **准备资料：** **第三方测试报告、CPC或GCC证书及eFiling所需申报字段**" in message
+    assert "建议动作：" in message
     assert "跨境电商直接相关项目" in message
     assert "产品描述：" in message
     assert "增长信号：" in message
