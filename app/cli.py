@@ -1,38 +1,51 @@
 import os
 import sys
 
+from sqlalchemy import text
+
+from app.config import (
+    FEISHU_WEBHOOK,
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MODEL,
+)
+from app.database.session import engine
 from app.pipeline import run_daily_radar
 
 
-def check():
-    llm_api_key = bool(
-        os.getenv("LLM_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-    )
-    llm_model = bool(os.getenv("LLM_MODEL", "gpt-5.5-mini"))
-    llm_base_url = bool(
-        os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
-    )
+def _database_available() -> bool:
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
 
-    checks = {
-        "Environment": True,
-        "Pipeline": True,
-        "Database": bool(os.getenv("DATABASE_URL", "sqlite:///radar.db")),
-        "Feishu Config": bool(os.getenv("FEISHU_WEBHOOK")),
-        "LLM API Key": llm_api_key,
-        "LLM Model": llm_model,
-        "LLM Base URL": llm_base_url,
+
+def check():
+    """Validate the runtime configuration without running the daily pipeline."""
+    required_checks = {
+        "Database": _database_available(),
+        "Feishu Webhook": bool(FEISHU_WEBHOOK),
+        "LLM API Key": bool(LLM_API_KEY),
+        "LLM Model": bool(LLM_MODEL),
+        "LLM Base URL": bool(LLM_BASE_URL),
     }
 
-    success = True
+    optional_checks = {
+        "GitHub Token": bool(os.getenv("GITHUB_TOKEN")),
+        "Product Hunt Token": bool(os.getenv("PRODUCT_HUNT_TOKEN")),
+    }
 
-    for name, status in checks.items():
+    for name, status in required_checks.items():
+        level = "OK" if status else "FAIL"
+        print(f"[{level}] {name}")
+
+    for name, status in optional_checks.items():
         level = "OK" if status else "WARN"
         print(f"[{level}] {name}")
-        if not status:
-            success = False
 
-    return success
+    return all(required_checks.values())
 
 
 def main():
