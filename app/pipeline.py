@@ -1,30 +1,37 @@
 from datetime import datetime, timezone
 import time
 import uuid
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from app.ai.analyzer import analyze_items
+from app.cards import build_daily_cards
+from app.cards.models import (
+    ActionItem,
+    ComplianceDecision,
+    DailySummary,
+    ProductDecision,
+    ReportDecisionModel,
+)
 from app.cleaner import normalize_items
+from app.config import FEISHU_PROJECTS_PER_CARD, REPORT_TIMEZONE
+from app.core.logger import get_logger
+from app.core.run_lock import execution_lock
+from app.database.session import SessionLocal, init_database
+from app.feishu import send_feishu_cards
+from app.models.radar_item import RadarItem
 from app.scoring import (
     age_hours,
     calculate_priority_score,
     calculate_score,
     priority_tags,
 )
-from app.ai.analyzer import analyze_items
-from app.feishu import send_feishu
-from app.core.logger import get_logger
-from app.core.run_lock import execution_lock
-from app.models.radar_item import RadarItem
-
+from app.sources.arxiv import ArxivCollector
 from app.sources.github import GithubCollector
 from app.sources.hackernews import HackerNewsCollector
 from app.sources.huggingface import HuggingFaceCollector
-from app.sources.arxiv import ArxivCollector
-from app.sources.producthunt import ProductHuntCollector
 from app.sources.policies import PolicyCollector
-
-from app.database.session import SessionLocal, init_database
-from app.storage.repository import save_batch, exists
+from app.sources.producthunt import ProductHuntCollector
+from app.storage.repository import exists, save_batch
 
 
 logger = get_logger("主流程")
@@ -72,6 +79,12 @@ POLICY_FOCUS_ORDER = (
     "美国跨境新规",
     "产品合规审核",
 )
+
+RISK_ORDER = {
+    "high": 3,
+    "medium": 2,
+    "low": 1,
+}
 
 
 def collect_sources():
@@ -142,9 +155,10 @@ def fallback_analysis(item, error=None):
             "error": str(error) if error else None,
         }
 
+    original = " ".join(str(getattr(item, "description", "") or "").split())
     return {
-        "purpose": "项目用途暂无法生成，请查看项目原始说明。",
-        "summary": "AI 分析暂不可用，建议直接查看项目页面了解最新进展。",
+        "purpose": f"项目原始说明：{original}" if original else "项目原始说明不足。",
+        "summary": "AI 深度分析未完成，可先结合原始说明与增长信号判断是否继续跟进。",
         "business_score": 50,
         "opportunity": "medium",
         "startup_ideas": [],
@@ -218,14 +232,12 @@ def select_policy_candidates(items):
     selected = []
     selected_ids = set()
 
-    # 先从每一类取最高优先级的一条，避免全部名额被单个平台占满。
     for focus in POLICY_FOCUS_ORDER:
         match = next((item for item in policies if _policy_focus(item) == focus), None)
         if match is not None:
             selected.append(match)
             selected_ids.add(id(match))
 
-    # 剩余名额再按总体政策分补齐。
     for item in policies:
         if len(selected) >= MAX_POLICY_ITEMS:
             break
@@ -332,8 +344,11 @@ def _format_metrics(item: RadarItem) -> str:
 
 
 def _report_date() -> str:
-    now = datetime.now(ZoneInfo("Asia/Shanghai"))
-    return now.strftime("%m月%d日")
+    try:
+        zone = ZoneInfo(REPORT_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo("Asia/Shanghai")
+    return datetime.now(zone).strftime("%m月%d日")
 
 
 def _clean_text(value, fallback: str = "") -> str:
@@ -341,271 +356,237 @@ def _clean_text(value, fallback: str = "") -> str:
     return text or fallback
 
 
-def _clip_text(value, limit: int = 180) -> str:
-    text = _clean_text(value)
-    if len(text) <= limit:
-        return text
-    return text[: max(limit - 1, 1)].rstrip() + "…"
+def _analysis_action(analysis: dict) -> str:
+    ideas = analysis.get("startup_ideas") or []
+    if isinstance(ideas, list) and ideas:
+        return _clean_text(ideas[0])
+    return ""
 
 
-def _format_priority_tags(item: RadarItem) -> str:
-    tags = (item.metrics or {}).get("priority_tags") or []
-    if not isinstance(tags, list):
-        return ""
-    clean_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
-    return " · ".join(clean_tags)
+def _normalized_level(value) -> str:
+    level = str(value or "medium").strip().lower()
+    return level if level in RISK_ORDER else "medium"
 
 
 def _is_cross_border_project(item: RadarItem) -> bool:
     return "跨境电商" in ((item.metrics or {}).get("priority_tags") or [])
 
 
-def _policy_group_title(focus: str) -> str:
-    return {
-        "Amazon政策与审核": "**A｜Amazon 政策与审核**",
-        "美国跨境新规": "**B｜美国跨境进口新规**",
-        "产品合规审核": "**C｜美国市场产品审核**",
-    }.get(focus, "**其他合规变化**")
+def _to_compliance_decision(item: RadarItem) -> ComplianceDecision:
+    analysis = item.analysis or {}
+    metrics = item.metrics or {}
+    focus = _policy_focus(item)
+    impact = _clean_text(
+        analysis.get("summary"),
+        "请查看官方原文确认适用范围与影响。",
+    )
+    action = _analysis_action(analysis)
+
+    return ComplianceDecision(
+        focus=focus,
+        title=item.title,
+        source_name=_clean_text(
+            metrics.get("policy_source"),
+            SOURCE_NAMES.get(item.source, item.source),
+        ),
+        authority=_clean_text(metrics.get("policy_authority")),
+        kind=_clean_text(metrics.get("policy_kind")),
+        age_text=_format_age(item),
+        url=item.url,
+        risk_level=_normalized_level(analysis.get("opportunity")),
+        impact_score=_number(analysis.get("business_score", 50)),
+        requirement=_clean_text(analysis.get("purpose"), item.description),
+        impact=impact,
+        affected_products=_clean_text(
+            analysis.get("affected_products"),
+            "需依据官方原文确认具体适用产品与豁免范围。",
+        ) if focus == "产品合规审核" else "",
+        risk=_clean_text(analysis.get("risk"), impact) if focus == "产品合规审核" else "",
+        preparation=_clean_text(
+            analysis.get("preparation"),
+            action or "按官方要求整理对应测试、证书、注册或申报资料。",
+        ) if focus == "产品合规审核" else "",
+        action=action,
+    )
 
 
-def _policy_field_labels(focus: str):
-    if focus == "美国跨境新规":
-        return "新规要点", "进口影响", "建议动作"
-    return "核心变化", "卖家影响", "建议动作"
+def _to_product_decision(item: RadarItem) -> ProductDecision:
+    analysis = item.analysis or {}
+    tags = (item.metrics or {}).get("priority_tags") or []
+    tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+
+    return ProductDecision(
+        title=item.title,
+        source_name=SOURCE_NAMES.get(item.source, item.source),
+        age_text=_format_age(item),
+        url=item.url,
+        trend_score=_number(item.trend_score),
+        business_score=_number(analysis.get("business_score", 0)),
+        opportunity=_normalized_level(analysis.get("opportunity")),
+        tags=tags,
+        description=_clean_text(analysis.get("purpose"), item.description),
+        growth_signal=_format_metrics(item),
+        judgment=_clean_text(analysis.get("summary"), "暂无 AI 分析摘要。"),
+        direction=_analysis_action(analysis),
+        cross_border=_is_cross_border_project(item),
+    )
 
 
-def _product_compliance_brief(group):
-    """为美国市场产品审核板块生成可扫描的决策简报，不额外调用模型。"""
-    if not group:
-        return []
+def _policy_priority(decision: ComplianceDecision):
+    return (
+        RISK_ORDER.get(decision.risk_level, 2),
+        decision.impact_score,
+    )
 
-    authorities = []
-    affected = []
-    preparations = []
-    highest_item = None
-    highest_score = -1
 
-    for item in group:
-        metrics = item.metrics or {}
-        authority = _clean_text(metrics.get("policy_authority"))
-        if authority and authority not in authorities:
-            authorities.append(authority)
+def _build_summary_actions(compliance, products):
+    ordered_policies = sorted(compliance, key=_policy_priority, reverse=True)
+    high_risk = [item for item in ordered_policies if item.risk_level == "high"]
+    top_product = products[0] if products else None
 
-        analysis = item.analysis or {}
-        product_text = _clean_text(analysis.get("affected_products"))
-        if product_text and product_text not in affected:
-            affected.append(product_text)
-
-        prep_text = _clean_text(analysis.get("preparation"))
-        if prep_text and prep_text not in preparations:
-            preparations.append(prep_text)
-
-        score = _number(analysis.get("business_score", 50))
-        if score > highest_score:
-            highest_score = score
-            highest_item = item
-
-    highest_analysis = (highest_item.analysis or {}) if highest_item else {}
-    highest_urgency = str(highest_analysis.get("opportunity", "medium")).lower()
-    highest_marker = RISK_MARKERS.get(highest_urgency, "🟠 中")
-
-    scope = " / ".join(authorities) if authorities else "美国市场准入机构"
-    lines = [
-        (
-            f"> **审核简报：** 今日共 **{len(group)} 条**产品准入/合规审核，"
-            f"涉及 **{scope}**；最高风险 **{highest_marker}**，优先处理高影响产品的准入资料完整性。"
+    if high_risk:
+        first = high_risk[0]
+        must_text = first.action or first.preparation or first.requirement
+    elif ordered_policies:
+        first = ordered_policies[0]
+        must_text = (
+            "今日无新增高风险事项；完成最高影响合规变化的适用范围核对。"
         )
+    else:
+        must_text = "今日无新增高影响合规事项，维持常规审核与准入资料检查。"
+
+    if len(ordered_policies) > 1:
+        second = ordered_policies[1]
+        focus_text = second.action or second.impact or second.requirement
+    elif ordered_policies:
+        second = ordered_policies[0]
+        focus_text = second.impact or second.requirement
+    else:
+        focus_text = "关注 Amazon、CBP、CPSC、FDA、FCC 后续新增要求。"
+
+    if top_product:
+        research_text = top_product.direction or (
+            f"研究 {top_product.title} 的产品化与跨境电商适配价值。"
+        )
+    else:
+        research_text = "今日暂无达到优先展示阈值的新产品机会。"
+
+    return [
+        ActionItem(label="必须", text=must_text),
+        ActionItem(label="关注", text=focus_text),
+        ActionItem(label="研究", text=research_text),
     ]
 
-    if affected:
-        lines.append(
-            f"> 🎯 **重点影响产品：** **{_clip_text('；'.join(affected), 220)}**"
-        )
-    if preparations:
-        lines.append(
-            f"> 📋 **优先准备：** **{_clip_text('；'.join(preparations), 220)}**"
-        )
 
-    return lines
+def _build_daily_judgment(compliance, products) -> str:
+    high_risk = [item for item in compliance if item.risk_level == "high"]
+    top_policy = max(compliance, key=_policy_priority) if compliance else None
+    top_product = products[0] if products else None
 
+    if high_risk:
+        authority = top_policy.authority or top_policy.source_name if top_policy else "美国合规"
+        base = f"发现 {len(high_risk)} 项高风险合规变化，先处理 {authority} 相关准入或审核要求。"
+    elif compliance:
+        base = "今日有合规变化，但未发现新增高风险事项；先确认适用范围和资料完整性。"
+    else:
+        base = "今日未发现新增高风险合规事项。"
 
-def _append_policy_section(lines, policies):
-    lines.append("**🚨 今日合规重点**")
-
-    if not policies:
-        lines.extend([
-            "今日未发现新增的高影响 Amazon 政策、美国跨境新规或产品审核要求。",
-            "",
-        ])
-        return
-
-    display_index = 1
-    for focus in POLICY_FOCUS_ORDER:
-        group = [item for item in policies if _policy_focus(item) == focus]
-        if not group:
-            continue
-
-        lines.extend(["", _policy_group_title(focus), ""])
-        if focus == "产品合规审核":
-            lines.extend(_product_compliance_brief(group))
-            lines.append("")
-
-        for item in group:
-            analysis = item.analysis or {}
-            urgency = str(analysis.get("opportunity", "medium")).lower()
-            marker = RISK_MARKERS.get(urgency, "🟠 中")
-            impact_score = _number(analysis.get("business_score", 50))
-            purpose = _clean_text(analysis.get("purpose"), item.description)
-            impact = _clean_text(
-                analysis.get("summary"),
-                "请查看官方原文确认适用范围与影响。",
-            )
-            ideas = analysis.get("startup_ideas") or []
-            action = _clean_text(ideas[0]) if isinstance(ideas, list) and ideas else ""
-            metrics = item.metrics or {}
-            source_name = metrics.get("policy_source") or SOURCE_NAMES.get(item.source, item.source)
-            authority = metrics.get("policy_authority") or ""
-            kind = metrics.get("policy_kind") or ""
-
-            title = f"**{display_index:02d}｜{source_name}｜{item.title}**"
-            if item.url:
-                title += f"  [官方信息 →]({item.url})"
-
-            meta_parts = [part for part in (authority, kind, _format_age(item)) if part]
-            lines.extend([
-                title,
-                f"{marker} · 影响 **{impact_score:.0f}/100** · {' · '.join(meta_parts)}",
-            ])
-
-            if focus == "产品合规审核":
-                affected_products = _clean_text(
-                    analysis.get("affected_products"),
-                    "需依据官方原文确认具体产品类别、功能特征与豁免范围。",
-                )
-                risk = _clean_text(analysis.get("risk"), impact)
-                preparation = _clean_text(
-                    analysis.get("preparation"),
-                    action or "需依据官方要求整理适用的测试、证书、注册、标签或申报资料。",
-                )
-                lines.extend([
-                    f"**审核要求：** {purpose}",
-                    f"> 🎯 **影响产品：** **{affected_products}**",
-                    f"> ⚠️ **风险：** **{risk}**",
-                    f"> 📋 **准备资料：** **{preparation}**",
-                ])
-                if action:
-                    lines.append(f"**建议动作：** {action}")
-            else:
-                field1, field2, field3 = _policy_field_labels(focus)
-                lines.extend([
-                    f"**{field1}：** {purpose}",
-                    f"**{field2}：** {impact}",
-                ])
-                if action:
-                    lines.append(f"**{field3}：** {action}")
-
-            display_index += 1
-            if item is not group[-1]:
-                lines.append("")
-
-    lines.extend(["", "---", ""])
+    if top_product:
+        return f"{base} 产品侧优先研究 {top_product.title}。"
+    return base
 
 
-def _append_project_group(lines, title, items, start_index=1):
-    if not items:
-        return start_index
+def build_decision_model(items, policies=None) -> ReportDecisionModel:
+    """将完整 AI 分析转换为飞书展示所需的结构化决策模型。"""
+    items = list(items or [])
+    policies = list(policies or [])
 
-    lines.append(f"**{title}**")
+    compliance = [_to_compliance_decision(item) for item in policies]
+    products = [_to_product_decision(item) for item in items]
 
-    for offset, item in enumerate(items):
-        index = start_index + offset
-        analysis = item.analysis or {}
-        opportunity = OPPORTUNITY_NAMES.get(
-            str(analysis.get("opportunity", "medium")).lower(),
-            "中",
-        )
-        business_score = _number(analysis.get("business_score", 0))
-        purpose = _clean_text(analysis.get("purpose"), "项目用途暂不明确。")
-        summary = _clean_text(analysis.get("summary"), "暂无 AI 分析摘要。")
-        source_name = SOURCE_NAMES.get(item.source, item.source)
-        priority_text = _format_priority_tags(item)
-        ideas = analysis.get("startup_ideas") or []
-        first_idea = _clean_text(ideas[0]) if isinstance(ideas, list) and ideas else ""
+    high_risk_count = sum(1 for item in compliance if item.risk_level == "high")
+    opportunity_count = sum(
+        1
+        for item in products
+        if item.cross_border and (item.opportunity == "high" or item.business_score >= 80)
+    )
 
-        title_line = f"**{index:02d}｜{item.title}**"
-        if item.url:
-            title_line += f"  [查看项目 →]({item.url})"
+    summary = DailySummary(
+        date_text=_report_date(),
+        judgment=_build_daily_judgment(compliance, products),
+        actions=_build_summary_actions(compliance, products),
+        metrics={
+            "compliance": len(compliance),
+            "high_risk": high_risk_count,
+            "projects": len(products),
+            "opportunities": opportunity_count,
+        },
+    )
 
-        lines.extend([
-            title_line,
-            (
-                f"`{source_name}` · {_format_age(item)}"
-                f"　🔥 **{item.trend_score:.0f}**"
-                f"　💼 **{business_score:.0f} · {opportunity}**"
-            ),
-        ])
-
-        if priority_text:
-            lines.append(f"🎯 {priority_text}")
-
-        lines.extend([
-            f"**产品描述：** {purpose}",
-            f"**增长信号：** {_format_metrics(item)}",
-            f"**价值判断：** {summary}",
-        ])
-
-        if first_idea:
-            lines.append(f"**可借鉴方向：** {first_idea}")
-
-        if offset != len(items) - 1:
-            lines.append("")
-
-    lines.extend(["", "---", ""])
-    return start_index + len(items)
+    return ReportDecisionModel(
+        summary=summary,
+        compliance=compliance,
+        products=products,
+    )
 
 
 def build_feishu_message(items, policies=None):
-    policies = list(policies or [])
-    items = list(items or [])
-    cross_border = [item for item in items if _is_cross_border_project(item)]
-    other = [item for item in items if not _is_cross_border_project(item)]
-
-    amazon_count = sum(1 for item in policies if _policy_focus(item) == "Amazon政策与审核")
-    import_count = sum(1 for item in policies if _policy_focus(item) == "美国跨境新规")
-    compliance_count = sum(1 for item in policies if _policy_focus(item) == "产品合规审核")
-
+    """兼容旧调用；生产日报已经改用结构化 Card Builder。"""
+    model = build_decision_model(items, policies)
     lines = [
-        f"**{_report_date()} · 美国跨境经营雷达**",
-        (
-            f"> Amazon {amazon_count} · 美国新规 {import_count} · "
-            f"产品审核 {compliance_count} · 新项目 {len(items)}"
-        ),
-        "> 优先级：先确认合规与准入风险，再看跨境产品机会。",
+        f"**{model.summary.date_text} · 美国跨境经营雷达**",
+        f"**今日判断：** {model.summary.judgment}",
         "",
+        "**🚨 今日合规重点**",
     ]
 
-    _append_policy_section(lines, policies)
+    for decision in model.compliance:
+        if decision.focus == "Amazon政策与审核":
+            group_title = "A｜Amazon 政策与审核"
+        elif decision.focus == "美国跨境新规":
+            group_title = "B｜美国跨境进口新规"
+        else:
+            group_title = "C｜美国市场产品审核"
+        lines.extend(["", f"**{group_title}**", f"**{decision.source_name}｜{decision.title}**"])
+        if decision.focus == "产品合规审核":
+            lines.extend([
+                f"**审核要求：** {decision.requirement}",
+                f"**影响产品：** {decision.affected_products}",
+                f"**风险：** {decision.risk}",
+                f"**准备资料：** {decision.preparation}",
+            ])
+        elif decision.focus == "美国跨境新规":
+            lines.extend([
+                f"**新规要点：** {decision.requirement}",
+                f"**进口影响：** {decision.impact}",
+            ])
+        else:
+            lines.extend([
+                f"**核心变化：** {decision.requirement}",
+                f"**卖家影响：** {decision.impact}",
+            ])
+        if decision.action:
+            lines.append(f"**建议动作：** {decision.action}")
 
-    next_index = _append_project_group(
-        lines,
-        "🎯 跨境电商直接相关项目",
-        cross_border,
-        1,
-    )
-    _append_project_group(
-        lines,
-        "🧪 其他可产品化 AI 信号",
-        other,
-        next_index,
-    )
+    cross_border = [item for item in model.products if item.cross_border]
+    other = [item for item in model.products if not item.cross_border]
 
-    if lines[-3:] == ["", "---", ""]:
-        del lines[-3:]
-
-    lines.extend([
-        "",
-        "*合规信息以 Amazon、CBP、CPSC、FDA、FCC 等官方要求为准；项目热度仅代表早期增长速度。*",
-    ])
+    for title, group in (
+        ("🎯 跨境电商直接相关项目", cross_border),
+        ("🧪 其他可产品化 AI 信号", other),
+    ):
+        if not group:
+            continue
+        lines.extend(["", f"**{title}**"])
+        for product in group:
+            lines.extend([
+                f"**{product.title}**",
+                f"**产品描述：** {product.description}",
+                f"**增长信号：** {product.growth_signal}",
+                f"**价值判断：** {product.judgment}",
+            ])
+            if product.direction:
+                lines.append(f"**可借鉴方向：** {product.direction}")
 
     return "\n".join(lines)
 
@@ -623,6 +604,7 @@ def _execute_daily_radar(execution_id: str, started: float):
     report = []
     policy_report = []
     saved_count = 0
+    card_count = 0
 
     try:
         new_items = filter_existing_items(db, radar_items)
@@ -663,22 +645,37 @@ def _execute_daily_radar(execution_id: str, started: float):
 
     if report or policy_report:
         try:
-            sent = send_feishu(build_feishu_message(report, policy_report))
+            decision_model = build_decision_model(report, policy_report)
+            cards = build_daily_cards(
+                decision_model,
+                max_projects=FEISHU_PROJECTS_PER_CARD,
+            )
+            card_count = len(cards)
+            sent = send_feishu_cards(cards)
             if sent:
-                logger.info("飞书通知发送成功：执行编号=%s", execution_id)
+                logger.info(
+                    "飞书日报发送成功：执行编号=%s 卡片=%s",
+                    execution_id,
+                    card_count,
+                )
             else:
-                logger.warning("飞书通知未发送：执行编号=%s", execution_id)
+                logger.warning(
+                    "飞书日报存在发送失败：执行编号=%s 卡片=%s",
+                    execution_id,
+                    card_count,
+                )
         except Exception:
-            logger.exception("飞书通知发送失败：执行编号=%s", execution_id)
+            logger.exception("飞书日报发送失败：执行编号=%s", execution_id)
 
     duration = round(time.time() - started, 2)
     logger.info(
-        "日报执行完成：执行编号=%s 耗时=%s秒 项目=%s 政策=%s 保存=%s",
+        "日报执行完成：执行编号=%s 耗时=%s秒 项目=%s 政策=%s 保存=%s 飞书卡片=%s",
         execution_id,
         duration,
         len(report),
         len(policy_report),
         saved_count,
+        card_count,
     )
 
     return {
@@ -687,6 +684,7 @@ def _execute_daily_radar(execution_id: str, started: float):
         "duration": duration,
         "items": [item.to_dict() for item in report],
         "policies": [item.to_dict() for item in policy_report],
+        "feishu_cards": card_count,
     }
 
 
