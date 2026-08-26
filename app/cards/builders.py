@@ -1,5 +1,6 @@
 from collections import defaultdict
 from typing import List
+from urllib.parse import urlparse
 
 from app.cards.models import CardEnvelope, ReportDecisionModel
 from app.cards.styles import (
@@ -37,7 +38,24 @@ def _hr() -> dict:
     return {"tag": "hr"}
 
 
-def _button(label: str, url: str, button_type: str = "default") -> dict:
+def _safe_http_url(value: str) -> str:
+    """只允许标准 http/https 外链进入飞书 Button。"""
+    url = _text(value)
+    if not url:
+        return ""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return url
+
+
+def _button(label: str, url: str, button_type: str = "default"):
+    safe_url = _safe_http_url(url)
+    if not safe_url:
+        return None
     return {
         "tag": "action",
         "actions": [
@@ -45,10 +63,16 @@ def _button(label: str, url: str, button_type: str = "default") -> dict:
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": _text(label)},
                 "type": button_type,
-                "url": _text(url),
+                "url": safe_url,
             }
         ],
     }
+
+
+def _append_button(elements: list, label: str, url: str) -> None:
+    button = _button(label, url, "default")
+    if button:
+        elements.append(button)
 
 
 def _pair_element(left: str, body: str) -> dict:
@@ -323,8 +347,7 @@ def _append_standard_policy(elements: list, decision, index: int):
     action = _text(decision.action)
     if action:
         elements.append(_pair("下一步", action, "✅"))
-    if decision.url:
-        elements.append(_button("查看官方原文", decision.url, "default"))
+    _append_button(elements, "查看官方原文", decision.url)
 
 
 def _append_product_compliance(elements: list, decision, index: int):
@@ -340,8 +363,7 @@ def _append_product_compliance(elements: list, decision, index: int):
     action = _text(decision.action)
     if action:
         elements.append(_pair("下一步", action, "✅"))
-    if decision.url:
-        elements.append(_button("查看官方原文", decision.url, "default"))
+    _append_button(elements, "查看官方原文", decision.url)
 
 
 def _compliance_template(decisions) -> str:
@@ -441,8 +463,7 @@ def _project_elements(project, index: int) -> list:
         elements.append(_pair("价值判断", judgment, "🧠"))
     if direction:
         elements.append(_pair("可借鉴方向", direction, "🛠️"))
-    if project.url:
-        elements.append(_button("查看项目", project.url, "default"))
+    _append_button(elements, "查看项目", project.url)
     return elements
 
 
