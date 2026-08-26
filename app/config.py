@@ -34,8 +34,8 @@ LLM_MODEL = (os.getenv("LLM_MODEL", "gpt-5.5-mini") or "gpt-5.5-mini").strip()
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.2)
 
 # 一次批量分析最多包含 4 条政策和 10 个项目。
-# 默认给足 4096 Token 输出空间，实际计费仍按模型真实生成量计算。
-LLM_MAX_TOKENS = max(_env_int("LLM_MAX_TOKENS", 4096), 1)
+# 默认给足 8192 Token 输出空间，实际计费仍按模型真实生成量计算。
+LLM_MAX_TOKENS = max(_env_int("LLM_MAX_TOKENS", 8192), 1)
 
 # 默认数据库位于 Docker 持久化目录中。
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/radar.db")
