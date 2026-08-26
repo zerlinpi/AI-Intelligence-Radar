@@ -9,7 +9,7 @@ from app.core.logger import get_logger
 
 API = "https://api.github.com/search/repositories"
 
-logger = get_logger("collector.github")
+logger = get_logger("GitHub采集")
 
 SEARCH_TERMS = (
     "topic:ai",
@@ -56,7 +56,7 @@ class GithubCollector(BaseCollector):
                 payload = response.json()
                 if not isinstance(payload, dict):
                     logger.warning(
-                        "github api returned invalid payload query=%s",
+                        "GitHub 接口返回数据格式无效：查询=%s",
                         search_term,
                     )
                     continue
@@ -75,7 +75,7 @@ class GithubCollector(BaseCollector):
 
             except Exception:
                 logger.exception(
-                    "github search failed query=%s",
+                    "GitHub 搜索失败：查询=%s",
                     search_term,
                 )
                 continue
@@ -127,7 +127,7 @@ class GithubCollector(BaseCollector):
         )
 
         logger.info(
-            "github recent candidates=%s selected=%s",
+            "GitHub 近期候选=%s 最终选中=%s",
             len(candidates),
             min(len(result), limit),
         )
