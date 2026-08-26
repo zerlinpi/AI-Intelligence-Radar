@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 
 from openai import OpenAI
 
@@ -60,6 +61,84 @@ def get_llm_model() -> str:
         )
 
     return resolved
+
+
+def _extra_attr(obj, name, default=None):
+    """兼容旧版 OpenAI SDK 对服务商扩展字段的读取。"""
+    value = getattr(obj, name, None)
+    if value is not None:
+        return value
+
+    extra = getattr(obj, "model_extra", None)
+    if isinstance(extra, dict) and name in extra:
+        return extra.get(name)
+
+    return default
+
+
+def collect_streamed_chat_completion(stream):
+    """消费流式 Chat Completion，并还原为普通响应形态。
+
+    DeepSeek thinking 模式会持续输出 reasoning_content。这里消费这些增量以维持
+    长任务连接，但只把最终 content 交给日报 JSON 解析；思考内容不会写入数据库或飞书。
+    """
+    content_parts = []
+    reasoning_parts = []
+    usage = None
+    finish_reason = ""
+    chunk_count = 0
+
+    for chunk in stream:
+        chunk_count += 1
+
+        chunk_usage = _extra_attr(chunk, "usage")
+        if chunk_usage is not None:
+            usage = chunk_usage
+
+        choices = getattr(chunk, "choices", None) or []
+        if not choices:
+            continue
+
+        choice = choices[0]
+        delta = getattr(choice, "delta", None)
+        if delta is not None:
+            reasoning = _extra_attr(delta, "reasoning_content", "") or ""
+            content = _extra_attr(delta, "content", "") or ""
+            if reasoning:
+                reasoning_parts.append(str(reasoning))
+            if content:
+                content_parts.append(str(content))
+
+        current_finish = getattr(choice, "finish_reason", None)
+        if current_finish:
+            finish_reason = str(current_finish)
+
+    if chunk_count == 0:
+        raise RuntimeError("模型流式响应为空")
+
+    final_content = "".join(content_parts)
+    reasoning_content = "".join(reasoning_parts)
+
+    logger.info(
+        "模型流式响应完成：数据块=%s 思考字符=%s 正文字符=%s 结束原因=%s",
+        chunk_count,
+        len(reasoning_content),
+        len(final_content),
+        finish_reason or "未知",
+    )
+
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content=final_content,
+                    reasoning_content=reasoning_content,
+                ),
+                finish_reason=finish_reason,
+            )
+        ],
+        usage=usage,
+    )
 
 
 def get_llm_model_usage(response):
