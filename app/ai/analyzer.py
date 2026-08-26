@@ -21,8 +21,8 @@ MAX_TITLE_CHARS = 140
 MAX_BATCH_ITEMS = 14
 
 # 4 条政策 + 10 个项目的一次批量分析需要足够输出空间。
-# 4096 是硬上限而不是固定消耗，模型实际只会按需要生成。
-MAX_OUTPUT_TOKENS = 4096
+# 8192 是硬上限而不是固定消耗，模型实际只会按需要生成。
+MAX_OUTPUT_TOKENS = 8192
 
 SOURCE_NAMES = {
     "github": "GitHub",
