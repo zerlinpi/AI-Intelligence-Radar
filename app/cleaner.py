@@ -33,6 +33,14 @@ def _title_tokens(value: str) -> set:
     }
 
 
+def _descriptions_support_same_project(left: dict, right: dict) -> bool:
+    left_desc = str(left.get("description") or "")
+    right_desc = str(right.get("description") or "")
+    if not left_desc or not right_desc:
+        return False
+    return copy_similarity(left_desc, right_desc) >= 0.42
+
+
 def _same_project(left: dict, right: dict) -> bool:
     left_title = _canonical_title(left.get("title"))
     right_title = _canonical_title(right.get("title"))
@@ -46,16 +54,12 @@ def _same_project(left: dict, right: dict) -> bool:
     overlap = len(left_tokens & right_tokens)
     if overlap >= 3:
         containment = overlap / max(min(len(left_tokens), len(right_tokens)), 1)
-        if containment >= 0.85:
+        if containment >= 0.85 and _descriptions_support_same_project(left, right):
             return True
 
-    # 标题已经非常相似时，再要求简介也有明显交集，避免泛化名称误合并。
+    # 非完全同名项目必须同时满足标题和简介相似，避免“AI Seller Assistant”这类泛名称误合并。
     if copy_similarity(left_title, right_title) >= 0.88:
-        left_desc = str(left.get("description") or "")
-        right_desc = str(right.get("description") or "")
-        if not left_desc or not right_desc:
-            return True
-        return copy_similarity(left_desc, right_desc) >= 0.42
+        return _descriptions_support_same_project(left, right)
     return False
 
 
