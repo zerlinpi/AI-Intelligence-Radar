@@ -12,10 +12,10 @@ class BaseCollector(ABC):
 
     name = "unknown"
 
-    def collect_safe(self) -> List[Dict]:
+    def collect_safe(self, *args, **kwargs) -> List[Dict]:
         """Run collector safely and always return a list."""
         try:
-            result = self.collect()
+            result = self.collect(*args, **kwargs)
 
             if not result:
                 return []
@@ -38,5 +38,5 @@ class BaseCollector(ABC):
             return []
 
     @abstractmethod
-    def collect(self) -> List[Dict]:
+    def collect(self, *args, **kwargs) -> List[Dict]:
         pass
