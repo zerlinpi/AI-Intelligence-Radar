@@ -1,15 +1,8 @@
 ANALYSIS_PROMPT = """
-You are an AI startup analyst.
-Analyze the following technology project.
+你是早期 AI 项目分析师。
+请简洁判断以下项目的技术价值、市场需求和商业机会。
+只输出简体中文，避免冗长说明。
 
-Return:
-1. Summary
-2. Technical trend
-3. Market demand
-4. Business opportunity
-5. Startup ideas
-6. Opportunity score 0-100
-
-Project:
+项目：
 {item}
 """
