@@ -1,4 +1,5 @@
-from typing import List, Dict
+from datetime import datetime, timezone
+from typing import Dict, List
 
 import requests
 
@@ -8,12 +9,34 @@ from app.core.logger import get_logger
 
 logger = get_logger("hackernews")
 
+AI_KEYWORDS = (
+    " ai ",
+    "llm",
+    "agent",
+    "openai",
+    "anthropic",
+    "gemini",
+    "deepseek",
+    "machine learning",
+    "inference",
+    "rag",
+    "embedding",
+    "copilot",
+    "transformer",
+)
+
+
+def _is_ai_story(title: str) -> bool:
+    normalized = f" {(title or '').lower()} "
+    return any(keyword in normalized for keyword in AI_KEYWORDS)
+
 
 class HackerNewsCollector(BaseCollector):
     name = "hackernews"
 
     def collect(self, limit: int = 10) -> List[Dict]:
-        api = "https://hacker-news.firebaseio.com/v0/topstories.json"
+        # Show HN is a better signal for newly launched projects than topstories.
+        api = "https://hacker-news.firebaseio.com/v0/showstories.json"
 
         response = requests.get(api, timeout=10)
         response.raise_for_status()
@@ -24,7 +47,10 @@ class HackerNewsCollector(BaseCollector):
 
         results = []
 
-        for item_id in ids[:limit]:
+        for item_id in ids[:80]:
+            if len(results) >= limit:
+                break
+
             try:
                 response = requests.get(
                     f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json",
@@ -33,17 +59,38 @@ class HackerNewsCollector(BaseCollector):
                 response.raise_for_status()
 
                 item = response.json()
-
                 if not isinstance(item, dict):
                     continue
+
+                title = item.get("title") or ""
+                if not _is_ai_story(title):
+                    continue
+
+                timestamp = item.get("time")
+                created_at = None
+                if timestamp:
+                    created_at = datetime.fromtimestamp(
+                        timestamp,
+                        tz=timezone.utc,
+                    ).isoformat()
+
+                score = item.get("score") or 0
+                comments = item.get("descendants") or 0
+                url = item.get("url") or f"https://news.ycombinator.com/item?id={item_id}"
 
                 results.append(
                     {
                         "source": self.name,
-                        "title": item.get("title") or "",
-                        "url": item.get("url") or "",
-                        "description": item.get("title") or "",
-                        "score": item.get("score") or 0,
+                        "title": title,
+                        "url": url,
+                        "description": title,
+                        "created_at": created_at,
+                        "upvotes": score,
+                        "comments": comments,
+                        "metrics": {
+                            "upvotes": score,
+                            "comments": comments,
+                        },
                     }
                 )
             except Exception:
