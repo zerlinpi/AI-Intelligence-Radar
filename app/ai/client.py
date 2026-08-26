@@ -2,7 +2,12 @@ import time
 
 from openai import OpenAI
 
-from app.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from app.config import (
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MODEL,
+    LLM_TIMEOUT_SECONDS,
+)
 from app.core.logger import get_logger
 
 
@@ -21,8 +26,8 @@ LEGACY_MODEL_ALIASES = {
 def get_llm_client() -> OpenAI:
     """创建兼容 OpenAI 接口格式的模型客户端。
 
-    支持 OpenAI、DeepSeek 以及其他兼容服务。重试只由项目自身处理，
-    避免 SDK 重试与项目重试叠加造成等待时间和请求次数增加。
+    日报是离线任务，允许模型长时间推理。SDK 自身不自动重试，
+    由项目逻辑统一控制，避免出现不可控的重复请求。
     """
     if not LLM_API_KEY:
         raise RuntimeError(
@@ -34,11 +39,10 @@ def get_llm_client() -> OpenAI:
             "缺少模型接口地址，请配置 LLM_BASE_URL。"
         )
 
-    # 当前日报一次最多分析 14 条内容，完整输出可能明显超过旧版 45 秒。
     return OpenAI(
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
-        timeout=180.0,
+        timeout=float(LLM_TIMEOUT_SECONDS),
         max_retries=0,
     )
 
