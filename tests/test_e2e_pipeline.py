@@ -35,10 +35,13 @@ def test_build_feishu_message():
     item.trend_score = 80
     item.analysis = {
         "opportunity": "high",
-        "summary": "good opportunity",
+        "summary": "这是一个值得关注的早期 AI 项目。",
     }
 
     message = pipeline.build_feishu_message([item])
 
+    assert "AI 新项目雷达" in message
     assert "AI Test" in message
-    assert "high" in message
+    assert "商业机会：**高**" in message
+    assert "新项目热度" in message
+    assert "查看项目" in message
