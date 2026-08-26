@@ -11,7 +11,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.config import REPORT_TIMEZONE
 from app.core.logger import get_logger
-from app.core.preflight import run_preflight
 from app.core.run_history import record_run_safe
 from app.pipeline import run_daily_radar
 
@@ -59,14 +58,7 @@ def daily_radar_job():
         return
 
     try:
-        preflight = run_preflight()
-        if not preflight.ok:
-            logger.error(
-                "定时日报预检失败，已停止本轮执行：失败项=%s",
-                "、".join(preflight.failures),
-            )
-            return
-
+        # execution_lock + preflight 只在 run_daily_radar 中维护，避免多入口规则漂移。
         logger.info("定时日报开始执行")
         result = run_daily_radar() or {}
         record_run_safe(result)
