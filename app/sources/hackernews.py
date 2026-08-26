@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from typing import Dict, List
+import re
 
 import requests
 
@@ -10,14 +11,16 @@ from app.core.logger import get_logger
 logger = get_logger("hackernews")
 
 AI_KEYWORDS = (
-    " ai ",
     "llm",
+    "gpt",
     "agent",
     "openai",
     "anthropic",
     "gemini",
     "deepseek",
     "machine learning",
+    "generative ai",
+    "chatbot",
     "inference",
     "rag",
     "embedding",
@@ -27,7 +30,11 @@ AI_KEYWORDS = (
 
 
 def _is_ai_story(title: str) -> bool:
-    normalized = f" {(title or '').lower()} "
+    normalized = (title or "").lower()
+
+    if re.search(r"\bai\b", normalized):
+        return True
+
     return any(keyword in normalized for keyword in AI_KEYWORDS)
 
 
