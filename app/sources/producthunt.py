@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, List
 import os
 
@@ -15,12 +15,20 @@ AI_KEYWORDS = (
     "ai",
     "artificial intelligence",
     "llm",
+    "gpt",
     "agent",
+    "agents",
+    "chatbot",
     "machine learning",
     "generative",
     "copilot",
     "automation",
+    "vision",
+    "voice ai",
+    "speech ai",
 )
+
+MAX_AGE_DAYS = 7
 
 
 def _is_ai_product(node: Dict) -> bool:
@@ -53,6 +61,19 @@ def _is_ai_product(node: Dict) -> bool:
     return any(keyword in haystack for keyword in AI_KEYWORDS)
 
 
+def _parse_created_at(value):
+    if not value:
+        return None
+
+    try:
+        created = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return created
+    except Exception:
+        return None
+
+
 class ProductHuntCollector(BaseCollector):
     name = "producthunt"
 
@@ -62,14 +83,14 @@ class ProductHuntCollector(BaseCollector):
             logger.warning("PRODUCT_HUNT_TOKEN is not configured")
             return []
 
-        posted_after = (
-            datetime.now(timezone.utc) - timedelta(days=7)
-        ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
         fetch_limit = min(max(limit * 5, 30), 50)
+
+        # Keep the GraphQL arguments deliberately simple. Product Hunt's
+        # public API documentation guarantees the posts(first: ...) shape;
+        # recency and AI filtering are applied locally for compatibility.
         query = """
-        query RecentAIProducts($first: Int!, $postedAfter: DateTime!) {
-          posts(first: $first, order: VOTES, postedAfter: $postedAfter) {
+        query RecentProducts($first: Int!) {
+          posts(first: $first) {
             edges {
               node {
                 id
@@ -104,10 +125,7 @@ class ProductHuntCollector(BaseCollector):
             },
             json={
                 "query": query,
-                "variables": {
-                    "first": fetch_limit,
-                    "postedAfter": posted_after,
-                },
+                "variables": {"first": fetch_limit},
             },
             timeout=20,
         )
@@ -127,6 +145,7 @@ class ProductHuntCollector(BaseCollector):
         posts = data.get("posts") if isinstance(data, dict) else {}
         edges = posts.get("edges") if isinstance(posts, dict) else []
         if not isinstance(edges, list):
+            logger.warning("product hunt posts payload has no edge list")
             return []
 
         results = []
@@ -141,19 +160,18 @@ class ProductHuntCollector(BaseCollector):
                 continue
 
             created_at = node.get("createdAt")
-            try:
-                created = datetime.fromisoformat(
-                    str(created_at).replace("Z", "+00:00")
-                )
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                age_hours = max((now - created).total_seconds() / 3600, 1)
-            except Exception:
-                age_hours = 24 * 7
+            created = _parse_created_at(created_at)
+            if created is None:
+                continue
+
+            age_hours = max((now - created).total_seconds() / 3600, 0)
+            if age_hours > MAX_AGE_DAYS * 24:
+                continue
 
             votes = node.get("votesCount") or 0
             comments = node.get("commentsCount") or 0
-            momentum = (votes + comments * 3) / max(age_hours / 24, 0.25)
+            age_days = max(age_hours / 24, 0.25)
+            momentum = (votes + comments * 3) / age_days
 
             results.append(
                 {
@@ -169,6 +187,7 @@ class ProductHuntCollector(BaseCollector):
                         "comments": comments,
                         "momentum": round(momentum, 2),
                         "producthunt_url": node.get("url") or "",
+                        "website": node.get("website") or "",
                     },
                 }
             )
@@ -177,6 +196,13 @@ class ProductHuntCollector(BaseCollector):
             key=lambda x: (x.get("metrics") or {}).get("momentum", 0),
             reverse=True,
         )
+
+        logger.info(
+            "product hunt fetched=%s recent_ai=%s",
+            len(edges),
+            len(results),
+        )
+
         return results[:limit]
 
 
