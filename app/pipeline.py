@@ -210,12 +210,27 @@ def run_daily_radar():
 
     db = SessionLocal()
     report = []
+    saved_count = 0
 
     try:
         new_items = filter_existing_items(db, radar_items)
         report = build_report(new_items)
-        save_batch(db, [item.to_dict() for item in report])
-        logger.info("saved=%s execution_id=%s", len(report), execution_id)
+        saved_records = save_batch(db, [item.to_dict() for item in report])
+        saved_count = len(saved_records)
+
+        if saved_count != len(report):
+            logger.warning(
+                "database save incomplete saved=%s requested=%s execution_id=%s",
+                saved_count,
+                len(report),
+                execution_id,
+            )
+        else:
+            logger.info(
+                "saved=%s execution_id=%s",
+                saved_count,
+                execution_id,
+            )
     except Exception:
         logger.exception("pipeline database stage failed execution_id=%s", execution_id)
     finally:
@@ -233,10 +248,11 @@ def run_daily_radar():
 
     duration = round(time.time() - started, 2)
     logger.info(
-        "daily radar finished execution_id=%s duration=%ss items=%s",
+        "daily radar finished execution_id=%s duration=%ss items=%s saved=%s",
         execution_id,
         duration,
         len(report),
+        saved_count,
     )
 
     return {
