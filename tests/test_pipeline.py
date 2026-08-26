@@ -6,26 +6,59 @@ from app.models.radar_item import RadarItem
 from app.pipeline import build_report
 
 
-def test_build_report_returns_top_items():
+def _analysis_for(items, score=82, opportunity="high"):
+    return [
+        {
+            "purpose": "项目具有明确的可执行能力和目标使用场景。",
+            "summary": "该能力可进入实际业务或产品开发流程，但仍需验证真实效果。",
+            "business_score": score,
+            "opportunity": opportunity,
+            "startup_ideas": ["先做小范围原型并验证核心指标"],
+            "llm_meta": {"success": True, "fallback": False},
+        }
+        for _ in items
+    ]
+
+
+def test_build_report_returns_only_quality_items(monkeypatch):
     now = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(pipeline, "analyze_items", lambda items: _analysis_for(items))
+
     items = [
-        {"title": "A", "created_at": now, "stars": 10},
-        {"title": "B", "created_at": now, "stars": 20},
+        {
+            "title": "Generic Chat Demo",
+            "source": "github",
+            "description": "A simple generic AI chat demo",
+            "created_at": now,
+            "stars": 1000,
+        },
+        {
+            "title": "Amazon Listing Workflow SDK",
+            "source": "github",
+            "description": "Reusable SDK and automation workflow for Amazon sellers to optimize listings and localization",
+            "created_at": now,
+            "stars": 20,
+        },
     ]
 
     result = build_report(items)
 
     assert isinstance(result, list)
-    assert len(result) <= 10
+    assert len(result) == 1
+    assert result[0].title == "Amazon Listing Workflow SDK"
     assert all(isinstance(item, RadarItem) for item in result)
 
 
-def test_build_report_adds_analysis():
+def test_build_report_adds_analysis(monkeypatch):
     now = datetime.now(timezone.utc).isoformat()
+    monkeypatch.setattr(pipeline, "analyze_items", lambda items: _analysis_for(items))
+
     items = [
         {
-            "title": "Test Project",
+            "title": "Seller Listing SDK",
+            "source": "github",
             "url": "https://example.com",
+            "description": "SDK and workflow automation for Amazon seller listings, localization and keyword optimization",
             "created_at": now,
             "stars": 100,
         }
@@ -36,37 +69,24 @@ def test_build_report_adds_analysis():
     assert len(result) == 1
     assert isinstance(result[0].analysis, dict)
     assert result[0].analysis
+    assert result[0].metrics["final_report_eligible"] is True
 
 
 def test_cross_border_product_is_prioritized(monkeypatch):
     now = datetime.now(timezone.utc).isoformat()
-
-    monkeypatch.setattr(
-        pipeline,
-        "analyze_items",
-        lambda items: [
-            {
-                "purpose": "测试用途",
-                "summary": "测试判断",
-                "business_score": 80,
-                "opportunity": "high",
-                "startup_ideas": [],
-            }
-            for _ in items
-        ],
-    )
+    monkeypatch.setattr(pipeline, "analyze_items", lambda items: _analysis_for(items))
 
     items = [
         {
             "title": "General AI Research",
-            "description": "A new neural network research project",
+            "description": "A new neural network research project without a reusable product path",
             "source": "github",
             "created_at": now,
             "stars": 100,
         },
         {
             "title": "Shopify Listing Copilot",
-            "description": "AI tool for Amazon and Shopify product listings",
+            "description": "AI SDK for Amazon and Shopify product listings, keyword localization and seller workflow automation",
             "source": "github",
             "created_at": now,
             "stars": 20,
@@ -83,32 +103,19 @@ def test_cross_border_product_is_prioritized(monkeypatch):
 
 def test_hardware_product_can_outrank_hot_but_generic_project(monkeypatch):
     now = datetime.now(timezone.utc).isoformat()
-    monkeypatch.setattr(
-        pipeline,
-        "analyze_items",
-        lambda items: [
-            {
-                "purpose": "测试用途",
-                "summary": "测试判断",
-                "business_score": 80,
-                "opportunity": "high",
-                "startup_ideas": [],
-            }
-            for _ in items
-        ],
-    )
+    monkeypatch.setattr(pipeline, "analyze_items", lambda items: _analysis_for(items))
 
     items = [
         {
             "title": "Generic Chat Demo",
-            "description": "Simple AI chat demo",
+            "description": "Simple AI chat demo with no reusable product capability",
             "source": "github",
             "created_at": now,
             "stars": 500,
         },
         {
             "title": "ESP32 Edge AI Camera",
-            "description": "Embedded on-device computer vision with BLE sensors for a smart home camera",
+            "description": "Embedded on-device computer vision runtime with BLE sensors for a smart home camera hardware prototype",
             "source": "github",
             "created_at": now,
             "stars": 30,
@@ -121,16 +128,15 @@ def test_hardware_product_can_outrank_hot_but_generic_project(monkeypatch):
     assert "实体商品机会" in result[0].metrics["priority_tags"]
 
 
-def test_strategic_portfolio_preserves_multiple_value_paths():
+def test_strategic_portfolio_preserves_quality_without_forcing_ten_items():
     now = datetime.now(timezone.utc).isoformat()
     items = []
 
-    # 大量热门但同质的 GitHub 通用项目，不能把真正有战略价值的方向全部挤掉。
     for index in range(10):
         items.append(
             {
                 "title": f"Generic AI Chat {index}",
-                "description": "Simple AI chat application",
+                "description": "Simple AI chat application with no reusable commerce or hardware path",
                 "source": "github",
                 "created_at": now,
                 "stars": 500 - index,
@@ -141,27 +147,26 @@ def test_strategic_portfolio_preserves_multiple_value_paths():
         [
             {
                 "title": "Amazon Shopify Listing Intelligence",
-                "description": "Amazon seller and Shopify listing optimization with product research",
+                "description": "Amazon seller and Shopify listing optimization with product research, localization and workflow automation",
                 "source": "producthunt",
                 "created_at": now,
                 "upvotes": 40,
             },
             {
-                "title": "Recursive Agent Memory",
-                "description": "Long-horizon agent memory and tool use architecture for autonomous reasoning",
-                "source": "arxiv",
-                "created_at": now,
-            },
-            {
                 "title": "ESP32 Edge Vision Runtime",
-                "description": "Embedded edge AI runtime with ESP32 camera BLE sensor and firmware",
+                "description": "Embedded edge AI runtime with ESP32 camera, BLE sensor integration and firmware for consumer device prototypes",
                 "source": "huggingface",
                 "created_at": now,
                 "downloads": 200,
+                "metrics": {
+                    "pipeline_tag": "object-detection",
+                    "library_name": "tflite",
+                    "tags": ["edge-ai", "embedded", "camera"],
+                },
             },
             {
                 "title": "Smart Pet Camera Prototype",
-                "description": "On-device computer vision smart pet camera with sensor and BLE",
+                "description": "On-device computer vision smart pet camera with embedded sensor, BLE and local inference firmware",
                 "source": "github",
                 "created_at": now,
                 "stars": 30,
@@ -170,24 +175,30 @@ def test_strategic_portfolio_preserves_multiple_value_paths():
     )
 
     result = pipeline.select_project_candidates(items)
+    titles = {item.title for item in result}
     tags = {
         tag
         for item in result
         for tag in ((item.metrics or {}).get("priority_tags") or [])
     }
+
+    assert "Amazon Shopify Listing Intelligence" in titles
+    assert "ESP32 Edge Vision Runtime" in titles
+    assert "Smart Pet Camera Prototype" in titles
+    assert all(not title.startswith("Generic AI Chat") for title in titles)
     assert "跨境电商" in tags
     assert "技术前沿" in tags
     assert "硬件开发" in tags
     assert "实体商品机会" in tags
-    assert len(result) == pipeline.MAX_REPORT_ITEMS
+    assert 1 <= len(result) < pipeline.MAX_REPORT_ITEMS
 
 
-def test_source_cap_is_soft_and_report_still_fills_when_only_one_source_exists():
+def test_source_cap_is_soft_for_many_genuinely_useful_github_projects():
     now = datetime.now(timezone.utc).isoformat()
     items = [
         {
-            "title": f"GitHub AI Project {index}",
-            "description": "AI framework and API tool",
+            "title": f"GitHub Commerce Automation SDK {index}",
+            "description": "Reusable Amazon seller API framework and workflow automation SDK for listings, inventory and ecommerce operations",
             "source": "github",
             "created_at": now,
             "stars": 100 - index,
@@ -198,6 +209,40 @@ def test_source_cap_is_soft_and_report_still_fills_when_only_one_source_exists()
     result = pipeline.select_project_candidates(items)
     assert len(result) == pipeline.MAX_REPORT_ITEMS
     assert all(item.source == "github" for item in result)
+
+
+def test_deepseek_final_gate_rejects_low_value_analysis(monkeypatch):
+    now = datetime.now(timezone.utc).isoformat()
+
+    def analyze(items):
+        rows = []
+        for item in items:
+            if "Weak" in item["title"]:
+                rows.extend(_analysis_for([item], score=54, opportunity="low"))
+            else:
+                rows.extend(_analysis_for([item], score=84, opportunity="high"))
+        return rows
+
+    monkeypatch.setattr(pipeline, "analyze_items", analyze)
+    items = [
+        {
+            "title": "Strong Amazon Seller SDK",
+            "description": "Amazon seller API and automation SDK for listing localization, inventory and ecommerce workflow integration",
+            "source": "github",
+            "created_at": now,
+            "stars": 25,
+        },
+        {
+            "title": "Weak Amazon Seller SDK",
+            "description": "Amazon seller API and automation SDK for listing localization with an otherwise limited product implementation",
+            "source": "github",
+            "created_at": now,
+            "stars": 24,
+        },
+    ]
+
+    result = build_report(items)
+    assert [item.title for item in result] == ["Strong Amazon Seller SDK"]
 
 
 def test_run_daily_radar_skips_when_another_execution_is_running(monkeypatch):
