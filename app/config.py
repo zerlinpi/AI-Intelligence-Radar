@@ -73,3 +73,19 @@ LLM_TIMEOUT_SECONDS = max(_env_float("LLM_TIMEOUT_SECONDS", 900), 30)
 
 # 默认数据库位于 Docker 持久化目录中。
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/radar.db")
+
+# data 目录承担 SQLite、飞书 outbox、数据库备份和运行历史，磁盘空间过低时应在
+# 调用 DeepSeek 前停止执行，避免数据库写到一半或 outbox 无法落盘。
+DATA_MIN_FREE_MB = max(_env_int("DATA_MIN_FREE_MB", 256), 64)
+DATABASE_BACKUP_DIR = (
+    os.getenv("DATABASE_BACKUP_DIR", "./data/backups") or "./data/backups"
+).strip()
+DATABASE_BACKUP_RETENTION = min(
+    max(_env_int("DATABASE_BACKUP_RETENTION", 7), 1),
+    60,
+)
+RUN_HISTORY_FILE = (
+    os.getenv("RUN_HISTORY_FILE", "./data/run-history.json")
+    or "./data/run-history.json"
+).strip()
+RUN_HISTORY_LIMIT = min(max(_env_int("RUN_HISTORY_LIMIT", 100), 10), 1000)
