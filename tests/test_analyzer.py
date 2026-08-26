@@ -203,10 +203,19 @@ def test_batch_analyzer_recovers_only_missing_rows(monkeypatch):
     assert "项目一" not in retry_prompt
 
 
-def test_batch_analyzer_allows_full_output_budget(monkeypatch):
+def test_batch_analyzer_allows_large_configured_output_budget(monkeypatch):
     _mock_success(monkeypatch)
-    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 100000)
+    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 131072)
     analyzer.analyze_items(
         [{"title": "项目一", "description": "测试", "metrics": {"stars": 10}, "trend_score": 80}]
     )
-    assert FakeClient.calls[0]["max_tokens"] == 65536
+    assert FakeClient.calls[0]["max_tokens"] == 131072
+
+
+def test_batch_analyzer_caps_output_at_deepseek_model_limit(monkeypatch):
+    _mock_success(monkeypatch)
+    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 500000)
+    analyzer.analyze_items(
+        [{"title": "项目一", "description": "测试", "metrics": {"stars": 10}, "trend_score": 80}]
+    )
+    assert FakeClient.calls[0]["max_tokens"] == 384000
