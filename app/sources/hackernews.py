@@ -8,7 +8,7 @@ from app.sources.base import BaseCollector
 from app.core.logger import get_logger
 
 
-logger = get_logger("hackernews")
+logger = get_logger("Hacker News采集")
 
 AI_KEYWORDS = (
     "llm",
@@ -42,7 +42,7 @@ class HackerNewsCollector(BaseCollector):
     name = "hackernews"
 
     def collect(self, limit: int = 10) -> List[Dict]:
-        # Show HN is a better signal for newly launched projects than topstories.
+        # Show HN 更适合发现刚发布的项目，而不是历史热门内容。
         api = "https://hacker-news.firebaseio.com/v0/showstories.json"
 
         response = requests.get(api, timeout=10)
@@ -83,7 +83,7 @@ class HackerNewsCollector(BaseCollector):
                 created_at = created.isoformat()
                 age_hours = max((now - created).total_seconds() / 3600, 1)
 
-                # Keep Show HN focused on recent launches rather than old threads.
+                # 只保留近期发布，避免旧讨论混入早期项目雷达。
                 if age_hours > 24 * 14:
                     continue
 
@@ -109,7 +109,7 @@ class HackerNewsCollector(BaseCollector):
                     }
                 )
             except Exception:
-                logger.exception("failed fetching hackernews item=%s", item_id)
+                logger.exception("Hacker News 项目获取失败：编号=%s", item_id)
                 continue
 
         results.sort(
