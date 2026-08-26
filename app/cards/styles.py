@@ -1,6 +1,8 @@
 DAILY_HEADER_TEMPLATE = "turquoise"
 DECISION_BACKGROUND = "grey"
 
+# 这是信息架构数量限制，不是文案长度限制。
+# Top Actions 固定最多 3 条；产品每页优先放 5 项，超出后继续分页，不丢弃内容。
 MAX_ACTIONS = 3
 DEFAULT_PROJECTS_PER_CARD = 5
 
@@ -20,21 +22,4 @@ FOCUS_TITLES = {
     "Amazon政策与审核": "A｜Amazon 政策与审核",
     "美国跨境新规": "B｜美国跨境进口新规",
     "产品合规审核": "C｜美国市场产品审核",
-}
-
-DISPLAY_LIMITS = {
-    "header": 28,
-    "judgment": 60,
-    "action": 52,
-    "policy_title": 42,
-    "policy_requirement": 72,
-    "policy_impact": 64,
-    "affected_products": 48,
-    "risk": 56,
-    "preparation": 64,
-    "policy_action": 46,
-    "product_title": 32,
-    "product_description": 72,
-    "product_judgment": 64,
-    "product_direction": 52,
 }
