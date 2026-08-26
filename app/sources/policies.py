@@ -12,8 +12,6 @@ from app.core.logger import get_logger
 
 logger = get_logger("政策采集")
 
-# 不同监管主题变化频率不同。Amazon 关注更近期，CPSC/FDA/FCC 等产品准入规则
-# 使用更长窗口，避免错过已经开始执行但仍直接影响新品进入美国市场的重要要求。
 POLICY_QUERIES = (
     {
         "source": "amazon_policy",
@@ -145,6 +143,14 @@ URGENT_WORDS = (
     "no longer",
 )
 
+# 主题相似度判定时忽略这些泛化词，避免“Amazon policy update”本身造成虚假相似。
+TOPIC_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is",
+    "of", "on", "or", "the", "to", "with", "us", "u", "s", "new", "news", "update",
+    "updates", "policy", "policies", "rule", "rules", "requirement", "requirements",
+    "compliance", "amazon", "seller", "sellers", "selling", "product", "products",
+}
+
 
 def _strip_html(value: str) -> str:
     text = re.sub(r"<[^>]+>", " ", str(value or ""))
@@ -192,13 +198,66 @@ def _signal_counts(title: str, description: str):
 
 def _policy_relevance(title: str, description: str) -> int:
     title_hits, body_hits, urgent_hits = _signal_counts(title, description)
-
-    # 标题明确出现规则/合规信号时直接保留；否则正文至少需要两个不同信号，
-    # 避免普通营销文章因为偶然出现 policy/update 等单词进入日报。
     if title_hits == 0 and body_hits < 2:
         return 0
-
     return title_hits * 7 + body_hits * 3 + min(urgent_hits * 4, 16)
+
+
+def _topic_tokens(title: str):
+    words = re.findall(r"[a-z0-9]+", str(title or "").lower())
+    return {
+        word
+        for word in words
+        if len(word) >= 3 and word not in TOPIC_STOPWORDS
+    }
+
+
+def _same_policy_topic(left: dict, right: dict) -> bool:
+    """判断两条政策标题是否在同一板块描述同一主题。"""
+    left_metrics = left.get("metrics") or {}
+    right_metrics = right.get("metrics") or {}
+    if left_metrics.get("policy_focus") != right_metrics.get("policy_focus"):
+        return False
+
+    left_title = re.sub(r"\W+", " ", str(left.get("title") or "").lower()).strip()
+    right_title = re.sub(r"\W+", " ", str(right.get("title") or "").lower()).strip()
+    if left_title and right_title and (left_title in right_title or right_title in left_title):
+        return True
+
+    left_tokens = _topic_tokens(left_title)
+    right_tokens = _topic_tokens(right_title)
+    if not left_tokens or not right_tokens:
+        return False
+
+    overlap = len(left_tokens & right_tokens)
+    containment = overlap / max(min(len(left_tokens), len(right_tokens)), 1)
+    union = len(left_tokens | right_tokens)
+    jaccard = overlap / max(union, 1)
+    return containment >= 0.72 or (overlap >= 3 and jaccard >= 0.48)
+
+
+def _dedupe_policy_topics(items):
+    """同一政策主题只保留发布时间最新的一条。"""
+    ordered = sorted(
+        items,
+        key=lambda item: item.get("created_at") or "",
+        reverse=True,
+    )
+    kept = []
+    duplicate_count = 0
+    for item in ordered:
+        if any(_same_policy_topic(item, existing) for existing in kept):
+            duplicate_count += 1
+            continue
+        kept.append(item)
+    return kept, duplicate_count
+
+
+def _recency_first_score(created: datetime, source_weight: int, relevance: int) -> float:
+    """生成时间优先的内部排序键；每晚一小时都比旧内容优先，质量只用于同小时附近破平局。"""
+    hour_rank = created.timestamp() / 3600
+    quality_tiebreak = min(max(source_weight + relevance, 0), 999) / 1000
+    return round(hour_rank + quality_tiebreak, 3)
 
 
 def _google_news_rss(query: str) -> str:
@@ -259,24 +318,21 @@ class PolicyCollector(BaseCollector):
                 if not link:
                     continue
 
-                age_days = max((now - created).total_seconds() / 86400, 0)
-                recency_ratio = max(
-                    1 - age_days / max(source["lookback_days"], 1),
-                    0,
-                )
-                recency = recency_ratio * 24
-                score = round(source["weight"] + relevance + recency, 2)
+                age_hours = max((now - created).total_seconds() / 3600, 0)
+                score = _recency_first_score(created, source["weight"], relevance)
 
                 key = re.sub(r"\W+", "", title.lower())[:160] or link
                 existing = candidates.get(key)
-                if existing and existing["metrics"]["policy_score"] >= score:
-                    continue
+                if existing:
+                    existing_time = existing.get("created_at") or ""
+                    if existing_time >= created.isoformat():
+                        continue
 
                 candidates[key] = {
                     "source": source["source"],
                     "title": title,
                     "url": link,
-                    "description": description[:1200],
+                    "description": description,
                     "category": "policy",
                     "created_at": created.isoformat(),
                     "metrics": {
@@ -285,21 +341,25 @@ class PolicyCollector(BaseCollector):
                         "policy_focus": source["focus"],
                         "policy_kind": source["kind"],
                         "policy_score": score,
+                        "policy_relevance_score": relevance,
+                        "age_hours": round(age_hours, 1),
                         "lookback_days": source["lookback_days"],
                     },
                 }
 
-        results = list(candidates.values())
+        results, duplicate_count = _dedupe_policy_topics(list(candidates.values()))
         results.sort(
             key=lambda item: (
-                (item.get("metrics") or {}).get("policy_score", 0),
                 item.get("created_at") or "",
+                (item.get("metrics") or {}).get("policy_relevance_score", 0),
             ),
             reverse=True,
         )
 
         logger.info(
-            "政策采集完成：候选=%s 选中=%s",
+            "政策采集完成：原始候选=%s 同主题去重=%s 合格=%s 选中=%s",
+            len(candidates),
+            duplicate_count,
             len(results),
             min(len(results), limit),
         )
