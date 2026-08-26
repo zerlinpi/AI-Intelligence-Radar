@@ -31,11 +31,12 @@ def test_feishu_success(monkeypatch):
     payload = captured["payload"]
     assert payload["msg_type"] == "interactive"
     assert payload["card"]["config"]["wide_screen_mode"] is True
-    assert payload["card"]["header"]["title"]["content"] == "AI 新项目雷达"
+    assert payload["card"]["header"]["template"] == "turquoise"
+    assert payload["card"]["header"]["title"]["content"] == "美国跨境经营雷达"
     assert payload["card"]["elements"][0]["text"]["content"] == "精简日报正文"
 
 
-def test_product_compliance_highlights_use_background_blocks():
+def test_product_compliance_highlights_use_two_column_background_blocks():
     message = "\n".join(
         [
             "**C｜美国市场产品审核**",
@@ -51,14 +52,23 @@ def test_product_compliance_highlights_use_background_blocks():
 
     assert len(highlights) == 4
     assert all(item["background_style"] == "grey" for item in highlights)
-    contents = [
+    assert all(len(item["columns"]) == 2 for item in highlights)
+
+    labels = [
         item["columns"][0]["elements"][0]["text"]["content"]
         for item in highlights
     ]
-    assert any("审核简报" in content for content in contents)
-    assert any("影响产品" in content for content in contents)
-    assert any("风险" in content for content in contents)
-    assert any("准备资料" in content for content in contents)
+    bodies = [
+        item["columns"][1]["elements"][0]["text"]["content"]
+        for item in highlights
+    ]
+
+    assert any("审核简报" in label for label in labels)
+    assert any("影响产品" in label for label in labels)
+    assert any("风险" in label for label in labels)
+    assert any("准备资料" in label for label in labels)
+    assert any("儿童产品" in body for body in bodies)
+    assert any("清关延误" in body for body in bodies)
 
 
 def test_long_report_fields_are_compacted_without_losing_label():
@@ -68,14 +78,23 @@ def test_long_report_fields_are_compacted_without_losing_label():
     )
 
     highlight = next(item for item in elements if item.get("tag") == "column_set")
-    highlight_text = highlight["columns"][0]["elements"][0]["text"]["content"]
+    label_text = highlight["columns"][0]["elements"][0]["text"]["content"]
+    body_text = highlight["columns"][1]["elements"][0]["text"]["content"]
     normal_text = next(item for item in elements if item.get("tag") == "div")["text"]["content"]
 
-    assert "**风险：**" in highlight_text
-    assert "…" in highlight_text
+    assert "风险" in label_text
+    assert "…" in body_text
     assert "**产品描述：**" in normal_text
     assert "…" in normal_text
-    assert len(highlight_text) < len(long_text)
+    assert len(body_text) <= feishu.DISPLAY_LIMITS["风险"] + 1
+
+
+def test_compact_limits_cover_core_decision_fields():
+    assert feishu.DISPLAY_LIMITS["影响产品"] <= 70
+    assert feishu.DISPLAY_LIMITS["风险"] <= 80
+    assert feishu.DISPLAY_LIMITS["准备资料"] <= 90
+    assert feishu.DISPLAY_LIMITS["产品描述"] <= 110
+    assert feishu.DISPLAY_LIMITS["价值判断"] <= 90
 
 
 def test_feishu_business_error(monkeypatch):
