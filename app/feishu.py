@@ -1,3 +1,4 @@
+import re
 import time
 
 import requests
@@ -11,8 +12,8 @@ logger = get_logger("飞书通知")
 
 MAX_RETRIES = 3
 
-# 这些字段是日报里最需要扫一眼就能看到的决策信息。
-# 飞书消息卡片的 column_set 支持 grey 背景，因此把它们从长 Markdown 中拆成独立背景块。
+# 飞书 raw interactive card 的 column_set 已验证支持 grey 背景。
+# 关键决策信息统一用浅灰背景，不滥用高饱和色；语义通过图标与标签区分。
 HIGHLIGHT_MARKERS = (
     "**审核简报：**",
     "**重点影响产品：**",
@@ -22,20 +23,58 @@ HIGHLIGHT_MARKERS = (
     "**准备资料：**",
 )
 
-# 展示层再做一次轻量截断，避免 DeepSeek 回答正确但过长，影响日报扫读效率。
-LINE_LIMITS = {
-    "**审核简报：**": 120,
-    "**重点影响产品：**": 100,
-    "**优先准备：**": 110,
-    "**审核要求：**": 120,
-    "**影响产品：**": 90,
-    "**风险：**": 100,
-    "**准备资料：**": 110,
-    "**建议动作：**": 80,
-    "**产品描述：**": 140,
-    "**价值判断：**": 110,
-    "**可借鉴方向：**": 90,
+# 模型可以完整思考，但飞书展示只保留执行决策所需信息。
+# 中文字符近似控制，避免单条内容占据过多移动端屏幕。
+DISPLAY_LIMITS = {
+    "审核简报": 110,
+    "重点影响产品": 90,
+    "优先准备": 90,
+    "审核要求": 90,
+    "影响产品": 70,
+    "风险": 80,
+    "准备资料": 90,
+    "建议动作": 60,
+    "核心变化": 90,
+    "卖家影响": 80,
+    "新规要点": 90,
+    "进口影响": 80,
+    "产品描述": 110,
+    "价值判断": 90,
+    "可借鉴方向": 70,
 }
+
+LABEL_PATTERN = re.compile(r"\*\*(?P<label>[^*：]+)：\*\*")
+
+
+def _clip_text(text: str, limit: int) -> str:
+    value = " ".join(str(text or "").split())
+    if len(value) <= limit:
+        return value
+    return value[: max(limit - 1, 1)].rstrip("，。；;、 ") + "…"
+
+
+def _compact_markdown_line(line: str) -> str:
+    """按字段语义压缩正文，不改变标题、链接和数值元信息。"""
+    stripped = str(line or "").strip()
+    match = LABEL_PATTERN.search(stripped)
+    if not match:
+        return line
+
+    label = match.group("label")
+    limit = DISPLAY_LIMITS.get(label)
+    if not limit:
+        return line
+
+    body_start = match.end()
+    prefix = stripped[:body_start]
+    body = stripped[body_start:].strip()
+
+    # 高亮正文不再整体加粗，只保留标签加粗，降低视觉噪音。
+    if body.startswith("**") and body.endswith("**") and len(body) >= 4:
+        body = body[2:-2].strip()
+
+    compact = _clip_text(body, limit)
+    return f"{prefix} {compact}" if compact else prefix
 
 
 def _markdown_element(content: str) -> dict:
@@ -48,34 +87,27 @@ def _markdown_element(content: str) -> dict:
     }
 
 
-def _compact_line(line: str) -> str:
-    """只压缩字段值，不破坏字段名和 Markdown 结构。"""
-    for marker, limit in LINE_LIMITS.items():
-        if marker not in line:
-            continue
-
-        prefix, value = line.split(marker, 1)
-        value = value.strip()
-        wrapped_bold = value.startswith("**") and value.endswith("**") and len(value) >= 4
-        if wrapped_bold:
-            value = value[2:-2].strip()
-
-        if len(value) > limit:
-            value = value[: max(limit - 1, 1)].rstrip() + "…"
-
-        if wrapped_bold:
-            value = f"**{value}**"
-
-        return f"{prefix}{marker} {value}".rstrip()
-
-    return line
-
-
-def _highlight_element(content: str) -> dict:
-    """使用带背景色的独立块突出产品审核关键信息。"""
+def _split_highlight_content(content: str):
+    """将高亮行拆成标签与正文，便于两列扫描。"""
     text = content.strip()
     if text.startswith(">"):
         text = text[1:].strip()
+
+    match = LABEL_PATTERN.search(text)
+    if not match:
+        return "重点", text
+
+    icon_prefix = text[: match.start()].strip()
+    label_text = match.group("label")
+    body = text[match.end():].strip()
+
+    left = f"{icon_prefix} **{label_text}**".strip()
+    return left, body
+
+
+def _highlight_element(content: str) -> dict:
+    """浅灰背景 + 窄标签列 + 宽内容列，形成稳定的决策信息块。"""
+    label, body = _split_highlight_content(content)
 
     return {
         "tag": "column_set",
@@ -87,14 +119,21 @@ def _highlight_element(content: str) -> dict:
                 "width": "weighted",
                 "weight": 1,
                 "vertical_align": "top",
-                "elements": [_markdown_element(text)],
-            }
+                "elements": [_markdown_element(label)],
+            },
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 4,
+                "vertical_align": "top",
+                "elements": [_markdown_element(body)],
+            },
         ],
     }
 
 
 def build_card_elements(message: str) -> list:
-    """把日报拆成普通内容、分隔线和带背景色的高亮块。"""
+    """把日报拆成普通内容、分隔线和带背景色的高亮决策块。"""
     elements = []
     buffer = []
 
@@ -107,7 +146,7 @@ def build_card_elements(message: str) -> list:
             elements.append(_markdown_element(content))
 
     for raw_line in str(message or "").splitlines():
-        line = _compact_line(raw_line)
+        line = _compact_markdown_line(raw_line)
         stripped = line.strip()
 
         if stripped == "---":
@@ -129,7 +168,7 @@ def build_card_elements(message: str) -> list:
 
 
 def send_feishu(message: str) -> bool:
-    """发送中文 AI 情报雷达卡片到飞书。"""
+    """发送中文美国跨境经营雷达卡片到飞书。"""
     if not FEISHU_WEBHOOK:
         logger.warning("未配置飞书机器人地址")
         return False
@@ -141,10 +180,11 @@ def send_feishu(message: str) -> bool:
                 "wide_screen_mode": True,
             },
             "header": {
-                "template": "orange",
+                # turquoise 更适合每日信息/决策简报；红橙色留给风险语义。
+                "template": "turquoise",
                 "title": {
                     "tag": "plain_text",
-                    "content": "AI 新项目雷达",
+                    "content": "美国跨境经营雷达",
                 },
             },
             "elements": build_card_elements(message),
