@@ -133,6 +133,9 @@ def fallback_analysis(item, error=None):
         return {
             "purpose": "政策或审核要求暂无法生成，请查看官方原文。",
             "summary": "影响范围暂不可用，建议核对产品类别、进口主体与适用法规。",
+            "affected_products": "请依据官方原文核对具体适用产品、功能特征与豁免范围。",
+            "risk": "AI 风险拆分未完成；在确认适用范围前，不应假设现有产品已经满足准入要求。",
+            "preparation": "先保存官方原文，并核对相关测试、证书、注册、标签或申报资料。",
             "business_score": 50,
             "opportunity": "medium",
             "startup_ideas": ["核对官方原文并准备对应合规资料"],
@@ -338,6 +341,13 @@ def _clean_text(value, fallback: str = "") -> str:
     return text or fallback
 
 
+def _clip_text(value, limit: int = 180) -> str:
+    text = _clean_text(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(limit - 1, 1)].rstrip() + "…"
+
+
 def _format_priority_tags(item: RadarItem) -> str:
     tags = (item.metrics or {}).get("priority_tags") or []
     if not isinstance(tags, list):
@@ -359,11 +369,64 @@ def _policy_group_title(focus: str) -> str:
 
 
 def _policy_field_labels(focus: str):
-    if focus == "产品合规审核":
-        return "审核要求", "影响产品/风险", "准备资料"
     if focus == "美国跨境新规":
         return "新规要点", "进口影响", "建议动作"
     return "核心变化", "卖家影响", "建议动作"
+
+
+def _product_compliance_brief(group):
+    """为美国市场产品审核板块生成可扫描的决策简报，不额外调用模型。"""
+    if not group:
+        return []
+
+    authorities = []
+    affected = []
+    preparations = []
+    highest_item = None
+    highest_score = -1
+
+    for item in group:
+        metrics = item.metrics or {}
+        authority = _clean_text(metrics.get("policy_authority"))
+        if authority and authority not in authorities:
+            authorities.append(authority)
+
+        analysis = item.analysis or {}
+        product_text = _clean_text(analysis.get("affected_products"))
+        if product_text and product_text not in affected:
+            affected.append(product_text)
+
+        prep_text = _clean_text(analysis.get("preparation"))
+        if prep_text and prep_text not in preparations:
+            preparations.append(prep_text)
+
+        score = _number(analysis.get("business_score", 50))
+        if score > highest_score:
+            highest_score = score
+            highest_item = item
+
+    highest_analysis = (highest_item.analysis or {}) if highest_item else {}
+    highest_urgency = str(highest_analysis.get("opportunity", "medium")).lower()
+    highest_marker = RISK_MARKERS.get(highest_urgency, "🟠 中")
+
+    scope = " / ".join(authorities) if authorities else "美国市场准入机构"
+    lines = [
+        (
+            f"> **审核简报：** 今日共 **{len(group)} 条**产品准入/合规审核，"
+            f"涉及 **{scope}**；最高风险 **{highest_marker}**，优先处理高影响产品的准入资料完整性。"
+        )
+    ]
+
+    if affected:
+        lines.append(
+            f"> 🎯 **重点影响产品：** **{_clip_text('；'.join(affected), 220)}**"
+        )
+    if preparations:
+        lines.append(
+            f"> 📋 **优先准备：** **{_clip_text('；'.join(preparations), 220)}**"
+        )
+
+    return lines
 
 
 def _append_policy_section(lines, policies):
@@ -383,7 +446,9 @@ def _append_policy_section(lines, policies):
             continue
 
         lines.extend(["", _policy_group_title(focus), ""])
-        field1, field2, field3 = _policy_field_labels(focus)
+        if focus == "产品合规审核":
+            lines.extend(_product_compliance_brief(group))
+            lines.append("")
 
         for item in group:
             analysis = item.analysis or {}
@@ -410,11 +475,34 @@ def _append_policy_section(lines, policies):
             lines.extend([
                 title,
                 f"{marker} · 影响 **{impact_score:.0f}/100** · {' · '.join(meta_parts)}",
-                f"**{field1}：** {purpose}",
-                f"**{field2}：** {impact}",
             ])
-            if action:
-                lines.append(f"**{field3}：** {action}")
+
+            if focus == "产品合规审核":
+                affected_products = _clean_text(
+                    analysis.get("affected_products"),
+                    "需依据官方原文确认具体产品类别、功能特征与豁免范围。",
+                )
+                risk = _clean_text(analysis.get("risk"), impact)
+                preparation = _clean_text(
+                    analysis.get("preparation"),
+                    action or "需依据官方要求整理适用的测试、证书、注册、标签或申报资料。",
+                )
+                lines.extend([
+                    f"**审核要求：** {purpose}",
+                    f"> 🎯 **影响产品：** **{affected_products}**",
+                    f"> ⚠️ **风险：** **{risk}**",
+                    f"> 📋 **准备资料：** **{preparation}**",
+                ])
+                if action:
+                    lines.append(f"**建议动作：** {action}")
+            else:
+                field1, field2, field3 = _policy_field_labels(focus)
+                lines.extend([
+                    f"**{field1}：** {purpose}",
+                    f"**{field2}：** {impact}",
+                ])
+                if action:
+                    lines.append(f"**{field3}：** {action}")
 
             display_index += 1
             if item is not group[-1]:
