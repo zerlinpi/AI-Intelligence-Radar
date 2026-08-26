@@ -59,6 +59,7 @@ def _fallback_result(item: Dict, reason: str = "") -> Dict:
         logger.warning("AI 分析降级：%s", reason)
 
     return {
+        "purpose": "项目用途暂无法生成，请查看项目原始说明。",
         "summary": "AI 分析暂不可用，建议直接查看项目页面了解最新进展。",
         "trend_score": _local_trend_score(item),
         "business_score": 50,
@@ -141,10 +142,21 @@ def _extract_json_object(content: str) -> Dict:
 
 
 def _read_result_row(row):
-    """读取紧凑数组格式，同时兼容旧字典格式。"""
+    """读取紧凑数组格式，同时兼容旧数组和字典格式。"""
+    if isinstance(row, list) and len(row) >= 6:
+        return {
+            "序号": row[0],
+            "用途": row[1],
+            "摘要": row[2],
+            "商业分": row[3],
+            "机会": row[4],
+            "建议": row[5],
+        }
+
     if isinstance(row, list) and len(row) >= 5:
         return {
             "序号": row[0],
+            "用途": "",
             "摘要": row[1],
             "商业分": row[2],
             "机会": row[3],
@@ -190,11 +202,13 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
             str(row.get("机会") or "中").strip().lower(),
             "medium",
         )
+        purpose = str(row.get("用途") or "").strip()
         summary = str(row.get("摘要") or "").strip()
         idea = str(row.get("建议") or "").strip()
 
         results.append(
             {
+                "purpose": purpose or "项目用途暂不明确，请查看项目说明。",
                 "summary": summary or "暂无 AI 分析摘要。",
                 "trend_score": _local_trend_score(item),
                 "business_score": business_score,
@@ -208,7 +222,7 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
 
 
 def analyze_items(items: List[Dict]) -> List[Dict]:
-    """一次请求批量分析最多 10 个项目，减少重复提示词和连接开销。"""
+    """一次请求批量分析最多 10 个项目，并优先判断跨境电商与产品化价值。"""
     items = list(items or [])[:MAX_BATCH_ITEMS]
     if not items:
         return []
@@ -227,12 +241,16 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
     )
 
     prompt = (
-        "你是早期AI项目分析师。项目数组每项依次为"
+        "你是早期AI产品与跨境电商机会分析师。项目数组每项依次为"
         "[序号,名称,简介,来源,上线小时,热度,指标]。"
-        "只看早期价值，不因历史规模或品牌加分。"
-        "每项用简体中文：摘要≤45字，建议≤25字。"
+        "重点判断两类价值：1跨境电商相关，包括Amazon、Shopify、TikTok Shop、独立站、"
+        "选品、Listing、广告、内容本地化、客服、SEO、竞品、定价、物流、库存、评论、达人营销；"
+        "2可直接做成SaaS、Agent、插件、API、自动化工具或独立产品。"
+        "不要因历史规模或品牌知名度加分。"
+        "每项用简体中文：用途≤28字，直接说明它给谁用、解决什么问题；"
+        "判断≤32字，说明为什么值得关注；建议≤22字，给出最可产品化方向。"
         "只返回JSON："
-        '{"结果":[[序号,"摘要",商业分,"高|中|低","建议"]]}。'
+        '{"结果":[[序号,"用途","判断",商业分,"高|中|低","建议"]]}。'
         f"项目={compact_json}"
     )
 
