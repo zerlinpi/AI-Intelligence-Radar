@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 
 def _normalize(value, divisor, weight):
-    """Normalize a metric into a weighted 0-100 radar component."""
+    """Normalize a metric into a weighted score component."""
     try:
         value = float(value or 0)
     except (TypeError, ValueError):
@@ -14,81 +14,106 @@ def _normalize(value, divisor, weight):
     return min(value / divisor * weight, weight)
 
 
-def freshness_score(item):
-    """Calculate freshness signal from created timestamps."""
-    created_at = item.get("created_at") if isinstance(item, dict) else None
-
-    if not created_at:
+def _metric(item, key):
+    if not isinstance(item, dict):
         return 0
+
+    if key in item:
+        return item.get(key) or 0
+
+    metrics = item.get("metrics") or {}
+    if isinstance(metrics, dict):
+        return metrics.get(key) or 0
+
+    return 0
+
+
+def age_hours(item):
+    """Return item age in hours, or None when creation time is unavailable."""
+    created_at = item.get("created_at") if isinstance(item, dict) else None
+    if not created_at:
+        return None
 
     try:
         created = datetime.fromisoformat(
             str(created_at).replace("Z", "+00:00")
         )
-
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
 
-        now = datetime.now(timezone.utc)
-        hours = max((now - created).total_seconds() / 3600, 0)
-
-        if hours <= 24:
-            return 15
-        if hours <= 72:
-            return 10
-        if hours <= 168:
-            return 5
+        return max(
+            (datetime.now(timezone.utc) - created).total_seconds() / 3600,
+            0,
+        )
     except Exception:
-        pass
+        return None
+
+
+def freshness_score(item):
+    """Strongly reward projects launched recently."""
+    hours = age_hours(item)
+    if hours is None:
+        return 0
+
+    if hours <= 6:
+        return 40
+    if hours <= 24:
+        return 36
+    if hours <= 72:
+        return 30
+    if hours <= 168:
+        return 22
+    if hours <= 336:
+        return 10
 
     return 0
 
 
 def calculate_score(item):
     """
-    Calculate AI Intelligence Radar score.
+    Calculate early-stage project heat score.
+
+    This score intentionally favors newly launched projects that are gaining
+    attention quickly instead of mature projects with large lifetime totals.
 
     Weighting:
-    - Community momentum: 30
-    - Developer activity: 20
-    - AI relevance: 20
-    - Market signal: 15
-    - Freshness: 15
+    - Freshness: 40
+    - Community growth velocity: 35
+    - Early engagement: 15
+    - Source momentum signal: 10
     """
-
     if not isinstance(item, dict):
         return 0
 
-    community = (
-        _normalize(item.get("stars"), 1000, 20)
-        + _normalize(item.get("upvotes"), 100, 10)
+    hours = age_hours(item)
+    age_days = max((hours or 24) / 24, 0.25)
+
+    stars_per_day = float(_metric(item, "stars") or 0) / age_days
+    upvotes_per_day = float(_metric(item, "upvotes") or 0) / age_days
+    downloads_per_day = float(_metric(item, "downloads") or 0) / age_days
+    forks_per_day = float(_metric(item, "forks") or 0) / age_days
+    comments_per_day = float(_metric(item, "comments") or 0) / age_days
+    likes_per_day = float(_metric(item, "likes") or 0) / age_days
+
+    community_velocity = (
+        _normalize(stars_per_day, 150, 20)
+        + _normalize(upvotes_per_day, 80, 10)
+        + _normalize(downloads_per_day, 10000, 5)
     )
 
-    developer_activity = (
-        _normalize(item.get("forks"), 100, 10)
-        + _normalize(item.get("comments"), 50, 10)
+    engagement = (
+        _normalize(forks_per_day, 30, 5)
+        + _normalize(comments_per_day, 25, 5)
+        + _normalize(likes_per_day, 30, 5)
     )
 
-    try:
-        ai_relevance = float(item.get("ai_relevance_score", 0) or 0)
-    except (TypeError, ValueError):
-        ai_relevance = 0
-
-    ai_relevance = min(max(ai_relevance, 0) * 0.20, 20)
-
-    market_signal = (
-        _normalize(item.get("downloads"), 10000, 10)
-        + _normalize(item.get("business_interest"), 100, 5)
-    )
-
-    freshness = freshness_score(item)
+    source_momentum = _normalize(_metric(item, "momentum"), 5000, 10)
 
     score = (
-        community
-        + developer_activity
-        + ai_relevance
-        + market_signal
-        + freshness
+        freshness_score(item)
+        + community_velocity
+        + engagement
+        + source_momentum
     )
 
     return round(min(max(score, 0), 100), 2)
