@@ -16,8 +16,8 @@ on:
   workflow_dispatch:
 
 env:
-  TESTING: true
-  DATABASE_URL: sqlite:///:memory:
+  TESTING: "true"
+  DATABASE_URL: "sqlite:///:memory:"
 
 jobs:
   test:
