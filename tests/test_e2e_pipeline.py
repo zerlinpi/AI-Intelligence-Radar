@@ -28,20 +28,28 @@ def test_collect_sources_converts_items(monkeypatch):
 def test_build_feishu_message():
     item = RadarItem(
         title="AI Test",
-        source="test",
+        source="github",
         url="https://example.com",
         description="description",
+        metrics={"stars": 120, "forks": 8},
     )
     item.trend_score = 80
     item.analysis = {
         "opportunity": "high",
+        "business_score": 86,
         "summary": "这是一个值得关注的早期 AI 项目。",
+        "startup_ideas": ["关注开发者工具方向"],
     }
 
     message = pipeline.build_feishu_message([item])
 
-    assert "AI 新项目雷达" in message
+    assert "今日发现 1 个新项目" in message
     assert "AI Test" in message
-    assert "商业机会：**高**" in message
-    assert "新项目热度" in message
-    assert "查看项目" in message
+    assert "`GitHub`" in message
+    assert "🔥 **80**" in message
+    assert "💼 **86 · 高**" in message
+    assert "⭐ 120 · Fork 8" in message
+    assert "这是一个值得关注的早期 AI 项目。" in message
+    assert "关注开发者工具方向" in message
+    assert "[查看 →](https://example.com)" in message
+    assert "热度代表早期增长速度" in message
