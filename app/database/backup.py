@@ -29,14 +29,18 @@ def _backup_dir() -> Path:
     return path
 
 
-def _prune_backups(directory: Path) -> None:
-    keep = max(int(DATABASE_BACKUP_RETENTION or 1), 1)
+def _prune_backups(directory: Path, keep: Optional[int] = None) -> None:
+    retention = (
+        max(int(keep), 0)
+        if keep is not None
+        else max(int(DATABASE_BACKUP_RETENTION or 1), 1)
+    )
     backups = sorted(
         (path for path in directory.glob("radar-*.db") if path.is_file()),
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )
-    for stale in backups[keep:]:
+    for stale in backups[retention:]:
         stale.unlink(missing_ok=True)
 
 
@@ -47,6 +51,12 @@ def backup_database() -> Optional[Path]:
         return None
 
     directory = _backup_dir()
+    retention = max(int(DATABASE_BACKUP_RETENTION or 1), 1)
+
+    # 在创建新文件前先把历史数量收缩到 retention-1，避免旧备份占满磁盘后
+    # 新备份反而无法创建。随后再执行一次完整保留策略。
+    _prune_backups(directory, keep=max(retention - 1, 0))
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     destination = directory / f"radar-{timestamp}.db"
 
@@ -64,7 +74,7 @@ def backup_database() -> Optional[Path]:
         target.close()
         source.close()
 
-    _prune_backups(directory)
+    _prune_backups(directory, keep=retention)
     logger.info("SQLite 在线备份完成：%s", destination)
     return destination
 
