@@ -1,3 +1,4 @@
+import os
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine
@@ -6,11 +7,35 @@ from sqlalchemy.orm import sessionmaker
 from app.database.models import Base
 
 
-DATABASE_URL = "sqlite:///./radar.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/radar.db")
+
+
+def _prepare_sqlite_directory(database_url: str) -> None:
+    """Ensure the parent directory exists for file-backed SQLite databases."""
+    prefix = "sqlite:///"
+    if not database_url.startswith(prefix):
+        return
+
+    database_path = database_url[len(prefix):]
+    if not database_path or database_path == ":memory:":
+        return
+
+    parent = os.path.dirname(os.path.abspath(database_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+_prepare_sqlite_directory(DATABASE_URL)
+
+connect_args = (
+    {"check_same_thread": False}
+    if DATABASE_URL.startswith("sqlite:")
+    else {}
+)
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args=connect_args,
 )
 
 SessionLocal = sessionmaker(
