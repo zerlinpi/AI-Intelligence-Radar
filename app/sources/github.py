@@ -46,7 +46,7 @@ class GithubCollector(BaseCollector):
 
         for search_term in SEARCH_TERMS:
             params = {
-                "q": f"{search_term} created:>={since} stars:>=5 fork:false",
+                "q": f"{search_term} created:>={since} stars:>=5 fork:false archived:false",
                 "sort": "stars",
                 "order": "desc",
                 "per_page": fetch_limit,
@@ -120,12 +120,17 @@ class GithubCollector(BaseCollector):
                 "stars": stars,
                 "forks": forks,
                 "metrics": {
+                    "github_id": item.get("id"),
                     "stars": stars,
                     "forks": forks,
                     "open_issues": open_issues,
                     "momentum": round(momentum, 2),
                     "topics": topics if isinstance(topics, list) else [],
                     "language": item.get("language") or "",
+                    # 保存更新时间快照，供跨天新颖性判断区分“小幅热度波动”和“真正重大更新”。
+                    "updated_at": item.get("updated_at") or "",
+                    "pushed_at": item.get("pushed_at") or "",
+                    "default_branch": item.get("default_branch") or "",
                 },
             }
 
