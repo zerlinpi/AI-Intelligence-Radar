@@ -306,7 +306,6 @@ def _send_outbox_file(path) -> bool:
         try:
             mark_sent(path, index)
         except FileNotFoundError:
-            # 最后一张成功后 mark_sent 会删除已完成队列文件。
             pass
         except Exception:
             logger.exception("飞书发送成功但队列状态写入失败：文件=%s 卡片=%s", path, card.card_type)
@@ -321,7 +320,6 @@ def flush_feishu_outbox() -> bool:
         logger.warning("未配置飞书机器人地址，无法补发历史队列")
         return False
 
-    success = True
     try:
         paths = list_pending()
     except Exception:
@@ -330,14 +328,13 @@ def flush_feishu_outbox() -> bool:
 
     for path in paths:
         if not _send_outbox_file(path):
-            success = False
             # 旧日报未恢复时不继续发送更晚的队列，保证消息顺序。
-            break
-    return success
+            return False
+    return True
 
 
-def send_feishu_cards(cards, run_id: str = "", durable: bool = False) -> bool:
-    """发送结构化日报；生产模式可先写入持久化 outbox 再发送。"""
+def send_feishu_cards(cards, run_id: str = "", durable: bool = True) -> bool:
+    """发送结构化日报；默认先持久化，再按顺序发送。"""
     if not FEISHU_WEBHOOK:
         logger.warning("未配置飞书机器人地址")
         return False
@@ -352,20 +349,22 @@ def send_feishu_cards(cards, run_id: str = "", durable: bool = False) -> bool:
 
     if durable:
         try:
+            # 先恢复旧队列；旧日报未完成时只入队新日报，不越过旧消息发送。
+            previous_ok = flush_feishu_outbox()
             path = queue_cards(run_id or str(uuid.uuid4()), normalized)
+            if not previous_ok:
+                logger.warning("历史飞书队列尚未恢复，本轮日报已入队等待后续补发：文件=%s", path)
+                return False
             return _send_outbox_file(path)
         except Exception:
             # outbox 自身异常不能让已经生成的日报完全丢失，退回内存直接发送。
             logger.exception("飞书持久化入队失败，已退回直接发送")
 
-    all_success = True
     for card in normalized:
-        sent = _send_envelope(card)
-        all_success = all_success and sent
-        if not sent:
+        if not _send_envelope(card):
             # 保持卡片顺序；上一张完全失败时不继续发送后续卡片。
-            break
-    return all_success
+            return False
+    return True
 
 
 def send_feishu(message: str) -> bool:
