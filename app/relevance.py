@@ -78,10 +78,39 @@ def _has_github_developer_product_signal(item: Dict) -> bool:
     return any(_contains(text, keyword) for keyword in GITHUB_DEVELOPER_PRODUCT_SIGNALS)
 
 
+def _evidence_sufficient(item: Dict) -> bool:
+    """防止只有标题命中关键词、却没有足够公开材料支撑后续判断。"""
+    source = str(item.get("source") or "").lower()
+    description = " ".join(str(item.get("description") or "").split())
+    metrics = item.get("metrics") or {}
+    metrics = metrics if isinstance(metrics, dict) else {}
+
+    if source == "github":
+        topics = metrics.get("topics") or []
+        topic_count = len(topics) if isinstance(topics, list) else 0
+        return len(description) >= 18 or topic_count >= 2
+
+    if source == "arxiv":
+        # arXiv 合格候选应至少具有能够解释研究方法/应用路径的摘要，而不是只有论文标题。
+        return len(description) >= 100
+
+    if source == "huggingface":
+        pipeline_tag = str(metrics.get("pipeline_tag") or "").strip()
+        library_name = str(metrics.get("library_name") or "").strip()
+        tags = metrics.get("tags") or []
+        tag_count = len(tags) if isinstance(tags, list) else 0
+        return bool(pipeline_tag and (library_name or tag_count >= 2)) or len(description) >= 55
+
+    if source in {"producthunt", "hackernews"}:
+        return len(description) >= 35
+
+    return len(description) >= 24
+
+
 def report_eligibility(item: Dict) -> Dict:
     """判断一个项目是否有资格进入最终日报。
 
-    热度和新鲜度只能影响已合格项目之间的排序，不能让无业务价值的项目绕过本门槛。
+    热度和新鲜度只能影响已合格项目之间的排序，不能让无业务价值或证据不足的项目绕过本门槛。
     """
     item = item if isinstance(item, dict) else {}
     source = str(item.get("source") or "").lower()
@@ -92,6 +121,7 @@ def report_eligibility(item: Dict) -> Dict:
     hardware = _dimension(profile, "hardware_enablement") >= DIMENSION_THRESHOLDS["hardware_enablement"]
     physical = _dimension(profile, "physical_product") >= DIMENSION_THRESHOLDS["physical_product"]
     product_categories = list(profile.get("product_categories") or [])
+    evidence_sufficient = _evidence_sufficient(item)
 
     eligible = False
     reason = "与跨境业务、硬件开发或实体商品机会无直接关系"
@@ -128,6 +158,10 @@ def report_eligibility(item: Dict) -> Dict:
         if eligible:
             reason = "满足跨境或实体产品价值门槛"
 
+    if eligible and not evidence_sufficient:
+        eligible = False
+        reason = "公开信息不足，无法可靠判断实际用途或产品化路径"
+
     return {
         "eligible": bool(eligible),
         "reason": reason,
@@ -137,6 +171,7 @@ def report_eligibility(item: Dict) -> Dict:
         "hardware_enablement": hardware,
         "physical_product": physical,
         "product_categories": product_categories,
+        "evidence_sufficient": evidence_sufficient,
     }
 
 
@@ -149,6 +184,7 @@ def attach_eligibility_metrics(item: Dict, result: Dict) -> Dict:
 
     profile = result.get("profile") or {}
     metrics["report_eligible"] = bool(result.get("eligible"))
+    metrics["evidence_sufficient"] = bool(result.get("evidence_sufficient"))
     metrics["eligibility_reason"] = str(result.get("reason") or "")
     metrics["opportunity_score"] = profile.get("opportunity_score", 0)
     metrics["opportunity_dimensions"] = dict(profile.get("dimensions") or {})
