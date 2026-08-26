@@ -2,9 +2,9 @@ from app.ai import analyzer
 
 
 class FakeUsage:
-    prompt_tokens = 120
-    completion_tokens = 80
-    total_tokens = 200
+    prompt_tokens = 160
+    completion_tokens = 100
+    total_tokens = 260
 
 
 class FakeMessage:
@@ -33,10 +33,31 @@ class FakeClient:
                 FakeClient.calls.append(kwargs)
                 return FakeResponse(
                     '{"结果":['
-                    '[1,"帮卖家自动生成商品Listing","跨境卖家场景明确且易做成SaaS",90,"高","做Listing优化工具"],'
-                    '[2,"自动分析广告与转化数据","具备独立工具形态和付费空间",75,"中","做广告诊断助手"]'
+                    '[1,"8月24日起调整卖家配送费模板","自配送卖家需检查现有模板",92,"高","立即核对配送模板"],'
+                    '[2,"帮卖家自动生成商品Listing","跨境卖家场景明确且易做成SaaS",90,"高","做Listing优化工具"]'
                     ']}'
                 )
+
+
+def _mock_success(monkeypatch):
+    FakeClient.calls.clear()
+    monkeypatch.setattr(analyzer, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(analyzer, "get_llm_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        analyzer,
+        "call_llm_with_retry",
+        lambda func: (
+            func(),
+            {
+                "success": True,
+                "usage": {
+                    "prompt_tokens": 160,
+                    "completion_tokens": 100,
+                    "total_tokens": 260,
+                },
+            },
+        ),
+    )
 
 
 def test_analyzer_fallback_without_key(monkeypatch):
@@ -51,65 +72,54 @@ def test_analyzer_fallback_without_key(monkeypatch):
     assert result["purpose"]
 
 
-def test_analyzer_success(monkeypatch):
-    FakeClient.calls.clear()
-    monkeypatch.setattr(analyzer, "LLM_API_KEY", "test-key")
-    monkeypatch.setattr(analyzer, "get_llm_client", lambda: FakeClient())
-    monkeypatch.setattr(
-        analyzer,
-        "call_llm_with_retry",
-        lambda func: (
-            func(),
-            {
-                "success": True,
-                "usage": {
-                    "prompt_tokens": 120,
-                    "completion_tokens": 80,
-                    "total_tokens": 200,
-                },
-            },
-        ),
+def test_policy_fallback_uses_policy_language(monkeypatch):
+    monkeypatch.setattr(analyzer, "LLM_API_KEY", "")
+
+    result = analyzer.analyze_item(
+        {"category": "policy", "description": "policy update"}
     )
+
+    assert "政策" in result["purpose"]
+    assert result["startup_ideas"]
+
+
+def test_analyzer_success(monkeypatch):
+    _mock_success(monkeypatch)
 
     result = analyzer.analyze_item(
         {
-            "title": "AI Agent",
-            "description": "test project",
-            "metrics": {"stars": 100},
-            "trend_score": 70,
+            "title": "Amazon shipping update",
+            "description": "New seller shipping requirement",
+            "category": "policy",
+            "source": "amazon_policy",
         }
     )
 
-    assert result["purpose"] == "帮卖家自动生成商品Listing"
-    assert result["summary"] == "跨境卖家场景明确且易做成SaaS"
-    assert result["business_score"] == 90
+    assert result["purpose"] == "8月24日起调整卖家配送费模板"
+    assert result["summary"] == "自配送卖家需检查现有模板"
+    assert result["business_score"] == 92
     assert result["opportunity"] == "high"
-    assert result["startup_ideas"] == ["做Listing优化工具"]
-    assert result["trend_score"] == 70
+    assert result["startup_ideas"] == ["立即核对配送模板"]
+    assert result["trend_score"] == 0
 
 
-def test_batch_analyzer_uses_one_request_for_multiple_items(monkeypatch):
-    FakeClient.calls.clear()
-    monkeypatch.setattr(analyzer, "LLM_API_KEY", "test-key")
-    monkeypatch.setattr(analyzer, "get_llm_client", lambda: FakeClient())
-    monkeypatch.setattr(
-        analyzer,
-        "call_llm_with_retry",
-        lambda func: (func(), {"success": True, "usage": {}}),
-    )
+def test_batch_analyzer_uses_one_request_for_policy_and_project(monkeypatch):
+    _mock_success(monkeypatch)
 
     results = analyzer.analyze_items(
         [
             {
-                "title": "项目一",
+                "title": "Amazon shipping update",
                 "description": "A" * 1000,
-                "metrics": {"stars": 100, "unused": "x" * 1000},
-                "trend_score": 80,
+                "category": "policy",
+                "source": "amazon_policy",
+                "metrics": {"policy_score": 88, "unused": "x" * 1000},
             },
             {
                 "title": "项目二",
                 "description": "第二个项目",
-                "metrics": {"upvotes": 50},
+                "source": "github",
+                "metrics": {"stars": 50, "priority_tags": ["跨境电商", "可产品化"]},
                 "trend_score": 70,
             },
         ]
@@ -119,13 +129,11 @@ def test_batch_analyzer_uses_one_request_for_multiple_items(monkeypatch):
     assert len(FakeClient.calls) == 1
 
     prompt = FakeClient.calls[0]["messages"][0]["content"]
-    assert "A" * 241 not in prompt
+    assert "A" * 221 not in prompt
     assert "unused" not in prompt
-    assert '"名称"' not in prompt
-    assert '"简介"' not in prompt
-    assert '"商业分"' not in prompt.split("项目=")[-1]
+    assert "类型(政/项)" in prompt
+    assert "Amazon" in prompt
     assert "跨境电商" in prompt
-    assert "可直接做成SaaS" in prompt
     assert FakeClient.calls[0]["max_tokens"] == min(
         analyzer.LLM_MAX_TOKENS,
         analyzer.MAX_OUTPUT_TOKENS,
@@ -133,15 +141,8 @@ def test_batch_analyzer_uses_one_request_for_multiple_items(monkeypatch):
 
 
 def test_batch_analyzer_caps_old_environment_token_value(monkeypatch):
-    FakeClient.calls.clear()
-    monkeypatch.setattr(analyzer, "LLM_API_KEY", "test-key")
+    _mock_success(monkeypatch)
     monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 1200)
-    monkeypatch.setattr(analyzer, "get_llm_client", lambda: FakeClient())
-    monkeypatch.setattr(
-        analyzer,
-        "call_llm_with_retry",
-        lambda func: (func(), {"success": True, "usage": {}}),
-    )
 
     analyzer.analyze_items(
         [
@@ -154,4 +155,4 @@ def test_batch_analyzer_caps_old_environment_token_value(monkeypatch):
         ]
     )
 
-    assert FakeClient.calls[0]["max_tokens"] == 700
+    assert FakeClient.calls[0]["max_tokens"] == 900
