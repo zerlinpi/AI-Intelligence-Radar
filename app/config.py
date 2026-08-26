@@ -34,8 +34,9 @@ LLM_MODEL = (os.getenv("LLM_MODEL", "gpt-5.5-mini") or "gpt-5.5-mini").strip()
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.2)
 
 # 一次批量分析最多包含 4 条政策和 10 个项目。
-# 默认给足 8192 Token 输出空间，实际计费仍按模型真实生成量计算。
-LLM_MAX_TOKENS = max(_env_int("LLM_MAX_TOKENS", 8192), 1)
+# DeepSeek thinking Token 与最终正文共用 completion 预算，因此默认预留 65536 Token。
+# 这是输出上限，不是固定消耗；实际仍按模型真实生成量计费。
+LLM_MAX_TOKENS = max(_env_int("LLM_MAX_TOKENS", 65536), 1)
 
 # 日报属于离线分析任务，不追求秒级响应。默认允许单次模型请求思考 15 分钟，
 # 避免 deepseek-v4-pro 在完整批量分析中因为短超时被误判为失败。
