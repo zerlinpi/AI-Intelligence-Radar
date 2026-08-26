@@ -25,9 +25,10 @@ MAX_POLICY_DESCRIPTION_CHARS = 900
 MAX_TITLE_CHARS = 140
 MAX_BATCH_ITEMS = 14
 
-# 4 条政策 + 10 个项目的一次批量分析需要足够输出空间。
-# 8192 是硬上限而不是固定消耗，模型实际只会按需要生成。
-MAX_OUTPUT_TOKENS = 8192
+# deepseek-v4-pro 的 thinking Token 与最终正文共同占用 completion 预算。
+# 单条实测已超过 2K completion Token，因此 4 条政策 + 10 个项目预留 64K，
+# 避免最大推理强度下因 8K 上限导致整批 JSON 被截断。
+MAX_OUTPUT_TOKENS = 65536
 
 SOURCE_NAMES = {
     "github": "GitHub",
@@ -284,7 +285,12 @@ def _merge_raw_results(base: Dict, extra: Dict) -> Dict:
 
 
 def _merge_usage(*metas: Dict) -> Dict:
-    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    usage = {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+    }
     for meta in metas:
         current = (meta or {}).get("usage") or {}
         for key in usage:
@@ -491,12 +497,18 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
             for result in results
             if (result.get("llm_meta") or {}).get("fallback")
         )
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        reasoning_tokens = int(usage.get("reasoning_tokens", 0) or 0)
+        visible_tokens = max(completion_tokens - reasoning_tokens, 0)
         logger.info(
-            "AI 批量分析完成：条目=%s 降级=%s 输入Token=%s 输出Token=%s 总Token=%s 结束原因=%s",
+            "AI 批量分析完成：条目=%s 降级=%s 输入Token=%s 输出Token=%s "
+            "其中推理Token=%s 正文Token=%s 总Token=%s 结束原因=%s",
             len(items),
             fallback_count,
             usage.get("prompt_tokens", 0),
-            usage.get("completion_tokens", 0),
+            completion_tokens,
+            reasoning_tokens,
+            visible_tokens,
             usage.get("total_tokens", 0),
             finish_reason,
         )
