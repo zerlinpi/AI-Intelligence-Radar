@@ -16,6 +16,7 @@ logger = get_logger("AI分析")
 MAX_DESCRIPTION_CHARS = 240
 MAX_TITLE_CHARS = 120
 MAX_BATCH_ITEMS = 10
+MAX_OUTPUT_TOKENS = 700
 
 SOURCE_NAMES = {
     "github": "GitHub",
@@ -189,13 +190,15 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
         f"项目：{compact_json}"
     )
 
+    output_tokens = min(max(int(LLM_MAX_TOKENS or 1), 1), MAX_OUTPUT_TOKENS)
+
     client = get_llm_client()
     response, meta = call_llm_with_retry(
         lambda: client.chat.completions.create(
             model=get_llm_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=LLM_TEMPERATURE,
-            max_tokens=LLM_MAX_TOKENS,
+            max_tokens=output_tokens,
         )
     )
 
