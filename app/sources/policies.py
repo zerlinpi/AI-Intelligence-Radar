@@ -12,6 +12,8 @@ from app.core.logger import get_logger
 
 logger = get_logger("政策采集")
 
+# lookback_days 决定搜索发现范围；report_days 决定“今天的日报”允许推多旧的内容。
+# 搜索可以稍宽以识别同主题的新版本，但旧法规基线不能为了填满卡片冒充今日新规。
 POLICY_QUERIES = (
     {
         "source": "amazon_policy",
@@ -21,6 +23,7 @@ POLICY_QUERIES = (
         "kind": "平台政策",
         "weight": 44,
         "lookback_days": 60,
+        "report_days": 21,
         "query": (
             'site:sellercentral.amazon.com/seller-forums/discussions News_Amazon '
             '(compliance OR "product safety" OR testing OR certification OR '
@@ -35,6 +38,7 @@ POLICY_QUERIES = (
         "kind": "平台政策",
         "weight": 40,
         "lookback_days": 60,
+        "report_days": 21,
         "query": (
             'site:sell.amazon.com/blog/announcements '
             '(compliance OR policy OR requirement OR "product safety" OR listing)'
@@ -48,6 +52,7 @@ POLICY_QUERIES = (
         "kind": "进口与清关",
         "weight": 38,
         "lookback_days": 120,
+        "report_days": 45,
         "query": (
             'site:cbp.gov (ecommerce OR e-commerce OR import OR de minimis OR customs) '
             '(rule OR regulation OR requirement OR tariff OR compliance OR update)'
@@ -61,6 +66,7 @@ POLICY_QUERIES = (
         "kind": "消费品安全",
         "weight": 42,
         "lookback_days": 120,
+        "report_days": 45,
         "query": (
             'site:cpsc.gov (eFiling OR certificate OR certification OR testing OR '
             '"consumer product" OR importer) '
@@ -75,6 +81,7 @@ POLICY_QUERIES = (
         "kind": "FDA准入",
         "weight": 36,
         "lookback_days": 120,
+        "report_days": 45,
         "query": (
             'site:fda.gov (cosmetic OR cosmetics OR "medical device" OR food OR '
             '"dietary supplement") '
@@ -89,6 +96,7 @@ POLICY_QUERIES = (
         "kind": "无线与电子设备",
         "weight": 34,
         "lookback_days": 180,
+        "report_days": 60,
         "query": (
             'site:fcc.gov ("equipment authorization" OR "RF device" OR radiofrequency) '
             '(import OR marketing OR certification OR compliance OR requirement)'
@@ -272,6 +280,15 @@ def _recency_first_score(created: datetime, source_weight: int, relevance: int) 
     return round(hour_rank + quality_tiebreak, 3)
 
 
+def _within_report_window(created: datetime, now: datetime, report_days: int) -> bool:
+    """日报只推近期变化；旧法规可用于搜索背景，但不能作为“今日新规”进入日报。"""
+    try:
+        days = max(int(report_days), 1)
+    except (TypeError, ValueError):
+        days = 30
+    return now - timedelta(days=days) <= created <= now + timedelta(days=1)
+
+
 def _google_news_rss(query: str) -> str:
     encoded = quote_plus(query)
     return (
@@ -296,6 +313,7 @@ class PolicyCollector(BaseCollector):
     def collect(self, limit: int = 8):
         now = datetime.now(timezone.utc)
         candidates = {}
+        stale_rejected = 0
 
         for source in POLICY_QUERIES:
             oldest = now - timedelta(days=source["lookback_days"])
@@ -303,15 +321,17 @@ class PolicyCollector(BaseCollector):
             try:
                 feed = _fetch_feed(source["query"])
             except Exception:
-                logger.exception(
-                    "政策源读取失败：%s",
-                    source["source_name"],
-                )
+                logger.exception("政策源读取失败：%s", source["source_name"])
                 continue
 
             for entry in getattr(feed, "entries", []) or []:
                 created = _entry_datetime(entry)
                 if created is None or created < oldest or created > now + timedelta(days=1):
+                    continue
+
+                # 搜索范围可以较宽，但日报只接受本来源规定的新鲜度窗口。
+                if not _within_report_window(created, now, source.get("report_days", 30)):
+                    stale_rejected += 1
                     continue
 
                 title = _clean_title(getattr(entry, "title", ""))
@@ -356,6 +376,7 @@ class PolicyCollector(BaseCollector):
                         "policy_relevance_score": relevance,
                         "age_hours": round(age_hours, 1),
                         "lookback_days": source["lookback_days"],
+                        "report_days": source.get("report_days", 30),
                     },
                 }
 
@@ -369,8 +390,9 @@ class PolicyCollector(BaseCollector):
         )
 
         logger.info(
-            "政策采集完成：原始候选=%s 同主题去重=%s 合格=%s 选中=%s",
+            "政策采集完成：原始候选=%s 过期淘汰=%s 同主题去重=%s 合格=%s 选中=%s",
             len(candidates),
+            stale_rejected,
             duplicate_count,
             len(results),
             min(len(results), limit),
