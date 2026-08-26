@@ -14,6 +14,7 @@ from app.config import (
     LLM_PROVIDER,
     LLM_TEMPERATURE,
 )
+from app.content_quality import distinct_sentences
 from app.core.logger import get_logger
 
 
@@ -175,6 +176,18 @@ def _compact_metrics(item: Dict) -> str:
         )
         if dimension_text:
             parts.append("维=" + dimension_text)
+
+    eligibility_reason = str(metrics.get("eligibility_reason") or "").strip()
+    if eligibility_reason:
+        parts.append("资=" + eligibility_reason)
+
+    product_categories = metrics.get("product_categories") or []
+    if isinstance(product_categories, list) and product_categories:
+        parts.append("品=" + "/".join(str(value) for value in product_categories))
+
+    evidence = metrics.get("opportunity_evidence") or []
+    if isinstance(evidence, list) and evidence:
+        parts.append("据=" + "/".join(str(value) for value in evidence[:5]))
 
     if _is_policy(item):
         focus = str(metrics.get("policy_focus") or "").strip()
@@ -341,6 +354,50 @@ def _merge_usage(*metas: Dict) -> Dict:
     return usage
 
 
+def _dedupe_generated_fields(item: Dict, purpose: str, summary: str, idea: str,
+                             affected_products: str, risk: str, preparation: str):
+    """模型已经被要求分工写作；这里再删除明显的同义复述句作为保险。"""
+    if _is_policy(item):
+        cleaned_summary = distinct_sentences(summary, [purpose], threshold=0.80)
+        if cleaned_summary:
+            summary = cleaned_summary
+
+        cleaned_affected = distinct_sentences(
+            affected_products,
+            [purpose, summary],
+            threshold=0.84,
+        )
+        affected_products = cleaned_affected
+
+        cleaned_risk = distinct_sentences(
+            risk,
+            [purpose, summary, affected_products],
+            threshold=0.80,
+        )
+        risk = cleaned_risk
+
+        cleaned_idea = distinct_sentences(
+            idea,
+            [purpose, summary, affected_products, risk],
+            threshold=0.76,
+        )
+        idea = cleaned_idea
+
+        cleaned_preparation = distinct_sentences(
+            preparation,
+            [purpose, summary, affected_products, risk, idea],
+            threshold=0.76,
+        )
+        preparation = cleaned_preparation
+    else:
+        cleaned_summary = distinct_sentences(summary, [purpose], threshold=0.80)
+        if cleaned_summary:
+            summary = cleaned_summary
+        idea = distinct_sentences(idea, [purpose, summary], threshold=0.76)
+
+    return purpose, summary, idea, affected_products, risk, preparation
+
+
 def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Dict]:
     rows = raw.get("结果") if isinstance(raw, dict) else None
     if not isinstance(rows, list):
@@ -381,10 +438,27 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
         risk = str(row.get("风险") or "").strip()
         preparation = str(row.get("准备资料") or "").strip()
 
+        (
+            purpose,
+            summary,
+            idea,
+            affected_products,
+            risk,
+            preparation,
+        ) = _dedupe_generated_fields(
+            item,
+            purpose,
+            summary,
+            idea,
+            affected_products,
+            risk,
+            preparation,
+        )
+
         results.append(
             {
                 "purpose": purpose or f"项目原始说明：{_clean_original_description(item)}",
-                "summary": summary or "暂无 AI 分析摘要。",
+                "summary": summary or "暂无新增的独立价值判断。",
                 "affected_products": affected_products,
                 "risk": risk,
                 "preparation": preparation,
@@ -405,19 +479,25 @@ def _build_prompt(compact_json: str) -> str:
         "[序号,类型(政/项),名称,简介,来源,时间小时,热度,指标]。"
         "总原则：完整、准确、有决策价值优先；不要为了精简而省略关键条件，也不要为了写长而重复。"
         "所有判断必须基于提供的数据；证据不足时明确写需验证，不得把猜测或营销措辞写成事实。"
+        "【去重复写作协议】每个字段必须承担不同职责。禁止把同一句事实换同义词重复到相邻字段；"
+        "若某字段没有新增信息，允许返回空字符串，不得为了填满字段而复述。"
+        "用途/核心变化只写客观事实和工作机制，不写‘值得关注’、商业评价或建议；"
+        "判断/影响只写为什么对我们的跨境经营、开发效率、硬件或实体商品有价值，以及限制、缺口和不确定性，"
+        "不得重新介绍已经在用途字段写过的功能；建议只写一个最优先的可执行动作或验证实验，不再介绍项目。"
+        "热度高、发布时间近只能作为排序信号，不能单独写成价值判断。"
         "类型=政时，优先分析Amazon政策与审核、美国进口清关新规、美国市场产品合规审核。"
         "Amazon重点看商品合规、Testing/Inspection/Certification、Account Health、Listing前置审核、"
         "受限产品和高风险品类；美国进口重点看CBP、关税、de minimis、电子申报、进口商责任；"
         "产品审核重点看CPSC的CPC/GCC/eFiling与实验室测试、FDA注册/产品列名/进口要求、"
         "FCC RF设备Equipment Authorization。"
         "政策用途必须说明政策到底改了什么、适用什么产品/卖家，并尽量保留生效日期、阈值、"
-        "测试标准、证书、注册或申报要求；政策判断说明对美国销售、上架、进口、清关或账号的具体影响；"
-        "政策建议给出最优先的实际动作。"
+        "测试标准、证书、注册或申报要求；政策判断只说明对美国销售、上架、进口、清关或账号的具体影响；"
+        "政策建议只给最优先的实际动作，不得重复核心变化。"
         "若指标中焦=产品合规审核，必须额外拆分影响产品、风险、准备资料三个字段。"
         "影响产品只写官方信息能够支持的具体产品类别、功能特征、设备类型或适用范围；"
-        "风险单独说明不满足要求可能造成的上架、进口、清关、召回、整改或执法后果；"
-        "准备资料列出与该规则直接相关的测试报告、CPC/GCC、eFiling字段、FDA注册/列名、FCC授权、"
-        "标签、说明书或其他资料。若不是产品合规审核，这三个字段返回空字符串。"
+        "风险只写不满足要求可能造成的上架、进口、清关、召回、整改或执法后果；"
+        "准备资料只列与该规则直接相关的测试报告、CPC/GCC、eFiling字段、FDA注册/列名、FCC授权、"
+        "标签、说明书或其他资料，不要重复风险或建议。若不是产品合规审核，这三个字段返回空字符串。"
         "类型=项时，不得只按热度和发布时间判断。必须同时审视四条机会路径："
         "第一，跨境电商实用性：是否能直接改善Amazon、Shopify、TikTok Shop、独立站的选品、Listing、"
         "广告、SEO、本地化、客服、竞品、定价、物流、库存、评论、达人营销或运营自动化；"
@@ -428,14 +508,18 @@ def _build_prompt(compact_json: str) -> str:
         "运动控制、语音、视觉或其他真实硬件系统；"
         "第四，美国市场实体商品机会：技术是否能形成或升级消费者可购买的家居、厨房、宠物、运动、"
         "户外、汽车、工具、穿戴、健康辅助、智能设备等实体产品，并说明实现路径及工程/合规不确定性。"
+        "指标中的资=本地资格判断理由，维=四维机会分，品=候选商品品类，据=本地命中证据；"
+        "这些是辅助证据，不得原样抄成结论，必须结合简介判断。"
         "GitHub项目重点看代码是否真实可复用、工程门槛和开发效率；Hugging Face模型重点看模型任务能力、"
-        "部署条件、端侧/边缘可能性和可嵌入产品的场景；arXiv重点看研究新颖性、可复现性、技术成熟度及"
-        "从论文到产品还缺什么。Product Hunt重点看用户需求和现有产品验证。"
+        "部署条件、端侧/边缘可能性和可嵌入产品的场景；arXiv重点看能否进入跨境业务、硬件或实体商品，"
+        "不再为了学术新颖性本身写长篇介绍；Product Hunt重点看真实需求和现有产品验证。"
         "商业分不是‘电商相关度分’：只要四条路径中至少一条价值强、落地路径清晰，就可以高分；"
         "但仅有热度、普通套壳、没有技术差异或没有真实使用路径的项目不应高分。"
-        "用途字段要让读者不用打开链接也能知道目标用户、核心能力、输入输出/工作方式和实际场景；"
-        "判断字段要说明为什么值得或不值得关注，并明确属于跨境、技术前沿、硬件或实体商品中的哪条价值；"
-        "建议字段给出最值得验证、组合、开发或商品化的具体下一步。"
+        "项目用途字段必须只回答‘它实际能做什么/怎么工作/给谁用’，不要评价；"
+        "项目判断字段必须只回答‘为什么值得进入我们的雷达、相对现有方案新增了什么价值、还缺什么验证’，"
+        "至少包含一个价值理由或限制条件，不得复述用途；"
+        "项目建议字段必须给一个具体下一步，例如接入现有流程、做MVP、验证模型、测BOM/延迟/准确率/ROI，"
+        "尽量写清验证对象和成功条件，不得重复用途或判断。"
         "不要因历史规模或品牌知名度加分。必须返回合法 JSON，且不得遗漏输入中的任何序号。"
         "JSON结构严格为："
         '{"结果":[[序号,"用途","判断",分数,"高|中|低","建议","影响产品","风险","准备资料"]]}。'
