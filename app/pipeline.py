@@ -19,7 +19,9 @@ from app.core.preflight import run_preflight
 from app.core.run_lock import execution_lock
 from app.database.session import SessionLocal, init_database
 from app.feishu import send_feishu_cards
+from app.history_novelty import filter_recently_reported
 from app.models.radar_item import RadarItem
+from app.relevance import attach_eligibility_metrics, report_eligibility
 from app.scoring import (
     age_hours,
     calculate_priority_score,
@@ -32,7 +34,7 @@ from app.sources.hackernews import HackerNewsCollector
 from app.sources.huggingface import HuggingFaceCollector
 from app.sources.policies import PolicyCollector
 from app.sources.producthunt import ProductHuntCollector
-from app.storage.repository import exists, save_batch
+from app.storage.repository import save_batch
 
 
 logger = get_logger("主流程")
@@ -41,8 +43,23 @@ MAX_REPORT_ITEMS = 10
 MAX_POLICY_ITEMS = 4
 MAX_PROJECT_AGE_DAYS = 14
 MAX_ITEMS_PER_SOURCE = 6
+
+# 本地筛选只负责决定哪些候选值得消耗 DeepSeek Token。
+MIN_REPORT_PRIORITY_SCORE = 20
+MIN_REPORT_SELECTION_SCORE = 35
 MIN_STRATEGIC_PRIORITY_SCORE = 20
 MIN_STRATEGIC_SELECTION_SCORE = 35
+
+# DeepSeek 分析后再做一次最终价值裁决。论文/模型要求更高，避免纯研究信号混入日报。
+FINAL_BUSINESS_SCORE = {
+    "github": 65,
+    "producthunt": 66,
+    "hackernews": 66,
+    "huggingface": 70,
+    "arxiv": 72,
+}
+DEFAULT_FINAL_BUSINESS_SCORE = 68
+
 STRATEGIC_TAGS = (
     "跨境电商",
     "技术前沿",
@@ -195,10 +212,9 @@ def _project_selection_score(trend_score: float, priority_score: float) -> float
 
 
 def _portfolio_candidates(scored):
-    """从高质量候选中构建多方向机会组合，避免同一来源/同一形态占满日报。
+    """从已经达到质量底线的候选中构建多方向机会组合。
 
-    先为四个战略方向各保留一个达到质量阈值的代表，再按综合分补齐；
-    单一来源优先不超过 MAX_ITEMS_PER_SOURCE，若候选不足则第二轮解除来源上限补满。
+    不为凑够 10 条降低质量门槛；来源上限只是软约束，合格候选不足时允许少于 10 条。
     """
     ordered = sorted(
         scored,
@@ -223,7 +239,6 @@ def _portfolio_candidates(scored):
         source_counts[item.source] = source_counts.get(item.source, 0) + 1
         return True
 
-    # 先保证有质量的战略方向不会被大量同质化热门项目淹没。
     for tag in STRATEGIC_TAGS:
         candidate = next(
             (
@@ -241,8 +256,6 @@ def _portfolio_candidates(scored):
         if candidate is not None:
             add(candidate)
 
-    # 第一轮按来源软上限填充，优先让 GitHub、Hugging Face、arXiv、Product Hunt/HN
-    # 都有机会进入最终 10 项，但不会牺牲明显的质量差距。
     for item in ordered:
         if len(selected) >= MAX_REPORT_ITEMS:
             break
@@ -252,7 +265,7 @@ def _portfolio_candidates(scored):
             continue
         add(item)
 
-    # 候选不足时解除来源上限，只按质量补满，不为了多样性空置名额。
+    # 只解除来源上限，不解除质量门槛；ordered 本身已经全是合格候选。
     for item in ordered:
         if len(selected) >= MAX_REPORT_ITEMS:
             break
@@ -270,8 +283,10 @@ def _portfolio_candidates(scored):
 
 
 def select_project_candidates(items):
-    """按趋势、业务/技术机会和组合多样性选出最终项目。"""
+    """本地第一道 Gate：相关性、证据、时间、机会分全部达标才进入 DeepSeek。"""
     scored = []
+    rejected_relevance = 0
+    rejected_score = 0
 
     for raw_item in items:
         item = raw_item if isinstance(raw_item, RadarItem) else RadarItem.from_dict(raw_item)
@@ -279,19 +294,33 @@ def select_project_candidates(items):
             continue
 
         item_data = item.to_dict()
+        eligibility = report_eligibility(item_data)
+        attach_eligibility_metrics(item_data, eligibility)
+        item.metrics = dict(item_data.get("metrics") or {})
+        if not eligibility.get("eligible"):
+            rejected_relevance += 1
+            continue
+
         item.trend_score = calculate_score(item_data)
         item_data["trend_score"] = item.trend_score
 
-        # priority_tags/calculate_priority_score 会把四维机会、商品品类和证据同步写回 metrics。
         tags = priority_tags(item_data)
         priority_score = calculate_priority_score(item_data)
-        item.metrics = dict(item.metrics or {})
+        item.metrics = dict(item_data.get("metrics") or {})
         item.metrics["priority_tags"] = tags
         item.metrics["priority_score"] = priority_score
         item.metrics["selection_score"] = _project_selection_score(
             item.trend_score,
             priority_score,
         )
+
+        if (
+            float(priority_score or 0) < MIN_REPORT_PRIORITY_SCORE
+            or float(item.metrics["selection_score"] or 0) < MIN_REPORT_SELECTION_SCORE
+        ):
+            rejected_score += 1
+            continue
+
         scored.append(item)
 
     selected = _portfolio_candidates(scored)
@@ -308,8 +337,10 @@ def select_project_candidates(items):
         source_counts[item.source] = source_counts.get(item.source, 0) + 1
 
     logger.info(
-        "项目筛选：候选=%s 入选=%s 方向=%s 来源=%s",
+        "项目筛选：合格候选=%s 相关性/证据淘汰=%s 分数淘汰=%s 入选DeepSeek=%s 方向=%s 来源=%s",
         len(scored),
+        rejected_relevance,
+        rejected_score,
         len(selected),
         tag_counts,
         source_counts,
@@ -322,7 +353,7 @@ def _policy_focus(item: RadarItem) -> str:
 
 
 def select_policy_candidates(items):
-    """优先保证 Amazon、进口新规、产品审核三类情报都能进入日报。"""
+    """按发布时间优先，同时保证 Amazon、进口新规、产品审核三类情报的代表性。"""
     policies = []
     for raw_item in items:
         item = raw_item if isinstance(raw_item, RadarItem) else RadarItem.from_dict(raw_item)
@@ -385,15 +416,74 @@ def analyze_digest(projects, policies):
             item.analysis = fallback_analysis(item, error)
 
 
+def _number(value) -> float:
+    try:
+        return max(float(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalized_level(value) -> str:
+    level = str(value or "medium").strip().lower()
+    return level if level in RISK_ORDER else "medium"
+
+
+def _passes_final_project_gate(item: RadarItem) -> bool:
+    """DeepSeek 第二道 Gate：模型明确判断低价值时禁止进入飞书。"""
+    analysis = item.analysis or {}
+    if _analysis_is_fallback(analysis):
+        return False
+
+    score = _number(analysis.get("business_score"))
+    opportunity = _normalized_level(analysis.get("opportunity"))
+    threshold = FINAL_BUSINESS_SCORE.get(item.source, DEFAULT_FINAL_BUSINESS_SCORE)
+
+    passed = opportunity != "low" and score >= threshold
+    item.metrics = dict(item.metrics or {})
+    item.metrics["final_report_eligible"] = passed
+    item.metrics["final_business_score"] = score
+    item.metrics["final_opportunity"] = opportunity
+    item.metrics["final_business_threshold"] = threshold
+    return passed
+
+
+def apply_final_project_gate(projects):
+    accepted = []
+    rejected = []
+    for item in projects or []:
+        if _passes_final_project_gate(item):
+            accepted.append(item)
+        else:
+            rejected.append(item)
+
+    if rejected:
+        logger.info(
+            "DeepSeek最终裁决：分析=%s 推送=%s 淘汰=%s 淘汰项目=%s",
+            len(projects or []),
+            len(accepted),
+            len(rejected),
+            [item.title for item in rejected[:8]],
+        )
+    else:
+        logger.info(
+            "DeepSeek最终裁决：分析=%s 推送=%s 淘汰=0",
+            len(projects or []),
+            len(accepted),
+        )
+    return accepted
+
+
 def build_report(items):
-    """兼容旧调用：构建并分析项目报告。"""
+    """兼容旧调用：本地筛选 + DeepSeek 分析 + 最终价值 Gate。"""
     candidates = select_project_candidates(items)
     analyze_digest(candidates, [])
-    return candidates
+    return apply_final_project_gate(candidates)
 
 
 def filter_existing_items(db, items):
-    return [item for item in items if not item.url or not exists(db, item.url)]
+    """兼容旧调用；除 URL 外，同时过滤近期跨来源/改标题后的同一项目或政策。"""
+    fresh, _ = filter_recently_reported(db, items)
+    return fresh
 
 
 def _format_age(item: RadarItem) -> str:
@@ -405,13 +495,6 @@ def _format_age(item: RadarItem) -> str:
     if hours < 24:
         return f"{int(hours)}小时前"
     return f"{max(int(hours // 24), 1)}天前"
-
-
-def _number(value) -> float:
-    try:
-        return max(float(value or 0), 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 def _per_day(item: RadarItem, value) -> float:
@@ -468,11 +551,6 @@ def _analysis_action(analysis: dict) -> str:
     if isinstance(ideas, list) and ideas:
         return _clean_text(ideas[0])
     return ""
-
-
-def _normalized_level(value) -> str:
-    level = str(value or "medium").strip().lower()
-    return level if level in RISK_ORDER else "medium"
 
 
 def _is_cross_border_project(item: RadarItem) -> bool:
@@ -584,7 +662,7 @@ def _build_summary_actions(compliance, products):
     if top_product:
         research_text = top_product.direction or f"研究 {top_product.title} 的产品化与业务适配价值。"
     else:
-        research_text = "今日暂无达到优先展示阈值的新产品机会。"
+        research_text = "今日暂无达到最终价值门槛的新产品机会。"
 
     return [
         ActionItem(label="必须", text=must_text),
@@ -612,7 +690,7 @@ def _build_daily_judgment(compliance, products) -> str:
 
     if top_product:
         return f"{base} 产品侧优先研究 {top_product.title}。"
-    return base
+    return f"{base} 产品侧暂无达到最终价值门槛的新机会。"
 
 
 def build_decision_model(items, policies=None) -> ReportDecisionModel:
@@ -646,6 +724,17 @@ def build_decision_model(items, policies=None) -> ReportDecisionModel:
         compliance=compliance,
         products=products,
     )
+
+
+def _legacy_product_group(product: ProductDecision) -> str:
+    tags = set(product.tags or [])
+    if product.cross_border:
+        return "🎯 跨境电商直接相关项目"
+    if "硬件开发" in tags or "实体商品机会" in tags:
+        return "🧰 硬件与实体商品机会"
+    if "技术前沿" in tags:
+        return "🧠 技术前沿与开发基础设施"
+    return "🧪 其他可产品化 AI 信号"
 
 
 def build_feishu_message(items, policies=None):
@@ -692,12 +781,17 @@ def build_feishu_message(items, policies=None):
         if decision.action:
             lines.append(f"**建议动作：** {decision.action}")
 
-    cross_border = [item for item in model.products if item.cross_border]
-    other = [item for item in model.products if not item.cross_border]
-    for title, group in (
-        ("🎯 跨境电商直接相关项目", cross_border),
-        ("🧪 其他可产品化 AI 信号", other),
+    grouped = {}
+    for product in model.products:
+        grouped.setdefault(_legacy_product_group(product), []).append(product)
+
+    for title in (
+        "🎯 跨境电商直接相关项目",
+        "🧰 硬件与实体商品机会",
+        "🧠 技术前沿与开发基础设施",
+        "🧪 其他可产品化 AI 信号",
     ):
+        group = grouped.get(title) or []
         if not group:
             continue
         lines.extend(["", f"**{title}**"])
@@ -761,14 +855,16 @@ def _execute_daily_radar(execution_id: str, started: float):
 
     db = SessionLocal()
     try:
-        new_items = filter_existing_items(db, radar_items)
-        new_policies = filter_existing_items(db, policy_items)
+        new_items, project_history_duplicates = filter_recently_reported(db, radar_items)
+        new_policies, policy_history_duplicates = filter_recently_reported(db, policy_items)
         logger.info(
-            "去重完成：项目=%s 新项目=%s 政策=%s 新政策=%s",
+            "历史去重完成：项目=%s 新项目=%s 跨天重复=%s 政策=%s 新政策=%s 跨天重复=%s",
             len(radar_items),
             len(new_items),
+            project_history_duplicates,
             len(policy_items),
             len(new_policies),
+            policy_history_duplicates,
         )
     except Exception as exc:
         db.rollback()
@@ -781,46 +877,24 @@ def _execute_daily_radar(execution_id: str, started: float):
             errors=[f"数据库去重失败：{exc}"],
         )
 
-    report = select_project_candidates(new_items)
+    analysis_candidates = select_project_candidates(new_items)
     policy_report = select_policy_candidates(new_policies)
-    analyze_digest(report, policy_report)
+    analyze_digest(analysis_candidates, policy_report)
+
+    report = apply_final_project_gate(analysis_candidates)
+    final_rejected_count = len(analysis_candidates) - len(report)
 
     fallback_count = sum(
         1
-        for item in policy_report + report
+        for item in policy_report + analysis_candidates
         if _analysis_is_fallback(item.analysis)
     )
     if fallback_count:
         errors.append(f"AI 分析降级 {fallback_count} 条")
 
-    saved_count = 0
-    eligible_to_save = [
-        item
-        for item in policy_report + report
-        if not _analysis_is_fallback(item.analysis)
-    ]
-    try:
-        saved_records = save_batch(db, [item.to_dict() for item in policy_report + report])
-        saved_count = len(saved_records)
-        if saved_count != len(eligible_to_save):
-            message = f"数据库保存不完整：成功={saved_count} 计划={len(eligible_to_save)}"
-            logger.warning("%s 执行编号=%s", message, execution_id)
-            errors.append(message)
-        else:
-            logger.info(
-                "数据库保存完成：数量=%s 执行编号=%s",
-                saved_count,
-                execution_id,
-            )
-    except Exception as exc:
-        db.rollback()
-        logger.exception("数据库保存阶段失败：执行编号=%s", execution_id)
-        errors.append(f"数据库保存阶段失败：{exc}")
-    finally:
-        db.close()
-
+    # 先构建卡片。若卡片本身构建失败，本轮不把条目标记为已完成，下一轮仍可重试。
+    cards = None
     card_count = 0
-    feishu_sent = False
     try:
         decision_model = build_decision_model(report, policy_report)
         cards = build_daily_cards(
@@ -828,33 +902,77 @@ def _execute_daily_radar(execution_id: str, started: float):
             max_projects=FEISHU_PROJECTS_PER_CARD,
         )
         card_count = len(cards)
-        feishu_sent = send_feishu_cards(
-            cards,
-            run_id=execution_id,
-            durable=True,
-        )
-        if feishu_sent:
-            logger.info(
-                "飞书日报发送成功：执行编号=%s 卡片=%s",
-                execution_id,
-                card_count,
-            )
-        else:
-            message = "飞书日报未全部送达，已保留持久化队列等待补发"
-            logger.warning("%s：执行编号=%s 卡片=%s", message, execution_id, card_count)
-            errors.append(message)
     except Exception as exc:
-        logger.exception("飞书日报构建或发送失败：执行编号=%s", execution_id)
-        errors.append(f"飞书日报构建或发送失败：{exc}")
+        logger.exception("飞书日报构建失败：执行编号=%s", execution_id)
+        errors.append(f"飞书日报构建失败：{exc}")
+
+    saved_count = 0
+    eligible_to_save = [
+        item
+        for item in policy_report + analysis_candidates
+        if not _analysis_is_fallback(item.analysis)
+    ]
+
+    if cards is not None:
+        try:
+            # DeepSeek 淘汰的低价值项目也写入历史，防止下一天再次分析和消耗 Token；
+            # 只有 report 集合会进入飞书。
+            saved_records = save_batch(
+                db,
+                [item.to_dict() for item in policy_report + analysis_candidates],
+            )
+            saved_count = len(saved_records)
+            if saved_count != len(eligible_to_save):
+                message = f"数据库保存不完整：成功={saved_count} 计划={len(eligible_to_save)}"
+                logger.warning("%s 执行编号=%s", message, execution_id)
+                errors.append(message)
+            else:
+                logger.info(
+                    "数据库保存完成：数量=%s 执行编号=%s",
+                    saved_count,
+                    execution_id,
+                )
+        except Exception as exc:
+            db.rollback()
+            logger.exception("数据库保存阶段失败：执行编号=%s", execution_id)
+            errors.append(f"数据库保存阶段失败：{exc}")
+    else:
+        logger.warning("卡片未构建成功，本轮跳过数据库完成标记：执行编号=%s", execution_id)
+
+    db.close()
+
+    feishu_sent = False
+    if cards is not None:
+        try:
+            feishu_sent = send_feishu_cards(
+                cards,
+                run_id=execution_id,
+                durable=True,
+            )
+            if feishu_sent:
+                logger.info(
+                    "飞书日报发送成功：执行编号=%s 卡片=%s",
+                    execution_id,
+                    card_count,
+                )
+            else:
+                message = "飞书日报未全部送达，已保留持久化队列等待补发"
+                logger.warning("%s：执行编号=%s 卡片=%s", message, execution_id, card_count)
+                errors.append(message)
+        except Exception as exc:
+            logger.exception("飞书日报发送失败：执行编号=%s", execution_id)
+            errors.append(f"飞书日报发送失败：{exc}")
 
     status = "success" if not errors else "partial"
     duration = round(time.time() - started, 2)
     logger.info(
-        "日报执行完成：执行编号=%s 状态=%s 耗时=%s秒 项目=%s 政策=%s 保存=%s 飞书卡片=%s",
+        "日报执行完成：执行编号=%s 状态=%s 耗时=%s秒 分析项目=%s 最终推送=%s AI淘汰=%s 政策=%s 保存=%s 飞书卡片=%s",
         execution_id,
         status,
         duration,
+        len(analysis_candidates),
         len(report),
+        final_rejected_count,
         len(policy_report),
         saved_count,
         card_count,
@@ -867,6 +985,8 @@ def _execute_daily_radar(execution_id: str, started: float):
         "status": status,
         "items": [item.to_dict() for item in report],
         "policies": [item.to_dict() for item in policy_report],
+        "analyzed_projects": len(analysis_candidates),
+        "filtered_projects": final_rejected_count,
         "feishu_cards": card_count,
         "feishu_sent": feishu_sent,
         "errors": errors,
