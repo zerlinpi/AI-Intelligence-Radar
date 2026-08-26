@@ -69,18 +69,36 @@ def _is_policy(item: Dict) -> bool:
     return str(item.get("category") or "").lower() == "policy"
 
 
+def _clean_original_description(item: Dict, limit: int = 360) -> str:
+    """在模型异常时尽量保留数据源自己的有效说明，而不是展示空占位。"""
+    description = " ".join(str(item.get("description") or "").split())
+    if description:
+        return description[:limit]
+
+    title = " ".join(str(item.get("title") or "").split())
+    if title:
+        return f"公开数据源暂未提供更详细说明，项目名称为 {title}。"
+
+    return "公开数据源暂未提供足够的项目说明。"
+
+
 def _fallback_result(item: Dict, reason: str = "") -> Dict:
     if reason:
         logger.warning("AI 分析降级：%s", reason)
 
+    original = _clean_original_description(item)
+
     if _is_policy(item):
         return {
-            "purpose": "政策或产品审核要求暂无法生成，请直接核对官方原文。",
-            "summary": "影响范围暂无法判断，建议先确认产品类别、进口主体与适用法规。",
+            "purpose": f"官方原始说明：{original}",
+            "summary": (
+                "本条政策的 AI 结构化分析未完成；请优先依据官方原文核对适用产品、"
+                "生效时间、进口主体及测试/证书要求。"
+            ),
             "trend_score": 0,
             "business_score": 50,
             "opportunity": "medium",
-            "startup_ideas": ["核对官方原文并准备对应合规资料"],
+            "startup_ideas": ["先核对官方原文，并按产品类别整理对应合规资料"],
             "llm_meta": {
                 "success": False,
                 "fallback": True,
@@ -88,9 +106,22 @@ def _fallback_result(item: Dict, reason: str = "") -> Dict:
             },
         }
 
+    metrics = item.get("metrics") or {}
+    tags = metrics.get("priority_tags") if isinstance(metrics, dict) else []
+    tag_text = "、".join(str(tag) for tag in tags or [] if str(tag).strip())
+    if tag_text:
+        summary = (
+            f"本条 AI 深度分析未完成；本地筛选已将其识别为“{tag_text}”候选，"
+            "可先结合原始说明与增长信号判断是否继续跟进。"
+        )
+    else:
+        summary = (
+            "本条 AI 深度分析未完成；可先结合项目原始说明与增长信号判断是否继续跟进。"
+        )
+
     return {
-        "purpose": "项目用途暂无法生成，请查看项目原始说明。",
-        "summary": "AI 分析暂不可用，建议直接查看项目页面了解最新进展。",
+        "purpose": f"项目原始说明：{original}",
+        "summary": summary,
         "trend_score": _local_trend_score(item),
         "business_score": 50,
         "opportunity": "medium",
@@ -260,11 +291,7 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
 
         results.append(
             {
-                "purpose": purpose or (
-                    "政策或审核要求暂不明确，请查看官方原文。"
-                    if _is_policy(item)
-                    else "项目用途暂不明确，请查看项目说明。"
-                ),
+                "purpose": purpose or f"项目原始说明：{_clean_original_description(item)}",
                 "summary": summary or "暂无 AI 分析摘要。",
                 "trend_score": 0 if _is_policy(item) else _local_trend_score(item),
                 "business_score": business_score,
@@ -277,26 +304,8 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
     return results
 
 
-def analyze_items(items: List[Dict]) -> List[Dict]:
-    """一次请求同时分析美国经营合规政策与早期产品项目。"""
-    items = list(items or [])[:MAX_BATCH_ITEMS]
-    if not items:
-        return []
-
-    if not LLM_API_KEY:
-        return [_fallback_result(item, "缺少 LLM API 密钥") for item in items]
-
-    compact_items = [
-        _compact_item(item, index)
-        for index, item in enumerate(items, start=1)
-    ]
-    compact_json = json.dumps(
-        compact_items,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-    prompt = (
+def _build_prompt(compact_json: str) -> str:
+    return (
         "你是美国跨境电商合规与早期AI产品分析师。数组每项为"
         "[序号,类型(政/项),名称,简介,来源,时间小时,热度,指标]。"
         "总原则：完整、准确、有决策价值优先，不要为了精简而省略关键条件、适用对象、"
@@ -322,39 +331,90 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
         "竞争壁垒和产品化/付费潜力，说明为什么值得关注或为什么暂不值得追。"
         "项目建议建议35-70字：给出最值得借鉴、组合或开发的具体产品方向，"
         "尽量说明面向哪类卖家或运营环节。"
-        "不要因历史规模或品牌知名度加分。只返回JSON："
+        "不要因历史规模或品牌知名度加分。必须返回合法 JSON，且不得遗漏输入中的任何序号。"
+        "JSON结构严格为："
         '{"结果":[[序号,"用途","判断",分数,"高|中|低","建议"]]}。'
         f"数据={compact_json}"
     )
 
+
+def analyze_items(items: List[Dict]) -> List[Dict]:
+    """一次请求同时分析美国经营合规政策与早期产品项目。"""
+    items = list(items or [])[:MAX_BATCH_ITEMS]
+    if not items:
+        return []
+
+    if not LLM_API_KEY:
+        return [_fallback_result(item, "缺少 LLM API 密钥") for item in items]
+
+    compact_items = [
+        _compact_item(item, index)
+        for index, item in enumerate(items, start=1)
+    ]
+    compact_json = json.dumps(
+        compact_items,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    prompt = _build_prompt(compact_json)
+
     output_tokens = min(max(int(LLM_MAX_TOKENS or 1), 1), MAX_OUTPUT_TOKENS)
 
     client = get_llm_client()
-    response, meta = call_llm_with_retry(
-        lambda: client.chat.completions.create(
+
+    def request():
+        return client.chat.completions.create(
             model=get_llm_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=LLM_TEMPERATURE,
             max_tokens=output_tokens,
+            response_format={"type": "json_object"},
         )
-    )
+
+    response, meta = call_llm_with_retry(request)
 
     if not meta.get("success") or response is None:
         reason = meta.get("error", "模型请求失败")
         return [_fallback_result(item, reason) for item in items]
 
     try:
-        content = response.choices[0].message.content
+        choice = response.choices[0]
+        content = choice.message.content or ""
+        finish_reason = getattr(choice, "finish_reason", "") or ""
         parsed = _extract_json_object(content)
+
+        # DeepSeek JSON Output 偶发可能返回空内容；只在异常时额外恢复一次，
+        # 正常日报仍保持一次批量请求。
+        if not parsed:
+            logger.warning(
+                "模型首次结构化结果无效，尝试恢复一次：结束原因=%s",
+                finish_reason,
+            )
+            retry_response, retry_meta = call_llm_with_retry(request, retries=1)
+            if retry_meta.get("success") and retry_response is not None:
+                response = retry_response
+                meta = retry_meta
+                choice = response.choices[0]
+                content = choice.message.content or ""
+                finish_reason = getattr(choice, "finish_reason", "") or ""
+                parsed = _extract_json_object(content)
+
         results = _normalize_batch_result(parsed, items, meta)
 
         usage = meta.get("usage") or {}
+        fallback_count = sum(
+            1
+            for result in results
+            if (result.get("llm_meta") or {}).get("fallback")
+        )
         logger.info(
-            "AI 批量分析完成：条目=%s 输入Token=%s 输出Token=%s 总Token=%s",
+            "AI 批量分析完成：条目=%s 降级=%s 输入Token=%s 输出Token=%s 总Token=%s 结束原因=%s",
             len(items),
+            fallback_count,
             usage.get("prompt_tokens", 0),
             usage.get("completion_tokens", 0),
             usage.get("total_tokens", 0),
+            finish_reason,
         )
         return results
     except Exception as exc:
