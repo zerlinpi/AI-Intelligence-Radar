@@ -45,11 +45,15 @@ def display_width(text: str) -> int:
     return width
 
 
-def payload_bytes(payload: dict) -> int:
-    return len(
-        json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
+def payload_json(payload: dict) -> str:
+    """统一使用严格 JSON；NaN/Infinity 在发送前直接判为无效。"""
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
     )
+
+
+def payload_bytes(payload: dict) -> int:
+    return len(payload_json(payload).encode("utf-8"))
