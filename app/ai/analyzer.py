@@ -18,7 +18,7 @@ def _fallback_result(item: Dict, reason: str = "") -> Dict:
         logger.warning("LLM fallback used: %s", reason)
 
     return {
-        "summary": (item.get("description") or "")[:300],
+        "summary": "AI 分析暂不可用，建议直接查看项目页面了解最新进展。",
         "trend_score": item.get("trend_score", 50),
         "business_score": 50,
         "opportunity": "medium",
@@ -39,23 +39,27 @@ def analyze_item(item: Dict) -> Dict:
     metrics = item.get("metrics", {})
 
     prompt = f"""
-Analyze this project as an AI startup analyst.
+你是一名专注于早期 AI 产品与开源项目的创业分析师。
 
-Evaluate technical value, market opportunity and startup potential.
+请判断这个项目为什么正在早期升温，它解决什么问题，技术或产品价值是什么，以及是否存在商业机会。
+重点关注“刚上线后的增长速度”，不要因为历史累计 stars、下载量或品牌知名度而高估成熟项目。
 
-Title: {item.get('title')}
-Description: {item.get('description')}
-Source: {item.get('source')}
-Metrics: {metrics}
-Trend Score: {item.get('trend_score', 0)}
+项目名称：{item.get('title')}
+项目简介：{item.get('description')}
+来源：{item.get('source')}
+早期指标：{metrics}
+新项目热度分：{item.get('trend_score', 0)}
 
-Return JSON only:
+请只返回合法 JSON，不要使用 Markdown。
+所有面向用户展示的文本必须使用简体中文。
+
+返回结构：
 {{
-"summary":"",
-"trend_score":0,
-"business_score":0,
-"opportunity":"high|medium|low",
-"startup_ideas":[]
+  "summary": "用 1-2 句话说明项目是什么、为什么值得现在关注",
+  "trend_score": 0,
+  "business_score": 0,
+  "opportunity": "high|medium|low",
+  "startup_ideas": ["中文机会点"]
 }}
 """
 
