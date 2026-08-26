@@ -56,6 +56,34 @@ DIMENSION_THRESHOLDS = {
     "physical_product": 8,
 }
 
+# 论文和 Model Card 经常用“without hardware deployment / no sensor integration”描述研究边界。
+# 这些否定句里的关键词不能反过来成为“硬件开发/实体商品”的正面证据。
+_NEGATED_CLAUSE_PATTERNS = (
+    re.compile(
+        r"\bwithout\b.*?(?=\b(?:but|however|yet|while|although)\b|[.;!?]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:does\s+not|doesn't|do\s+not|don't)\s+"
+        r"(?:describe|support|target|include|provide|address|offer|cover|evaluate|demonstrate)\b"
+        r".*?(?=\b(?:but|however|yet|while|although)\b|[.;!?]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:not\s+intended|not\s+designed|not\s+targeted|not\s+validated)\s+for\b"
+        r".*?(?=\b(?:but|however|yet|while|although)\b|[.;!?]|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:no|lacks?|lack\s+of|no\s+evidence\s+of|no\s+support\s+for)\s+"
+        r"(?:clear\s+|direct\s+|demonstrated\s+|practical\s+)?"
+        r"(?:cross[- ]border|e-?commerce|amazon|shopify|hardware|embedded|sensor|physical|"
+        r"consumer\s+(?:device|hardware|product)|productization|commercial\s+product)\b"
+        r".*?(?=\b(?:but|however|yet|while|although)\b|[.;!?]|$)",
+        re.IGNORECASE,
+    ),
+)
+
 
 def _text(item: Dict) -> str:
     metrics = item.get("metrics") or {}
@@ -129,6 +157,35 @@ def _evidence_sufficient(item: Dict) -> bool:
     return len(description) >= 24
 
 
+def _strip_negated_application_claims(value: str) -> str:
+    """删除明确否定的应用范围子句，避免关键词评分把“没有硬件用途”当成硬件证据。
+
+    只删除否定子句本身；遇到 but/however/yet/while/although 会停止，保留后面的正面转折。
+    该函数只用于相关性评分，不修改最终展示或保存的原始文本。
+    """
+    text = " ".join(str(value or "").split())
+    for pattern in _NEGATED_CLAUSE_PATTERNS:
+        text = pattern.sub(" ", text)
+    return " ".join(text.split())
+
+
+def _profile_for_eligibility(item: Dict, source: str) -> Dict:
+    """论文/模型先屏蔽否定应用声明，再计算真正可用于资格判断的机会画像。"""
+    if source not in {"arxiv", "huggingface"}:
+        return business_opportunity_profile(item)
+
+    cleaned = dict(item)
+    cleaned["description"] = _strip_negated_application_claims(item.get("description") or "")
+
+    metrics = item.get("metrics") or {}
+    if isinstance(metrics, dict):
+        cleaned_metrics = dict(metrics)
+        # Model Card/论文描述是主要语义证据；tags/pipeline 仍保留，但明确的否定正文不能被标题式标签覆盖。
+        cleaned["metrics"] = cleaned_metrics
+
+    return business_opportunity_profile(cleaned)
+
+
 def report_eligibility(item: Dict) -> Dict:
     """判断一个项目是否有资格进入最终日报。
 
@@ -136,7 +193,7 @@ def report_eligibility(item: Dict) -> Dict:
     """
     item = item if isinstance(item, dict) else {}
     source = str(item.get("source") or "").lower()
-    profile = business_opportunity_profile(item)
+    profile = _profile_for_eligibility(item, source)
 
     cross_border = _dimension(profile, "cross_border") >= DIMENSION_THRESHOLDS["cross_border"]
     technical = _dimension(profile, "technical_frontier") >= DIMENSION_THRESHOLDS["technical_frontier"]
