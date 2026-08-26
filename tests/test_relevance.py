@@ -1,4 +1,4 @@
-from app.relevance import report_eligibility
+from app.relevance import attach_eligibility_metrics, report_eligibility
 
 
 def test_github_cross_border_product_is_eligible():
@@ -35,6 +35,19 @@ def test_github_frontier_runtime_can_be_eligible_as_developer_product():
     )
     assert result["eligible"] is True
     assert result["technical_frontier"] is True
+
+
+def test_github_frontier_demo_template_is_not_treated_as_engineering_breakthrough():
+    result = report_eligibility(
+        {
+            "source": "github",
+            "title": "Agent Runtime Demo Template",
+            "description": "Tutorial example app and starter template showing a simple agent runtime framework",
+        }
+    )
+    assert result["technical_frontier"] is True
+    assert result["eligible"] is False
+    assert "教程" in result["reason"] or "演示" in result["reason"]
 
 
 def test_github_title_only_signal_is_rejected_when_evidence_is_insufficient():
@@ -125,3 +138,23 @@ def test_huggingface_edge_vision_model_is_eligible():
     assert result["eligible"] is True
     assert result["evidence_sufficient"] is True
     assert result["hardware_enablement"] is True
+
+
+def test_history_material_update_reason_is_preserved_as_deepseek_evidence():
+    item = {
+        "source": "github",
+        "title": "acme/edge-camera",
+        "description": "ESP32 edge AI camera runtime with BLE sensor integration for embedded products",
+        "metrics": {
+            "history_material_update": True,
+            "history_material_update_reason": "GitHub Star 显著增长：80→320",
+        },
+    }
+
+    result = report_eligibility(item)
+    attach_eligibility_metrics(item, result)
+
+    evidence = item["metrics"]["opportunity_evidence"]
+    assert evidence
+    assert evidence[0].startswith("重大更新:")
+    assert "80→320" in evidence[0]
