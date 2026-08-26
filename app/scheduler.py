@@ -5,11 +5,14 @@
 
 import os
 import threading
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from app.pipeline import run_daily_radar
+from app.config import REPORT_TIMEZONE
 from app.core.logger import get_logger
+from app.core.preflight import run_preflight
+from app.pipeline import run_daily_radar
 
 
 logger = get_logger("调度器")
@@ -31,7 +34,16 @@ def _read_schedule_value(name: str, default: int, minimum: int, maximum: int) ->
     return value
 
 
-scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
+def _scheduler_timezone() -> str:
+    try:
+        ZoneInfo(REPORT_TIMEZONE)
+        return REPORT_TIMEZONE
+    except ZoneInfoNotFoundError:
+        logger.error("日报时区无效：%s，调度器已回退 Asia/Shanghai", REPORT_TIMEZONE)
+        return "Asia/Shanghai"
+
+
+scheduler = BackgroundScheduler(timezone=_scheduler_timezone())
 
 RUN_HOUR = _read_schedule_value("RADAR_RUN_HOUR", 8, 0, 23)
 RUN_MINUTE = _read_schedule_value("RADAR_RUN_MINUTE", 0, 0, 59)
@@ -46,11 +58,20 @@ def daily_radar_job():
         return
 
     try:
+        preflight = run_preflight()
+        if not preflight.ok:
+            logger.error(
+                "定时日报预检失败，已停止本轮执行：失败项=%s",
+                "、".join(preflight.failures),
+            )
+            return
+
         logger.info("定时日报开始执行")
         result = run_daily_radar() or {}
         logger.info(
-            "定时日报执行结束：项目数量=%s",
+            "定时日报执行结束：项目数量=%s 状态=%s",
             len(result.get("items", [])) if isinstance(result, dict) else 0,
+            result.get("status", "完成") if isinstance(result, dict) else "未知",
         )
     except Exception:
         logger.exception("定时日报执行失败")
@@ -76,13 +97,14 @@ def start_scheduler():
 
     scheduler.start()
     logger.info(
-        "调度器已启动：每天 %02d:%02d 执行",
+        "调度器已启动：每天 %02d:%02d 执行 时区=%s",
         RUN_HOUR,
         RUN_MINUTE,
+        _scheduler_timezone(),
     )
 
 
 def stop_scheduler():
     if scheduler.running:
-        scheduler.shutdown()
+        scheduler.shutdown(wait=False)
         logger.info("调度器已停止")
