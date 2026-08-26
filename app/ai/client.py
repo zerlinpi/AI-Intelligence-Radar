@@ -7,6 +7,7 @@ from app.config import (
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,
+    LLM_PROVIDER,
     LLM_TIMEOUT_SECONDS,
 )
 from app.core.logger import get_logger
@@ -22,30 +23,6 @@ LEGACY_MODEL_ALIASES = {
     "deepseek-chat": "deepseek-v4-flash",
     "deepseek-reasoner": "deepseek-v4-flash",
 }
-
-
-def get_llm_client() -> OpenAI:
-    """创建兼容 OpenAI 接口格式的模型客户端。
-
-    日报是离线任务，允许模型长时间推理。SDK 自身不自动重试，
-    由项目逻辑统一控制，避免出现不可控的重复请求。
-    """
-    if not LLM_API_KEY:
-        raise RuntimeError(
-            "缺少模型 API 密钥，请配置 LLM_API_KEY 或 OPENAI_API_KEY。"
-        )
-
-    if not LLM_BASE_URL:
-        raise RuntimeError(
-            "缺少模型接口地址，请配置 LLM_BASE_URL。"
-        )
-
-    return OpenAI(
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
-        timeout=float(LLM_TIMEOUT_SECONDS),
-        max_retries=0,
-    )
 
 
 def get_llm_model() -> str:
@@ -87,9 +64,14 @@ def collect_streamed_chat_completion(stream):
     usage = None
     finish_reason = ""
     chunk_count = 0
+    first_chunk_logged = False
 
     for chunk in stream:
         chunk_count += 1
+
+        if not first_chunk_logged:
+            logger.info("DeepSeek 流式连接已建立，正在等待完整分析结果")
+            first_chunk_logged = True
 
         chunk_usage = _extra_attr(chunk, "usage")
         if chunk_usage is not None:
@@ -138,6 +120,48 @@ def collect_streamed_chat_completion(stream):
             )
         ],
         usage=usage,
+    )
+
+
+def get_llm_client():
+    """创建兼容 OpenAI 接口格式的模型客户端。
+
+    日报是离线任务，允许模型长时间推理。DeepSeek 默认转为流式接收，
+    让 thinking 阶段持续有 SSE 数据经过连接，避免中间链路按约 90 秒空闲超时切断。
+    对分析层仍返回普通 ChatCompletion 形态，因此不改变现有业务逻辑。
+    """
+    if not LLM_API_KEY:
+        raise RuntimeError(
+            "缺少模型 API 密钥，请配置 LLM_API_KEY 或 OPENAI_API_KEY。"
+        )
+
+    if not LLM_BASE_URL:
+        raise RuntimeError(
+            "缺少模型接口地址，请配置 LLM_BASE_URL。"
+        )
+
+    raw_client = OpenAI(
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        timeout=float(LLM_TIMEOUT_SECONDS),
+        max_retries=0,
+    )
+
+    if str(LLM_PROVIDER or "").lower() != "deepseek":
+        return raw_client
+
+    def create_streamed_completion(**kwargs):
+        # DeepSeek 官方支持 thinking + stream。把非流式长等待转换成 SSE，
+        # 但最终仍聚合成一个普通响应交回 analyzer。
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
+        stream = raw_client.chat.completions.create(**kwargs)
+        return collect_streamed_chat_completion(stream)
+
+    return SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=create_streamed_completion)
+        )
     )
 
 
