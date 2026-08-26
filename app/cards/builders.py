@@ -6,19 +6,28 @@ from app.cards.styles import (
     DAILY_HEADER_TEMPLATE,
     DECISION_BACKGROUND,
     DEFAULT_PROJECTS_PER_CARD,
-    DISPLAY_LIMITS,
     FOCUS_TITLES,
     MAX_ACTIONS,
     OPPORTUNITY_LABELS,
     RISK_LABELS,
 )
-from app.cards.text import semantic_clip
+from app.cards.text import clean_text, payload_bytes
+from app.config import FEISHU_MAX_PAYLOAD_BYTES
+
+
+# 不再对业务文案设置字符上限。这里仅给卡片 JSON 本身预留少量安全空间，
+# 超出单卡预算时通过分页/拆元素解决，所有正文必须完整保留。
+_PAYLOAD_RESERVE_BYTES = 768
+
+
+def _text(value) -> str:
+    return clean_text(value)
 
 
 def _md(content: str) -> dict:
     return {
         "tag": "div",
-        "text": {"tag": "lark_md", "content": content},
+        "text": {"tag": "lark_md", "content": str(content or "")},
     }
 
 
@@ -26,8 +35,7 @@ def _hr() -> dict:
     return {"tag": "hr"}
 
 
-def _pair(label: str, body: str, icon: str = "") -> dict:
-    left = f"{icon} **{label}**".strip()
+def _pair_element(left: str, body: str) -> dict:
     return {
         "tag": "column_set",
         "flex_mode": "none",
@@ -51,6 +59,11 @@ def _pair(label: str, body: str, icon: str = "") -> dict:
     }
 
 
+def _pair(label: str, body: str, icon: str = "") -> dict:
+    left = f"{icon} **{label}**".strip()
+    return _pair_element(left, _text(body))
+
+
 def _interactive_card(title: str, elements: list, template: str = DAILY_HEADER_TEMPLATE) -> dict:
     return {
         "msg_type": "interactive",
@@ -60,7 +73,7 @@ def _interactive_card(title: str, elements: list, template: str = DAILY_HEADER_T
                 "template": template,
                 "title": {
                     "tag": "plain_text",
-                    "content": semantic_clip(title, DISPLAY_LIMITS["header"]),
+                    "content": _text(title),
                 },
             },
             "elements": elements,
@@ -68,10 +81,157 @@ def _interactive_card(title: str, elements: list, template: str = DAILY_HEADER_T
     }
 
 
-def build_summary_card(model: ReportDecisionModel) -> CardEnvelope:
+def _target_payload_bytes() -> int:
+    configured = int(FEISHU_MAX_PAYLOAD_BYTES or 18 * 1024)
+    return max(configured - _PAYLOAD_RESERVE_BYTES, 2048)
+
+
+def _fits(title: str, elements: list) -> bool:
+    return payload_bytes(_interactive_card(title, elements)) <= _target_payload_bytes()
+
+
+def _preferred_break(text: str, hard_end: int) -> int:
+    """在不丢字的前提下优先从自然语义边界拆分超长元素。"""
+    if hard_end >= len(text):
+        return len(text)
+
+    floor = max(int(hard_end * 0.6), 1)
+    window = text[floor:hard_end]
+    best = -1
+    for marker in ("\n", "。", "！", "？", "；", ";", "，", "、", " "):
+        position = window.rfind(marker)
+        if position > best:
+            best = position
+    if best >= 0:
+        return floor + best + 1
+    return hard_end
+
+
+def _split_text_for_element(title: str, text: str, factory) -> list:
+    """按实际 UTF-8 Payload 大小拆文本，不截断、不省略任何字符。"""
+    value = str(text or "")
+    if not value:
+        return [factory("")]
+    if _fits(title, [factory(value)]):
+        return [factory(value)]
+
+    parts = []
+    remaining = value
+    while remaining:
+        low, high = 1, len(remaining)
+        best = 0
+        while low <= high:
+            middle = (low + high) // 2
+            if _fits(title, [factory(remaining[:middle])]):
+                best = middle
+                low = middle + 1
+            else:
+                high = middle - 1
+
+        # 正常情况下至少一个字符一定能放入卡片；这里保留兜底以避免死循环。
+        if best <= 0:
+            best = 1
+
+        cut = _preferred_break(remaining, best)
+        if cut <= 0:
+            cut = best
+        parts.append(factory(remaining[:cut]))
+        remaining = remaining[cut:]
+
+    return parts
+
+
+def _split_oversized_element(title: str, element: dict) -> list:
+    if _fits(title, [element]):
+        return [element]
+
+    tag = element.get("tag")
+    if tag == "div":
+        text = ((element.get("text") or {}).get("content") or "")
+        return _split_text_for_element(title, text, _md)
+
+    if tag == "column_set":
+        columns = element.get("columns") or []
+        if len(columns) >= 2:
+            left_elements = columns[0].get("elements") or []
+            right_elements = columns[1].get("elements") or []
+            left = ""
+            right = ""
+            if left_elements:
+                left = ((left_elements[0].get("text") or {}).get("content") or "")
+            if right_elements:
+                right = ((right_elements[0].get("text") or {}).get("content") or "")
+            return _split_text_for_element(
+                title,
+                right,
+                lambda chunk: _pair_element(left, chunk),
+            )
+
+    # hr 等固定小元素正常不会超预算；未知元素原样保留，由发送层做最终安全校验。
+    return [element]
+
+
+def _paginate_elements(title: str, elements: list) -> list:
+    """把完整元素流按真实 Payload 自动分页；不因为卡片大小删除正文。"""
+    pages = []
+    current = []
+    reserve_title = f"{title}｜99/99"
+
+    for raw_element in elements:
+        for element in _split_oversized_element(reserve_title, raw_element):
+            if current and not _fits(reserve_title, current + [element]):
+                pages.append(current)
+                current = []
+            current.append(element)
+
+    if current or not pages:
+        pages.append(current or [_md("暂无内容")])
+    return pages
+
+
+def _element_text(element: dict) -> str:
+    tag = element.get("tag")
+    if tag == "hr":
+        return "---"
+    if tag == "div":
+        return str(((element.get("text") or {}).get("content") or ""))
+    if tag == "column_set":
+        columns = element.get("columns") or []
+        parts = []
+        for column in columns:
+            for child in column.get("elements") or []:
+                text = _element_text(child)
+                if text:
+                    parts.append(text)
+        return "：".join(parts)
+    return ""
+
+
+def _envelopes(card_type: str, title: str, elements: list) -> List[CardEnvelope]:
+    pages = _paginate_elements(title, elements)
+    total = len(pages)
+    envelopes = []
+    for index, page in enumerate(pages, start=1):
+        page_title = title if total == 1 else f"{title}｜{index}/{total}"
+        page_type = card_type if total == 1 else f"{card_type}-{index}"
+        fallback_lines = [page_title]
+        fallback_lines.extend(
+            text for text in (_element_text(element) for element in page) if text
+        )
+        envelopes.append(
+            CardEnvelope(
+                card_type=page_type,
+                payload=_interactive_card(page_title, page),
+                fallback_text="\n".join(fallback_lines),
+            )
+        )
+    return envelopes
+
+
+def build_summary_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
     summary = model.summary
     metrics = summary.metrics or {}
-    judgment = semantic_clip(summary.judgment, DISPLAY_LIMITS["judgment"])
+    judgment = _text(summary.judgment)
     elements = [
         _md(f"**今日判断**\n{judgment}"),
         _md(
@@ -86,41 +246,27 @@ def build_summary_card(model: ReportDecisionModel) -> CardEnvelope:
         _hr(),
     ]
 
-    fallback_lines = [
-        f"【美国跨境经营雷达｜{summary.date_text}】",
-        f"今日判断：{judgment}",
-    ]
-
     number_labels = ("①", "②", "③")
     for index, action in enumerate(summary.actions[:MAX_ACTIONS]):
-        text = semantic_clip(action.text, DISPLAY_LIMITS["action"])
         label = f"{number_labels[index]} {action.label}"
-        elements.append(_pair(label, text))
-        fallback_lines.append(f"{label}：{text}")
+        elements.append(_pair(label, action.text))
 
-    fallback_lines.append(
-        "合规{compliance}｜高风险{high_risk}｜新项目{projects}｜重点机会{opportunities}".format(
-            compliance=metrics.get("compliance", 0),
-            high_risk=metrics.get("high_risk", 0),
-            projects=metrics.get("projects", 0),
-            opportunities=metrics.get("opportunities", 0),
-        )
+    return _envelopes(
+        "summary",
+        f"美国跨境经营雷达｜{summary.date_text}",
+        elements,
     )
 
-    return CardEnvelope(
-        card_type="summary",
-        payload=_interactive_card(
-            f"美国跨境经营雷达｜{summary.date_text}",
-            elements,
-        ),
-        fallback_text="\n".join(fallback_lines),
-    )
+
+def build_summary_card(model: ReportDecisionModel) -> CardEnvelope:
+    """兼容旧调用；生产路径使用 build_summary_cards 支持自动分页。"""
+    return build_summary_cards(model)[0]
 
 
 def _policy_header(decision, index: int) -> str:
     risk = RISK_LABELS.get(decision.risk_level, RISK_LABELS["medium"])
     meta = [part for part in (decision.authority, decision.kind, decision.age_text) if part]
-    title = semantic_clip(decision.title, DISPLAY_LIMITS["policy_title"])
+    title = _text(decision.title)
     return (
         f"**{index:02d}｜{decision.source_name}｜{title}**\n"
         f"{risk} · 影响 **{decision.impact_score:.0f}/100**"
@@ -135,64 +281,11 @@ def _append_standard_policy(elements: list, decision, index: int):
     else:
         first_label, second_label = "核心变化", "卖家影响"
 
-    elements.append(
-        _md(
-            f"**{first_label}**\n"
-            f"{semantic_clip(decision.requirement, DISPLAY_LIMITS['policy_requirement'])}"
-        )
-    )
+    elements.append(_md(f"**{first_label}**\n{_text(decision.requirement)}"))
     if decision.impact:
-        elements.append(
-            _md(
-                f"**{second_label}**\n"
-                f"{semantic_clip(decision.impact, DISPLAY_LIMITS['policy_impact'])}"
-            )
-        )
-    action = semantic_clip(decision.action, DISPLAY_LIMITS["policy_action"])
-    if action:
-        content = f"✅ **下一步**：{action}"
-        if decision.url:
-            content += f"\n[查看官方原文 →]({decision.url})"
-        elements.append(_md(content))
+        elements.append(_md(f"**{second_label}**\n{_text(decision.impact)}"))
 
-
-def _append_product_compliance(elements: list, decision, index: int):
-    elements.append(_md(_policy_header(decision, index)))
-    elements.append(
-        _md(
-            "**审核要求**\n"
-            + semantic_clip(
-                decision.requirement,
-                DISPLAY_LIMITS["policy_requirement"],
-            )
-        )
-    )
-    elements.extend(
-        [
-            _pair(
-                "影响产品",
-                semantic_clip(
-                    decision.affected_products,
-                    DISPLAY_LIMITS["affected_products"],
-                ),
-                "🎯",
-            ),
-            _pair(
-                "风险",
-                semantic_clip(decision.risk, DISPLAY_LIMITS["risk"]),
-                "⚠️",
-            ),
-            _pair(
-                "准备资料",
-                semantic_clip(
-                    decision.preparation,
-                    DISPLAY_LIMITS["preparation"],
-                ),
-                "📋",
-            ),
-        ]
-    )
-    action = semantic_clip(decision.action, DISPLAY_LIMITS["policy_action"])
+    action = _text(decision.action)
     if action or decision.url:
         content = f"✅ **下一步**：{action}" if action else ""
         if decision.url:
@@ -200,21 +293,32 @@ def _append_product_compliance(elements: list, decision, index: int):
         elements.append(_md(content))
 
 
-def build_compliance_card(model: ReportDecisionModel) -> CardEnvelope:
+def _append_product_compliance(elements: list, decision, index: int):
+    elements.append(_md(_policy_header(decision, index)))
+    elements.append(_md("**审核要求**\n" + _text(decision.requirement)))
+    elements.extend(
+        [
+            _pair("影响产品", decision.affected_products, "🎯"),
+            _pair("风险", decision.risk, "⚠️"),
+            _pair("准备资料", decision.preparation, "📋"),
+        ]
+    )
+    action = _text(decision.action)
+    if action or decision.url:
+        content = f"✅ **下一步**：{action}" if action else ""
+        if decision.url:
+            content += ("\n" if content else "") + f"[查看官方原文 →]({decision.url})"
+        elements.append(_md(content))
+
+
+def build_compliance_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
     decisions = model.compliance
     date_text = model.summary.date_text
     elements = []
-    fallback = [f"【美国合规雷达｜{date_text}】"]
 
     if not decisions:
-        text = "今日未发现新增的高影响 Amazon 政策、美国进口新规或产品审核要求。"
-        elements.append(_md(text))
-        fallback.append(text)
-        return CardEnvelope(
-            card_type="compliance",
-            payload=_interactive_card(f"美国合规雷达｜{date_text}", elements),
-            fallback_text="\n".join(fallback),
-        )
+        elements.append(_md("今日未发现新增的高影响 Amazon 政策、美国进口新规或产品审核要求。"))
+        return _envelopes("compliance", f"美国合规雷达｜{date_text}", elements)
 
     groups = defaultdict(list)
     for decision in decisions:
@@ -230,7 +334,6 @@ def build_compliance_card(model: ReportDecisionModel) -> CardEnvelope:
         if elements:
             elements.append(_hr())
         elements.append(_md(f"**{FOCUS_TITLES.get(focus, focus)}**"))
-        fallback.append(FOCUS_TITLES.get(focus, focus))
 
         if focus == "产品合规审核":
             authorities = "/".join(
@@ -241,59 +344,29 @@ def build_compliance_card(model: ReportDecisionModel) -> CardEnvelope:
                 f"{len(group)} 条准入变化 · {authorities} · "
                 f"最高 {RISK_LABELS.get(highest.risk_level, RISK_LABELS['medium'])}"
             )
-            elements.append(_pair("审核简报", semantic_clip(brief, 72)))
-            fallback.append(f"审核简报：{brief}")
+            elements.append(_pair("审核简报", brief))
 
         for decision in group:
             if focus == "产品合规审核":
                 _append_product_compliance(elements, decision, display_index)
-                fallback.extend(
-                    [
-                        f"{decision.source_name}｜{semantic_clip(decision.title, 32)}｜{RISK_LABELS.get(decision.risk_level, RISK_LABELS['medium'])}",
-                        f"审核要求：{semantic_clip(decision.requirement, 72)}",
-                        f"影响产品：{semantic_clip(decision.affected_products, 48)}",
-                        f"风险：{semantic_clip(decision.risk, 56)}",
-                        f"准备：{semantic_clip(decision.preparation, 64)}",
-                        f"下一步：{semantic_clip(decision.action, 46)}",
-                    ]
-                )
             else:
                 _append_standard_policy(elements, decision, display_index)
-                fallback.extend(
-                    [
-                        f"{decision.source_name}｜{semantic_clip(decision.title, 32)}｜{RISK_LABELS.get(decision.risk_level, RISK_LABELS['medium'])}",
-                        f"变化：{semantic_clip(decision.requirement, 72)}",
-                        f"影响：{semantic_clip(decision.impact, 64)}",
-                        f"下一步：{semantic_clip(decision.action, 46)}",
-                    ]
-                )
             display_index += 1
 
-    return CardEnvelope(
-        card_type="compliance",
-        payload=_interactive_card(f"美国合规雷达｜{date_text}", elements),
-        fallback_text="\n".join(line for line in fallback if line),
-    )
+    return _envelopes("compliance", f"美国合规雷达｜{date_text}", elements)
 
 
-def _project_block(project, index: int) -> dict:
-    title = semantic_clip(project.title, DISPLAY_LIMITS["product_title"])
+def build_compliance_card(model: ReportDecisionModel) -> CardEnvelope:
+    """兼容旧调用；生产路径使用 build_compliance_cards 支持自动分页。"""
+    return build_compliance_cards(model)[0]
+
+
+def _project_elements(project, index: int) -> list:
+    title = _text(project.title)
     opportunity = OPPORTUNITY_LABELS.get(project.opportunity, "中")
     tags = " ".join(f"`{tag}`" for tag in project.tags[:3])
-    description = semantic_clip(
-        project.description,
-        DISPLAY_LIMITS["product_description"],
-    )
-    judgment = semantic_clip(
-        project.judgment,
-        DISPLAY_LIMITS["product_judgment"],
-    )
-    direction = semantic_clip(
-        project.direction,
-        DISPLAY_LIMITS["product_direction"],
-    )
 
-    lines = [
+    header_lines = [
         f"**{index:02d}｜{title}**",
         (
             f"{project.source_name} · {project.age_text} · "
@@ -301,83 +374,100 @@ def _project_block(project, index: int) -> dict:
         ),
     ]
     if tags:
-        lines.append(tags)
+        header_lines.append(tags)
+
+    elements = [_md("\n".join(header_lines))]
+    description = _text(project.description)
+    judgment = _text(project.judgment)
+    direction = _text(project.direction)
+
     if description:
-        lines.extend(["", description])
+        elements.append(_md(description))
     if project.growth_signal:
-        lines.append(f"**增长**：{project.growth_signal}")
+        elements.append(_md(f"**增长**：{project.growth_signal}"))
     if judgment:
-        lines.append(f"**判断**：{judgment}")
+        elements.append(_md(f"**判断**：{judgment}"))
     if direction:
-        lines.append(f"**方向**：{direction}")
+        elements.append(_md(f"**方向**：{direction}"))
     if project.url:
-        lines.append(f"[查看项目 →]({project.url})")
-    return _md("\n".join(lines))
+        elements.append(_md(f"[查看项目 →]({project.url})"))
+    return elements
+
+
+def _product_batch_elements(batch, start_index: int) -> list:
+    elements = []
+    cross_border = [(start_index + i, p) for i, p in enumerate(batch) if p.cross_border]
+    other = [(start_index + i, p) for i, p in enumerate(batch) if not p.cross_border]
+
+    for title, group in (
+        ("🎯 跨境电商直接相关", cross_border),
+        ("🧪 其他可产品化信号", other),
+    ):
+        if not group:
+            continue
+        if elements:
+            elements.append(_hr())
+        elements.append(_md(f"**{title}**"))
+        for group_index, (project_index, project) in enumerate(group):
+            if group_index:
+                elements.append(_hr())
+            elements.extend(_project_elements(project, project_index))
+    return elements
+
+
+def build_product_cards(
+    model: ReportDecisionModel,
+    max_projects: int = DEFAULT_PROJECTS_PER_CARD,
+) -> List[CardEnvelope]:
+    projects = list(model.products or [])
+    date_text = model.summary.date_text
+    title = f"产品机会雷达｜{date_text}"
+
+    if not projects:
+        return _envelopes("products", title, [_md("今日暂无达到展示优先级的新产品机会。")])
+
+    preferred = max(int(max_projects or 1), 1)
+    page_element_groups = []
+    for offset in range(0, len(projects), preferred):
+        batch = projects[offset: offset + preferred]
+        batch_elements = _product_batch_elements(batch, offset + 1)
+        # 每个“最多N项目”的逻辑批次仍会根据真实Payload继续细分，绝不删除后续项目。
+        page_element_groups.extend(_paginate_elements(title, batch_elements))
+
+    total = len(page_element_groups)
+    envelopes = []
+    for index, page in enumerate(page_element_groups, start=1):
+        page_title = title if total == 1 else f"{title}｜{index}/{total}"
+        page_type = "products" if total == 1 else f"products-{index}"
+        fallback_lines = [page_title]
+        fallback_lines.extend(
+            text for text in (_element_text(element) for element in page) if text
+        )
+        envelopes.append(
+            CardEnvelope(
+                card_type=page_type,
+                payload=_interactive_card(page_title, page),
+                fallback_text="\n".join(fallback_lines),
+            )
+        )
+    return envelopes
 
 
 def build_product_card(
     model: ReportDecisionModel,
     max_projects: int = DEFAULT_PROJECTS_PER_CARD,
 ) -> CardEnvelope:
-    projects = list(model.products or [])
-    selected = projects[: max(max_projects, 1)]
-    omitted = max(len(projects) - len(selected), 0)
-    date_text = model.summary.date_text
-    elements = []
-    fallback = [f"【产品机会雷达｜{date_text}】"]
-
-    if not selected:
-        text = "今日暂无达到展示优先级的新产品机会。"
-        elements.append(_md(text))
-        fallback.append(text)
-    else:
-        cross_border = [p for p in selected if p.cross_border]
-        other = [p for p in selected if not p.cross_border]
-        index = 1
-        for title, group in (
-            ("🎯 跨境电商直接相关", cross_border),
-            ("🧪 其他可产品化信号", other),
-        ):
-            if not group:
-                continue
-            if elements:
-                elements.append(_hr())
-            elements.append(_md(f"**{title}**"))
-            fallback.append(title)
-            for project in group:
-                elements.append(_project_block(project, index))
-                fallback.extend(
-                    [
-                        f"{index:02d} {semantic_clip(project.title, 32)}｜🔥{project.trend_score:.0f}｜💼{project.business_score:.0f} {OPPORTUNITY_LABELS.get(project.opportunity, '中')}",
-                        f"做什么：{semantic_clip(project.description, 72)}",
-                        f"判断：{semantic_clip(project.judgment, 64)}",
-                        f"方向：{semantic_clip(project.direction, 52)}",
-                        f"链接：{project.url}" if project.url else "",
-                    ]
-                )
-                index += 1
-                if project is not group[-1]:
-                    elements.append(_hr())
-
-        if omitted:
-            note = f"其余 {omitted} 个候选已入库，本卡只展示优先级最高的 {len(selected)} 个。"
-            elements.extend([_hr(), _md(f"*{note}*")])
-            fallback.append(note)
-
-    return CardEnvelope(
-        card_type="products",
-        payload=_interactive_card(f"产品机会雷达｜{date_text}", elements),
-        fallback_text="\n".join(line for line in fallback if line),
-    )
+    """兼容旧调用；生产路径使用 build_product_cards 支持完整分页。"""
+    return build_product_cards(model, max_projects=max_projects)[0]
 
 
 def build_daily_cards(
     model: ReportDecisionModel,
     max_projects: int = DEFAULT_PROJECTS_PER_CARD,
 ) -> List[CardEnvelope]:
-    """固定生成 3 张日报：决策摘要、合规雷达、产品机会。"""
-    return [
-        build_summary_card(model),
-        build_compliance_card(model),
-        build_product_card(model, max_projects=max_projects),
-    ]
+    """生成三个逻辑板块；任一板块过长时自动拆成多张物理卡，正文不截断。"""
+    cards = []
+    cards.extend(build_summary_cards(model))
+    cards.extend(build_compliance_cards(model))
+    cards.extend(build_product_cards(model, max_projects=max_projects))
+    return cards
