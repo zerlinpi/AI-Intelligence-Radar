@@ -19,6 +19,27 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+SOURCE_NAMES = {
+    "github": "GitHub",
+    "hackernews": "Hacker News",
+    "huggingface": "Hugging Face",
+    "arxiv": "arXiv",
+    "producthunt": "Product Hunt",
+}
+
+METRIC_NAMES = {
+    "stars": "星标",
+    "forks": "分支",
+    "open_issues": "待处理问题",
+    "upvotes": "热度票",
+    "comments": "评论",
+    "downloads": "下载",
+    "likes": "点赞",
+    "momentum": "增长信号",
+    "producthunt_url": "Product Hunt 链接",
+    "website": "官方网站",
+}
+
 
 @app.get("/")
 def home():
@@ -48,6 +69,16 @@ def readiness_check():
     )
 
 
+def _public_metrics(metrics):
+    if not isinstance(metrics, dict):
+        return {}
+
+    return {
+        METRIC_NAMES.get(key, key): value
+        for key, value in metrics.items()
+    }
+
+
 def _public_item(item):
     if not isinstance(item, dict):
         return {}
@@ -59,14 +90,16 @@ def _public_item(item):
         "low": "低",
     }
 
+    source = str(item.get("source") or "")
+
     return {
         "项目名称": item.get("title", ""),
-        "来源": item.get("source", ""),
+        "来源": SOURCE_NAMES.get(source, source),
         "链接": item.get("url", ""),
         "简介": item.get("description", ""),
         "上线时间": item.get("created_at"),
         "热度分": item.get("trend_score", 0),
-        "指标": item.get("metrics") or {},
+        "指标": _public_metrics(item.get("metrics") or {}),
         "分析": {
             "摘要": analysis.get("summary", ""),
             "商业分": analysis.get("business_score", 0),
