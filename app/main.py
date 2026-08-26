@@ -3,7 +3,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.core.outbox import list_pending
 from app.core.preflight import run_preflight
+from app.core.run_history import latest_run, record_run_safe
+from app.database.backup import list_backups
 from app.pipeline import run_daily_radar
 from app.scheduler import start_scheduler, stop_scheduler, scheduler
 
@@ -76,6 +79,26 @@ def readiness_check():
     )
 
 
+@app.get("/status")
+def runtime_status():
+    """只返回轻量运行状态，不暴露密钥、Webhook 或完整项目内容。"""
+    try:
+        pending_count = len(list_pending())
+    except Exception:
+        pending_count = -1
+    try:
+        backup_count = len(list_backups())
+    except Exception:
+        backup_count = -1
+
+    return {
+        "调度器运行中": bool(scheduler.running),
+        "最近执行": latest_run(),
+        "飞书待补发队列": pending_count,
+        "数据库备份数量": backup_count,
+    }
+
+
 def _public_metrics(metrics):
     if not isinstance(metrics, dict):
         return {}
@@ -143,4 +166,6 @@ def run():
                 "失败项": preflight.failures,
             },
         )
-    return _public_result(run_daily_radar())
+    result = run_daily_radar()
+    record_run_safe(result)
+    return _public_result(result)
