@@ -7,6 +7,7 @@ from app.scoring import age_hours, calculate_score
 from app.ai.analyzer import analyze_item
 from app.feishu import send_feishu
 from app.core.logger import get_logger
+from app.core.run_lock import execution_lock
 from app.models.radar_item import RadarItem
 
 from app.sources.github import GithubCollector
@@ -196,12 +197,7 @@ def build_feishu_message(items):
     return "\n".join(lines)
 
 
-def run_daily_radar():
-    execution_id = str(uuid.uuid4())
-    started = time.time()
-
-    logger.info("daily radar started execution_id=%s", execution_id)
-
+def _execute_daily_radar(execution_id: str, started: float):
     init_database()
 
     items = collect_sources()
@@ -261,3 +257,27 @@ def run_daily_radar():
         "duration": duration,
         "items": [item.to_dict() for item in report],
     }
+
+
+def run_daily_radar():
+    execution_id = str(uuid.uuid4())
+    started = time.time()
+
+    with execution_lock() as acquired:
+        if not acquired:
+            duration = round(time.time() - started, 2)
+            logger.warning(
+                "daily radar skipped: another execution is already running execution_id=%s",
+                execution_id,
+            )
+            return {
+                "execution_id": execution_id,
+                "time": datetime.now(timezone.utc).isoformat(),
+                "duration": duration,
+                "items": [],
+                "skipped": True,
+                "reason": "already_running",
+            }
+
+        logger.info("daily radar started execution_id=%s", execution_id)
+        return _execute_daily_radar(execution_id, started)
