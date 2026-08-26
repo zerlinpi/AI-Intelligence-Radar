@@ -107,9 +107,11 @@ Thinking = enabled
 +
 reasoning_effort = max
 +
+内部 SSE 流式接收，避免长时间空闲连接被中间网络切断
++
 单次请求最长等待 = 900 秒（默认 15 分钟）
 +
-输出上限 = 8192 Token
+输出上限 = 65536 Token
 ```
 
 一次批量最多分析：
@@ -117,6 +119,8 @@ reasoning_effort = max
 ```text
 4 条政策 + 10 个项目 = 14 条
 ```
+
+DeepSeek Thinking 模式的推理 Token 与最终可见正文共同占用 completion 预算。实际单项测试已经出现 2K+ completion Token，因此 8192 对 14 条批量分析过紧；当前预留 65536 Token，仍然只是上限，实际计费按模型真实生成量计算。
 
 主批量请求默认只执行一次。因为单次请求已经允许最长 15 分钟，超时后不会自动把整批任务再次重复执行。
 
@@ -144,6 +148,8 @@ reasoning_effort = max
 
 - 输入 Token
 - 输出 Token
+- 其中推理 Token
+- 推算的最终正文 Token
 - 总 Token
 - 是否有降级条目
 - `finish_reason`
@@ -151,7 +157,7 @@ reasoning_effort = max
 日志示例：
 
 ```text
-AI 批量分析完成：条目=14 降级=0 输入Token=... 输出Token=... 总Token=... 结束原因=stop
+AI 批量分析完成：条目=14 降级=0 输入Token=... 输出Token=... 其中推理Token=... 正文Token=... 总Token=... 结束原因=stop
 ```
 
 ### AI 失败时的处理
@@ -195,15 +201,16 @@ LLM_API_KEY=你的密钥
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-v4-pro
 LLM_TEMPERATURE=0.2
-LLM_MAX_TOKENS=8192
+LLM_MAX_TOKENS=65536
 LLM_TIMEOUT_SECONDS=900
 ```
 
 说明：
 
-- `LLM_MAX_TOKENS=8192` 是输出上限，不代表每次固定消耗 8192 Token。
+- `LLM_MAX_TOKENS=65536` 是 completion 输出上限，包含 Thinking 模式中的推理 Token 与最终正文 Token，不代表每次固定消耗 65536 Token。
 - `LLM_TIMEOUT_SECONDS=900` 表示单次模型请求最多等待 15 分钟。
 - DeepSeek Thinking 模式下不依赖 `LLM_TEMPERATURE` 控制推理质量；该变量主要保留给其他兼容模型。
+- DeepSeek 使用内部 SSE 流式接收，但飞书仍然只在完整 JSON 汇总完成后一次发送最终日报。
 - 401、403、404、422 等不可恢复错误立即失败，不做无意义重试。
 - 429、5xx、网络问题属于可恢复错误；但主批量长任务默认只请求一次，避免 15 分钟超时后再次整批重复等待。
 
@@ -275,7 +282,7 @@ LLM_API_KEY=
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-v4-pro
 LLM_TEMPERATURE=0.2
-LLM_MAX_TOKENS=8192
+LLM_MAX_TOKENS=65536
 LLM_TIMEOUT_SECONDS=900
 
 FEISHU_WEBHOOK=
@@ -378,7 +385,7 @@ docker exec ai-intelligence-radar python -m app.cli
 docker exec ai-intelligence-radar python -m app.cli 2>&1 | tee /root/radar-test.log
 ```
 
-由于 DeepSeek 使用长时 Thinking，AI 阶段几分钟没有终端输出并不代表任务卡死。单次请求默认最多允许 15 分钟。
+由于 DeepSeek 使用长时 Thinking，AI 阶段可能持续数分钟。内部会持续接收 SSE 流，最终飞书仍然只发送完整日报。
 
 ---
 
@@ -407,7 +414,9 @@ docker logs -f ai-intelligence-radar
 采集器=ProductHuntCollector 数量=... 耗时=...秒
 政策采集：数量=... 耗时=...秒
 去重完成：项目=... 新项目=... 政策=... 新政策=...
-AI 批量分析完成：条目=14 降级=0 输入Token=... 输出Token=... 总Token=... 结束原因=stop
+DeepSeek 流式连接已建立，正在等待完整分析结果
+模型流式响应完成：数据块=... 思考字符=... 正文字符=... 结束原因=stop
+AI 批量分析完成：条目=14 降级=0 输入Token=... 输出Token=... 其中推理Token=... 正文Token=... 总Token=... 结束原因=stop
 数据库保存完成：数量=...
 飞书通知发送成功
 日报执行完成：...
@@ -495,7 +504,9 @@ python -m pytest -v --tb=short
 - DeepSeek / OpenAI 兼容模型批量分析
 - DeepSeek JSON Output
 - DeepSeek Thinking `enabled` + `reasoning_effort=max`
-- 8192 Token 输出上限
+- DeepSeek SSE 长任务流式聚合
+- 65536 Token 输出上限
+- 推理 Token 与正文 Token 拆分统计
 - 长任务超时配置
 - 模型返回缺失条目的定向恢复
 - 模型异常 fallback
