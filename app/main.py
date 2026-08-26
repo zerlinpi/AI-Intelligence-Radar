@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.core.preflight import run_preflight
 from app.pipeline import run_daily_radar
 from app.scheduler import start_scheduler, stop_scheduler, scheduler
 
@@ -51,6 +52,7 @@ def home():
 
 @app.get("/health")
 def health_check():
+    """Liveness：只证明进程还活着，不把外部配置问题误判为进程死亡。"""
     return {
         "正常": True,
         "调度器运行中": bool(scheduler.running),
@@ -59,12 +61,17 @@ def health_check():
 
 @app.get("/ready")
 def readiness_check():
-    ready = bool(scheduler.running)
+    """Readiness：调度器 + 本地生产预检均通过才允许接收执行请求。"""
+    preflight = run_preflight()
+    scheduler_ready = bool(scheduler.running)
+    ready = scheduler_ready and preflight.ok
     return JSONResponse(
         status_code=200 if ready else 503,
         content={
             "就绪": ready,
-            "调度器运行中": ready,
+            "调度器运行中": scheduler_ready,
+            "预检通过": preflight.ok,
+            "失败项": preflight.failures,
         },
     )
 
@@ -115,12 +122,25 @@ def _public_result(result):
         "执行编号": result.get("execution_id", ""),
         "时间": result.get("time", ""),
         "耗时秒": result.get("duration", 0),
+        "状态": result.get("status", "success"),
         "是否跳过": bool(result.get("skipped", False)),
         "原因": result.get("reason", ""),
         "项目": [_public_item(item) for item in result.get("items", [])],
+        "政策": [_public_item(item) for item in result.get("policies", [])],
+        "飞书卡片": result.get("feishu_cards", 0),
     }
 
 
 @app.post("/run")
 def run():
+    preflight = run_preflight()
+    if not preflight.ok:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "执行": False,
+                "原因": "生产预检失败",
+                "失败项": preflight.failures,
+            },
+        )
     return _public_result(run_daily_radar())
