@@ -112,7 +112,7 @@ def test_analyzer_success(monkeypatch):
     assert result["trend_score"] == 0
 
 
-def test_batch_analyzer_uses_json_mode_and_disables_deepseek_thinking(monkeypatch):
+def test_batch_analyzer_uses_json_mode_and_max_deepseek_thinking(monkeypatch):
     _mock_success(monkeypatch)
     results = analyzer.analyze_items(
         [
@@ -150,7 +150,9 @@ def test_batch_analyzer_uses_json_mode_and_disables_deepseek_thinking(monkeypatc
     assert "完整、准确、有决策价值优先" in prompt
     assert "跨境电商" in prompt
     assert call["response_format"] == {"type": "json_object"}
-    assert call["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert call["reasoning_effort"] == "max"
+    assert call["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert "temperature" not in call
     assert call["max_tokens"] == min(
         analyzer.LLM_MAX_TOKENS,
         analyzer.MAX_OUTPUT_TOKENS,
