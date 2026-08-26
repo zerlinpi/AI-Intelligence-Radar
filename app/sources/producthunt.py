@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from typing import Dict, List
 import os
+import re
 
 import requests
 
@@ -12,7 +13,6 @@ API = "https://api.producthunt.com/v2/api/graphql"
 logger = get_logger("collector.producthunt")
 
 AI_KEYWORDS = (
-    "ai",
     "artificial intelligence",
     "llm",
     "gpt",
@@ -57,6 +57,9 @@ def _is_ai_product(node: Dict) -> bool:
             *topic_names,
         ]
     ).lower()
+
+    if re.search(r"\bai\b", haystack):
+        return True
 
     return any(keyword in haystack for keyword in AI_KEYWORDS)
 
