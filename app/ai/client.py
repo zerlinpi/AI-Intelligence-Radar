@@ -41,7 +41,10 @@ def get_llm_model() -> str:
 
 
 def _extra_attr(obj, name, default=None):
-    """兼容旧版 OpenAI SDK 对服务商扩展字段的读取。"""
+    """兼容字典、旧版 OpenAI SDK 与服务商扩展字段。"""
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+
     value = getattr(obj, name, None)
     if value is not None:
         return value
@@ -166,16 +169,20 @@ def get_llm_client():
 
 
 def get_llm_model_usage(response):
-    """读取兼容接口返回的 Token 使用量。"""
+    """读取兼容接口返回的 Token 使用量，并拆分 DeepSeek reasoning Token。"""
     usage = getattr(response, "usage", None)
 
     if not usage:
         return {}
 
+    completion_details = _extra_attr(usage, "completion_tokens_details") or {}
+    reasoning_tokens = _extra_attr(completion_details, "reasoning_tokens", 0) or 0
+
     return {
-        "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-        "completion_tokens": getattr(usage, "completion_tokens", 0),
-        "total_tokens": getattr(usage, "total_tokens", 0),
+        "prompt_tokens": _extra_attr(usage, "prompt_tokens", 0) or 0,
+        "completion_tokens": _extra_attr(usage, "completion_tokens", 0) or 0,
+        "reasoning_tokens": reasoning_tokens,
+        "total_tokens": _extra_attr(usage, "total_tokens", 0) or 0,
     }
 
 
