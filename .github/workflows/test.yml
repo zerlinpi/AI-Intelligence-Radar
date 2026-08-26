@@ -58,7 +58,10 @@ jobs:
         run: python -m compileall -q app scripts tests
 
       - name: 校验 Docker Compose
-        run: docker compose config >/dev/null
+        run: |
+          cp .env.example .env
+          docker compose config >/dev/null
+          rm -f .env
 
       - name: 生产预检 Smoke Test
         run: python -m app.cli check
