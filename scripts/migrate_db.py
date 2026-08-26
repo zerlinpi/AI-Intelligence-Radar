@@ -1,8 +1,7 @@
 """
-SQLite schema migration helper.
+SQLite 数据库结构迁移工具。
 
-Creates the base schema for fresh installations and applies
-incremental migrations for upgraded installations.
+新安装时创建基础结构，已有安装则补充缺失字段。
 """
 
 import os
@@ -47,7 +46,7 @@ MIGRATIONS = [
 
 
 def resolve_database_path() -> str:
-    """Resolve the same file-backed SQLite database used by the application."""
+    """解析与主程序一致的 SQLite 文件路径。"""
     sqlite_path = (os.getenv("SQLITE_PATH") or "").strip()
     if sqlite_path:
         return sqlite_path
@@ -59,13 +58,13 @@ def resolve_database_path() -> str:
 
     if not database_url.startswith(prefix):
         raise RuntimeError(
-            "scripts/migrate_db.py supports SQLite only; "
-            "set DATABASE_URL to a sqlite:/// URL or provide SQLITE_PATH."
+            "数据库迁移脚本当前仅支持 SQLite；请将 DATABASE_URL 配置为 "
+            "sqlite:/// 地址，或提供 SQLITE_PATH。"
         )
 
     database_path = database_url[len(prefix):]
     if not database_path or database_path == ":memory:":
-        raise RuntimeError("A file-backed SQLite database is required for migration.")
+        raise RuntimeError("数据库迁移需要使用文件形式的 SQLite 数据库。")
 
     return database_path
 
@@ -95,4 +94,4 @@ def migrate(database_path: str):
 if __name__ == "__main__":
     db_path = resolve_database_path()
     migrate(db_path)
-    print(f"Database migration completed: {db_path}")
+    print(f"数据库迁移完成：{db_path}")
