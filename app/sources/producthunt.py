@@ -77,6 +77,18 @@ def _parse_created_at(value):
         return None
 
 
+def _product_description(node: Dict) -> str:
+    """同时保留 tagline 与 description，为后续 AI 分析提供足够产品语义。"""
+    tagline = " ".join(str(node.get("tagline") or "").split()).strip()
+    description = " ".join(str(node.get("description") or "").split()).strip()
+
+    if tagline and description:
+        if description.lower().startswith(tagline.lower()):
+            return description
+        return f"{tagline}。{description}"
+    return description or tagline
+
+
 class ProductHuntCollector(BaseCollector):
     name = "producthunt"
 
@@ -179,7 +191,7 @@ class ProductHuntCollector(BaseCollector):
                     "source": self.name,
                     "title": node.get("name") or "",
                     "url": node.get("website") or node.get("url") or "",
-                    "description": node.get("tagline") or node.get("description") or "",
+                    "description": _product_description(node),
                     "created_at": created_at,
                     "upvotes": votes,
                     "comments": comments,
