@@ -2,6 +2,7 @@ services:
   radar:
     build: .
     container_name: ai-intelligence-radar
+    init: true
     ports:
       - "127.0.0.1:8000:8000"
     env_file:
@@ -11,8 +12,14 @@ services:
       - ./logs:/app/logs
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      # Docker 健康状态只判断进程存活；生产可执行性由 /ready 单独判断。
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
