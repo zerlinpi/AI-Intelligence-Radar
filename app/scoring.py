@@ -116,16 +116,13 @@ def _search_text(item) -> str:
 
 
 def _contains_keyword(text: str, keyword: str) -> bool:
-    if keyword == "app":
-        return bool(re.search(r"\bapp\b", text))
-    if keyword == "api":
-        return bool(re.search(r"\bapi\b", text))
-    if keyword == "sdk":
-        return bool(re.search(r"\bsdk\b", text))
-    if keyword == "seo":
-        return bool(re.search(r"\bseo\b", text))
-    if keyword == "crm":
-        return bool(re.search(r"\bcrm\b", text))
+    """单词型关键词按词边界匹配，避免 research 命中 search 等误判。"""
+    keyword = keyword.lower().strip()
+
+    if re.fullmatch(r"[a-z0-9]+", keyword):
+        pattern = rf"\b{re.escape(keyword)}(?:s|es)?\b"
+        return bool(re.search(pattern, text))
+
     return keyword in text
 
 
