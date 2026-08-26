@@ -7,11 +7,11 @@ from app.models.radar_item import RadarItem
 from app.core.logger import get_logger
 
 
-logger = get_logger("storage")
+logger = get_logger("数据存储")
 
 
 def _to_dict(item):
-    """Convert RadarItem or dict into storage-ready dictionary."""
+    """将 RadarItem 或字典转换为可存储的数据。"""
     if isinstance(item, RadarItem):
         return item.to_dict()
 
@@ -22,12 +22,12 @@ def _to_dict(item):
 
 
 def _safe_dict(value):
-    """Ensure JSON fields are always stored as dictionaries."""
+    """确保 JSON 字段始终使用字典。"""
     return value if isinstance(value, dict) else {}
 
 
 def _source_created_at(value):
-    """Normalize a source launch timestamp to naive UTC for SQLite."""
+    """将来源发布时间统一转换为 SQLite 使用的 UTC 时间。"""
     if isinstance(value, datetime):
         created = value
     elif isinstance(value, str) and value.strip():
@@ -47,7 +47,7 @@ def _source_created_at(value):
 def save_item(db: Session, item):
     data = _to_dict(item)
     if not data:
-        raise ValueError("storage item must be a RadarItem or dictionary")
+        raise ValueError("待保存项目必须是 RadarItem 或字典")
 
     analysis = _safe_dict(data.get("analysis"))
     metrics = _safe_dict(data.get("metrics"))
@@ -100,7 +100,7 @@ def save_batch(db: Session, items: list):
     for item in items or []:
         data = _to_dict(item)
         if not data:
-            logger.warning("storage skipped invalid item type=%s", type(item).__name__)
+            logger.warning("已跳过无效存储项目：类型=%s", type(item).__name__)
             continue
 
         url = data.get("url", "") or ""
@@ -112,7 +112,7 @@ def save_batch(db: Session, items: list):
         except Exception:
             db.rollback()
             logger.exception(
-                "storage failed title=%s url=%s",
+                "项目保存失败：标题=%s 链接=%s",
                 title,
                 url,
             )
