@@ -103,7 +103,7 @@ def test_batch_analyzer_uses_one_request_for_policy_and_project(monkeypatch):
         [
             {
                 "title": "CPSC eFiling requirement",
-                "description": "A" * 1000,
+                "description": "A" * 1400,
                 "category": "policy",
                 "source": "cpsc_compliance",
                 "metrics": {
@@ -126,11 +126,12 @@ def test_batch_analyzer_uses_one_request_for_policy_and_project(monkeypatch):
     assert len(results) == 2
     assert len(FakeClient.calls) == 1
     prompt = FakeClient.calls[0]["messages"][0]["content"]
-    assert "A" * 521 not in prompt
+    assert "A" * 901 not in prompt
     assert "unused" not in prompt
     assert "CPSC" in prompt
     assert "CPC/GCC/eFiling" in prompt
     assert "目标用户" in prompt
+    assert "完整、准确、有决策价值优先" in prompt
     assert "跨境电商" in prompt
     assert FakeClient.calls[0]["max_tokens"] == min(
         analyzer.LLM_MAX_TOKENS,
@@ -138,10 +139,10 @@ def test_batch_analyzer_uses_one_request_for_policy_and_project(monkeypatch):
     )
 
 
-def test_batch_analyzer_caps_old_environment_token_value(monkeypatch):
+def test_batch_analyzer_allows_full_output_budget(monkeypatch):
     _mock_success(monkeypatch)
-    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 1200)
+    monkeypatch.setattr(analyzer, "LLM_MAX_TOKENS", 8192)
     analyzer.analyze_items(
         [{"title": "项目一", "description": "测试", "metrics": {"stars": 10}, "trend_score": 80}]
     )
-    assert FakeClient.calls[0]["max_tokens"] == 1100
+    assert FakeClient.calls[0]["max_tokens"] == 4096
