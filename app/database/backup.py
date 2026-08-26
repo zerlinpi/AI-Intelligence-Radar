@@ -4,8 +4,10 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import DATABASE_BACKUP_DIR, DATABASE_BACKUP_RETENTION, DATABASE_URL
+from app.core.logger import get_logger
 
 
+logger = get_logger("数据库备份")
 _SQLITE_PREFIX = "sqlite:///"
 
 
@@ -52,7 +54,6 @@ def backup_database() -> Optional[Path]:
     target = sqlite3.connect(str(destination), timeout=15)
     try:
         source.backup(target)
-        target.execute("PRAGMA quick_check")
         row = target.execute("PRAGMA quick_check").fetchone()
         if not row or str(row[0]).lower() != "ok":
             raise RuntimeError(f"备份完整性检查失败：{row}")
@@ -64,6 +65,7 @@ def backup_database() -> Optional[Path]:
         source.close()
 
     _prune_backups(directory)
+    logger.info("SQLite 在线备份完成：%s", destination)
     return destination
 
 
