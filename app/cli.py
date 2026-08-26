@@ -23,29 +23,46 @@ def _database_available() -> bool:
 
 
 def check():
-    """Validate the runtime configuration without running the daily pipeline."""
+    """只检查运行配置，不执行日报。"""
     required_checks = {
-        "Database": _database_available(),
-        "Feishu Webhook": bool(FEISHU_WEBHOOK),
-        "LLM API Key": bool(LLM_API_KEY),
-        "LLM Model": bool(LLM_MODEL),
-        "LLM Base URL": bool(LLM_BASE_URL),
+        "数据库": _database_available(),
+        "飞书机器人地址": bool(FEISHU_WEBHOOK),
+        "模型密钥": bool(LLM_API_KEY),
+        "模型名称": bool(LLM_MODEL),
+        "模型接口地址": bool(LLM_BASE_URL),
     }
 
     optional_checks = {
-        "GitHub Token": bool(os.getenv("GITHUB_TOKEN")),
-        "Product Hunt Token": bool(os.getenv("PRODUCT_HUNT_TOKEN")),
+        "GitHub 访问令牌": bool(os.getenv("GITHUB_TOKEN")),
+        "Product Hunt 访问令牌": bool(os.getenv("PRODUCT_HUNT_TOKEN")),
     }
 
     for name, status in required_checks.items():
-        level = "OK" if status else "FAIL"
+        level = "正常" if status else "失败"
         print(f"[{level}] {name}")
 
     for name, status in optional_checks.items():
-        level = "OK" if status else "WARN"
+        level = "正常" if status else "提醒"
         print(f"[{level}] {name}")
 
     return all(required_checks.values())
+
+
+def _print_run_summary(result):
+    if not isinstance(result, dict):
+        print("日报执行结束，但没有返回有效结果。")
+        return
+
+    if result.get("skipped"):
+        print(f"日报已跳过：{result.get('reason') or '已有任务正在运行'}")
+        return
+
+    print(
+        "日报执行完成："
+        f"执行编号={result.get('execution_id', '-')} "
+        f"项目数量={len(result.get('items', []))} "
+        f"耗时={result.get('duration', 0)}秒"
+    )
 
 
 def main():
@@ -53,7 +70,7 @@ def main():
         return 0 if check() else 1
 
     result = run_daily_radar()
-    print(result)
+    _print_run_summary(result)
     return 0
 
 
