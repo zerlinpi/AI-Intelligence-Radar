@@ -139,15 +139,48 @@ def _format_age(item: RadarItem) -> str:
     return f"约 {max(int(hours // 24), 1)} 天前上线"
 
 
+def _number(value) -> float:
+    try:
+        return max(float(value or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _per_day(item: RadarItem, value) -> float:
+    hours = age_hours(item.to_dict())
+    age_days = max((hours if hours is not None else 24) / 24, 0.25)
+    return _number(value) / age_days
+
+
+def _format_rate(value: float) -> str:
+    if value >= 1000:
+        return f"{value:,.0f}"
+    if value >= 10:
+        return f"{value:.0f}"
+    return f"{value:.1f}"
+
+
 def _format_metrics(item: RadarItem) -> str:
     metrics = item.metrics or {}
 
     if item.source == "github":
-        return f"星标 {metrics.get('stars', 0)} · 分支 {metrics.get('forks', 0)}"
+        stars = metrics.get("stars", 0)
+        forks = metrics.get("forks", 0)
+        rate = _format_rate(_per_day(item, stars))
+        return f"星标 {stars} · 分支 {forks} · 星标增速约 {rate}/天"
+
     if item.source in {"producthunt", "hackernews"}:
-        return f"热度票 {metrics.get('upvotes', 0)} · 评论 {metrics.get('comments', 0)}"
+        upvotes = metrics.get("upvotes", 0)
+        comments = metrics.get("comments", 0)
+        rate = _format_rate(_per_day(item, upvotes))
+        return f"热度票 {upvotes} · 评论 {comments} · 热度增速约 {rate}/天"
+
     if item.source == "huggingface":
-        return f"下载 {metrics.get('downloads', 0)} · 点赞 {metrics.get('likes', 0)}"
+        downloads = metrics.get("downloads", 0)
+        likes = metrics.get("likes", 0)
+        rate = _format_rate(_per_day(item, downloads))
+        return f"下载 {downloads} · 点赞 {likes} · 下载增速约 {rate}/天"
+
     if item.source == "arxiv":
         return "最新发布研究"
 
@@ -169,8 +202,11 @@ def build_feishu_message(items):
             str(analysis.get("opportunity", "medium")).lower(),
             "中",
         )
+        business_score = _number(analysis.get("business_score", 0))
         summary = analysis.get("summary") or "暂无 AI 分析摘要。"
         source_name = SOURCE_NAMES.get(item.source, item.source)
+        ideas = analysis.get("startup_ideas") or []
+        first_idea = str(ideas[0]).strip() if isinstance(ideas, list) and ideas else ""
 
         lines.extend(
             [
@@ -180,8 +216,16 @@ def build_feishu_message(items):
                 f"🕒 {_format_age(item)}",
                 f"🔥 新项目热度：**{item.trend_score:.1f}/100**",
                 f"📈 早期信号：{_format_metrics(item)}",
-                f"💼 商业机会：**{opportunity}**",
+                f"💼 商业机会：**{opportunity}** · {business_score:.0f}/100",
                 f"🧠 AI 判断：{summary}",
+            ]
+        )
+
+        if first_idea:
+            lines.append(f"💡 可关注机会：{first_idea}")
+
+        lines.extend(
+            [
                 f"🔗 [查看项目]({item.url})" if item.url else "🔗 暂无项目链接",
                 "",
             ]
