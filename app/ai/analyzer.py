@@ -101,6 +101,9 @@ def _fallback_result(item: Dict, reason: str = "") -> Dict:
                 "本条政策的 AI 结构化分析未完成；请优先依据官方原文核对适用产品、"
                 "生效时间、进口主体及测试/证书要求。"
             ),
+            "affected_products": "请依据官方原文核对具体适用产品、功能特征与豁免范围。",
+            "risk": "AI 风险拆分未完成；在确认适用范围前，不应假设现有产品已经满足准入要求。",
+            "preparation": "先保存官方原文，并核对该产品对应的测试、证书、注册、标签或申报资料。",
             "trend_score": 0,
             "business_score": 50,
             "opportunity": "medium",
@@ -128,6 +131,9 @@ def _fallback_result(item: Dict, reason: str = "") -> Dict:
     return {
         "purpose": f"项目原始说明：{original}",
         "summary": summary,
+        "affected_products": "",
+        "risk": "",
+        "preparation": "",
         "trend_score": _local_trend_score(item),
         "business_score": 50,
         "opportunity": "medium",
@@ -231,6 +237,19 @@ def _extract_json_object(content: str) -> Dict:
 
 def _read_result_row(row):
     """读取紧凑数组格式，同时兼容旧数组和字典格式。"""
+    if isinstance(row, list) and len(row) >= 9:
+        return {
+            "序号": row[0],
+            "用途": row[1],
+            "摘要": row[2],
+            "商业分": row[3],
+            "机会": row[4],
+            "建议": row[5],
+            "影响产品": row[6],
+            "风险": row[7],
+            "准备资料": row[8],
+        }
+
     if isinstance(row, list) and len(row) >= 6:
         return {
             "序号": row[0],
@@ -239,6 +258,9 @@ def _read_result_row(row):
             "商业分": row[3],
             "机会": row[4],
             "建议": row[5],
+            "影响产品": "",
+            "风险": "",
+            "准备资料": "",
         }
 
     if isinstance(row, list) and len(row) >= 5:
@@ -249,6 +271,9 @@ def _read_result_row(row):
             "商业分": row[2],
             "机会": row[3],
             "建议": row[4],
+            "影响产品": "",
+            "风险": "",
+            "准备资料": "",
         }
 
     if isinstance(row, dict):
@@ -337,11 +362,17 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
         purpose = str(row.get("用途") or "").strip()
         summary = str(row.get("摘要") or "").strip()
         idea = str(row.get("建议") or "").strip()
+        affected_products = str(row.get("影响产品") or "").strip()
+        risk = str(row.get("风险") or "").strip()
+        preparation = str(row.get("准备资料") or "").strip()
 
         results.append(
             {
                 "purpose": purpose or f"项目原始说明：{_clean_original_description(item)}",
                 "summary": summary or "暂无 AI 分析摘要。",
+                "affected_products": affected_products,
+                "risk": risk,
+                "preparation": preparation,
                 "trend_score": 0 if _is_policy(item) else _local_trend_score(item),
                 "business_score": business_score,
                 "opportunity": opportunity,
@@ -369,8 +400,14 @@ def _build_prompt(compact_json: str) -> str:
         "尽量保留生效日期、阈值、测试标准、证书或注册要求；信息不足时不得编造。"
         "政策判断建议70-120字：说明对美国销售、上架、进口、清关或账号的具体影响，"
         "以及不处理可能造成的后果。"
-        "政策建议建议40-80字：列出最应优先准备的测试报告、CPC/GCC、eFiling字段、"
-        "FDA注册、FCC授权、标签/说明书或平台审核动作。"
+        "政策建议建议40-80字：给出最优先的实际动作。"
+        "若指标中焦=产品合规审核，必须额外拆分三个字段："
+        "影响产品建议30-90字，只写官方信息能够支持的具体产品类别、功能特征、设备类型或适用范围；"
+        "风险建议40-100字，单独说明不满足要求可能造成的上架、进口、清关、召回、整改或执法后果，"
+        "不确定时使用可能/需核实，不得把推测写成事实；"
+        "准备资料建议40-110字，列出需要核对或准备的测试报告、CPC/GCC、eFiling字段、FDA注册/列名、"
+        "FCC授权、标签、说明书或其他资料，只保留与该条规则相关的内容。"
+        "若不是产品合规审核，影响产品、风险、准备资料三个字段返回空字符串。"
         "类型=项时，重点判断Amazon、Shopify、TikTok Shop、独立站、选品、Listing、广告、"
         "本地化、客服、SEO、竞品、定价、物流、库存、评论、达人营销，以及是否能成为SaaS、"
         "Agent、插件、API或自动化产品。"
@@ -382,7 +419,8 @@ def _build_prompt(compact_json: str) -> str:
         "尽量说明面向哪类卖家或运营环节。"
         "不要因历史规模或品牌知名度加分。必须返回合法 JSON，且不得遗漏输入中的任何序号。"
         "JSON结构严格为："
-        '{"结果":[[序号,"用途","判断",分数,"高|中|低","建议"]]}。'
+        '{"结果":[[序号,"用途","判断",分数,"高|中|低","建议","影响产品","风险","准备资料"]]}。'
+        "项目以及非产品合规审核政策的最后三个字段必须返回空字符串。"
         f"数据={compact_json}"
     )
 
