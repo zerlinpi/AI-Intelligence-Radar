@@ -3,13 +3,15 @@ from typing import List
 
 from app.cards.models import CardEnvelope, ReportDecisionModel
 from app.cards.styles import (
-    DAILY_HEADER_TEMPLATE,
+    COMPLIANCE_HEADER_TEMPLATES,
     DECISION_BACKGROUND,
     DEFAULT_PROJECTS_PER_CARD,
     FOCUS_TITLES,
     MAX_ACTIONS,
     OPPORTUNITY_LABELS,
+    PRODUCT_HEADER_TEMPLATE,
     RISK_LABELS,
+    SUMMARY_HEADER_TEMPLATE,
 )
 from app.cards.text import clean_text, payload_bytes
 from app.config import FEISHU_MAX_PAYLOAD_BYTES
@@ -33,6 +35,20 @@ def _md(content: str) -> dict:
 
 def _hr() -> dict:
     return {"tag": "hr"}
+
+
+def _button(label: str, url: str, button_type: str = "default") -> dict:
+    return {
+        "tag": "action",
+        "actions": [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": _text(label)},
+                "type": button_type,
+                "url": _text(url),
+            }
+        ],
+    }
 
 
 def _pair_element(left: str, body: str) -> dict:
@@ -64,7 +80,11 @@ def _pair(label: str, body: str, icon: str = "") -> dict:
     return _pair_element(left, _text(body))
 
 
-def _interactive_card(title: str, elements: list, template: str = DAILY_HEADER_TEMPLATE) -> dict:
+def _interactive_card(
+    title: str,
+    elements: list,
+    template: str = SUMMARY_HEADER_TEMPLATE,
+) -> dict:
     return {
         "msg_type": "interactive",
         "card": {
@@ -86,8 +106,8 @@ def _target_payload_bytes() -> int:
     return max(configured - _PAYLOAD_RESERVE_BYTES, 2048)
 
 
-def _fits(title: str, elements: list) -> bool:
-    return payload_bytes(_interactive_card(title, elements)) <= _target_payload_bytes()
+def _fits(title: str, elements: list, template: str) -> bool:
+    return payload_bytes(_interactive_card(title, elements, template=template)) <= _target_payload_bytes()
 
 
 def _preferred_break(text: str, hard_end: int) -> int:
@@ -107,12 +127,12 @@ def _preferred_break(text: str, hard_end: int) -> int:
     return hard_end
 
 
-def _split_text_for_element(title: str, text: str, factory) -> list:
+def _split_text_for_element(title: str, text: str, factory, template: str) -> list:
     """按实际 UTF-8 Payload 大小拆文本，不截断、不省略任何字符。"""
     value = str(text or "")
     if not value:
         return [factory("")]
-    if _fits(title, [factory(value)]):
+    if _fits(title, [factory(value)], template):
         return [factory(value)]
 
     parts = []
@@ -122,13 +142,12 @@ def _split_text_for_element(title: str, text: str, factory) -> list:
         best = 0
         while low <= high:
             middle = (low + high) // 2
-            if _fits(title, [factory(remaining[:middle])]):
+            if _fits(title, [factory(remaining[:middle])], template):
                 best = middle
                 low = middle + 1
             else:
                 high = middle - 1
 
-        # 正常情况下至少一个字符一定能放入卡片；这里保留兜底以避免死循环。
         if best <= 0:
             best = 1
 
@@ -141,14 +160,14 @@ def _split_text_for_element(title: str, text: str, factory) -> list:
     return parts
 
 
-def _split_oversized_element(title: str, element: dict) -> list:
-    if _fits(title, [element]):
+def _split_oversized_element(title: str, element: dict, template: str) -> list:
+    if _fits(title, [element], template):
         return [element]
 
     tag = element.get("tag")
     if tag == "div":
         text = ((element.get("text") or {}).get("content") or "")
-        return _split_text_for_element(title, text, _md)
+        return _split_text_for_element(title, text, _md, template)
 
     if tag == "column_set":
         columns = element.get("columns") or []
@@ -165,21 +184,22 @@ def _split_oversized_element(title: str, element: dict) -> list:
                 title,
                 right,
                 lambda chunk: _pair_element(left, chunk),
+                template,
             )
 
-    # hr 等固定小元素正常不会超预算；未知元素原样保留，由发送层做最终安全校验。
+    # action/hr 等固定小元素正常不会超预算；未知元素原样保留，由发送层做最终安全校验。
     return [element]
 
 
-def _paginate_elements(title: str, elements: list) -> list:
+def _paginate_elements(title: str, elements: list, template: str) -> list:
     """把完整元素流按真实 Payload 自动分页；不因为卡片大小删除正文。"""
     pages = []
     current = []
     reserve_title = f"{title}｜99/99"
 
     for raw_element in elements:
-        for element in _split_oversized_element(reserve_title, raw_element):
-            if current and not _fits(reserve_title, current + [element]):
+        for element in _split_oversized_element(reserve_title, raw_element, template):
+            if current and not _fits(reserve_title, current + [element], template):
                 pages.append(current)
                 current = []
             current.append(element)
@@ -204,11 +224,24 @@ def _element_text(element: dict) -> str:
                 if text:
                     parts.append(text)
         return "：".join(parts)
+    if tag == "action":
+        parts = []
+        for action in element.get("actions") or []:
+            label = ((action.get("text") or {}).get("content") or "")
+            url = action.get("url") or ""
+            if label or url:
+                parts.append(f"{label}：{url}".strip("："))
+        return " | ".join(parts)
     return ""
 
 
-def _envelopes(card_type: str, title: str, elements: list) -> List[CardEnvelope]:
-    pages = _paginate_elements(title, elements)
+def _envelopes(
+    card_type: str,
+    title: str,
+    elements: list,
+    template: str,
+) -> List[CardEnvelope]:
+    pages = _paginate_elements(title, elements, template)
     total = len(pages)
     envelopes = []
     for index, page in enumerate(pages, start=1):
@@ -221,7 +254,7 @@ def _envelopes(card_type: str, title: str, elements: list) -> List[CardEnvelope]
         envelopes.append(
             CardEnvelope(
                 card_type=page_type,
-                payload=_interactive_card(page_title, page),
+                payload=_interactive_card(page_title, page, template=template),
                 fallback_text="\n".join(fallback_lines),
             )
         )
@@ -232,17 +265,18 @@ def build_summary_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
     summary = model.summary
     metrics = summary.metrics or {}
     judgment = _text(summary.judgment)
+    overview = (
+        "合规 **{compliance}** · 高风险 **{high_risk}** · "
+        "新项目 **{projects}** · 重点机会 **{opportunities}**"
+    ).format(
+        compliance=metrics.get("compliance", 0),
+        high_risk=metrics.get("high_risk", 0),
+        projects=metrics.get("projects", 0),
+        opportunities=metrics.get("opportunities", 0),
+    )
     elements = [
-        _md(f"**今日判断**\n{judgment}"),
-        _md(
-            "合规 **{compliance}** · 高风险 **{high_risk}** · "
-            "新项目 **{projects}** · 重点机会 **{opportunities}**".format(
-                compliance=metrics.get("compliance", 0),
-                high_risk=metrics.get("high_risk", 0),
-                projects=metrics.get("projects", 0),
-                opportunities=metrics.get("opportunities", 0),
-            )
-        ),
+        _pair("今日判断", judgment, "🧭"),
+        _md(f"📊 **今日概览**\n{overview}"),
         _hr(),
     ]
 
@@ -255,6 +289,7 @@ def build_summary_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
         "summary",
         f"美国跨境经营雷达｜{summary.date_text}",
         elements,
+        SUMMARY_HEADER_TEMPLATE,
     )
 
 
@@ -281,21 +316,20 @@ def _append_standard_policy(elements: list, decision, index: int):
     else:
         first_label, second_label = "核心变化", "卖家影响"
 
-    elements.append(_md(f"**{first_label}**\n{_text(decision.requirement)}"))
+    elements.append(_md(f"📌 **{first_label}**\n{_text(decision.requirement)}"))
     if decision.impact:
-        elements.append(_md(f"**{second_label}**\n{_text(decision.impact)}"))
+        elements.append(_md(f"📍 **{second_label}**\n{_text(decision.impact)}"))
 
     action = _text(decision.action)
-    if action or decision.url:
-        content = f"✅ **下一步**：{action}" if action else ""
-        if decision.url:
-            content += ("\n" if content else "") + f"[查看官方原文 →]({decision.url})"
-        elements.append(_md(content))
+    if action:
+        elements.append(_pair("下一步", action, "✅"))
+    if decision.url:
+        elements.append(_button("查看官方原文", decision.url, "default"))
 
 
 def _append_product_compliance(elements: list, decision, index: int):
     elements.append(_md(_policy_header(decision, index)))
-    elements.append(_md("**审核要求**\n" + _text(decision.requirement)))
+    elements.append(_md("📌 **审核要求**\n" + _text(decision.requirement)))
     elements.extend(
         [
             _pair("影响产品", decision.affected_products, "🎯"),
@@ -304,21 +338,34 @@ def _append_product_compliance(elements: list, decision, index: int):
         ]
     )
     action = _text(decision.action)
-    if action or decision.url:
-        content = f"✅ **下一步**：{action}" if action else ""
-        if decision.url:
-            content += ("\n" if content else "") + f"[查看官方原文 →]({decision.url})"
-        elements.append(_md(content))
+    if action:
+        elements.append(_pair("下一步", action, "✅"))
+    if decision.url:
+        elements.append(_button("查看官方原文", decision.url, "default"))
+
+
+def _compliance_template(decisions) -> str:
+    if any(item.risk_level == "high" for item in decisions):
+        return COMPLIANCE_HEADER_TEMPLATES["high"]
+    if any(item.risk_level == "medium" for item in decisions):
+        return COMPLIANCE_HEADER_TEMPLATES["medium"]
+    return COMPLIANCE_HEADER_TEMPLATES["low"]
 
 
 def build_compliance_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
     decisions = model.compliance
     date_text = model.summary.date_text
     elements = []
+    template = _compliance_template(decisions)
 
     if not decisions:
         elements.append(_md("今日未发现新增的高影响 Amazon 政策、美国进口新规或产品审核要求。"))
-        return _envelopes("compliance", f"美国合规雷达｜{date_text}", elements)
+        return _envelopes(
+            "compliance",
+            f"美国合规雷达｜{date_text}",
+            elements,
+            template,
+        )
 
     groups = defaultdict(list)
     for decision in decisions:
@@ -344,7 +391,7 @@ def build_compliance_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
                 f"{len(group)} 条准入变化 · {authorities} · "
                 f"最高 {RISK_LABELS.get(highest.risk_level, RISK_LABELS['medium'])}"
             )
-            elements.append(_pair("审核简报", brief))
+            elements.append(_pair("审核简报", brief, "🛡️"))
 
         for decision in group:
             if focus == "产品合规审核":
@@ -353,7 +400,12 @@ def build_compliance_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
                 _append_standard_policy(elements, decision, display_index)
             display_index += 1
 
-    return _envelopes("compliance", f"美国合规雷达｜{date_text}", elements)
+    return _envelopes(
+        "compliance",
+        f"美国合规雷达｜{date_text}",
+        elements,
+        template,
+    )
 
 
 def build_compliance_card(model: ReportDecisionModel) -> CardEnvelope:
@@ -382,15 +434,15 @@ def _project_elements(project, index: int) -> list:
     direction = _text(project.direction)
 
     if description:
-        elements.append(_md(description))
+        elements.append(_md(f"🧩 **做什么**\n{description}"))
     if project.growth_signal:
-        elements.append(_md(f"**增长**：{project.growth_signal}"))
+        elements.append(_md(f"📈 **增长信号**\n{project.growth_signal}"))
     if judgment:
-        elements.append(_md(f"**判断**：{judgment}"))
+        elements.append(_pair("价值判断", judgment, "🧠"))
     if direction:
-        elements.append(_md(f"**方向**：{direction}"))
+        elements.append(_pair("可借鉴方向", direction, "🛠️"))
     if project.url:
-        elements.append(_md(f"[查看项目 →]({project.url})"))
+        elements.append(_button("查看项目", project.url, "default"))
     return elements
 
 
@@ -424,7 +476,12 @@ def build_product_cards(
     title = f"产品机会雷达｜{date_text}"
 
     if not projects:
-        return _envelopes("products", title, [_md("今日暂无达到展示优先级的新产品机会。")])
+        return _envelopes(
+            "products",
+            title,
+            [_md("今日暂无达到展示优先级的新产品机会。")],
+            PRODUCT_HEADER_TEMPLATE,
+        )
 
     preferred = max(int(max_projects or 1), 1)
     page_element_groups = []
@@ -432,7 +489,9 @@ def build_product_cards(
         batch = projects[offset: offset + preferred]
         batch_elements = _product_batch_elements(batch, offset + 1)
         # 每个“最多N项目”的逻辑批次仍会根据真实Payload继续细分，绝不删除后续项目。
-        page_element_groups.extend(_paginate_elements(title, batch_elements))
+        page_element_groups.extend(
+            _paginate_elements(title, batch_elements, PRODUCT_HEADER_TEMPLATE)
+        )
 
     total = len(page_element_groups)
     envelopes = []
@@ -446,7 +505,11 @@ def build_product_cards(
         envelopes.append(
             CardEnvelope(
                 card_type=page_type,
-                payload=_interactive_card(page_title, page),
+                payload=_interactive_card(
+                    page_title,
+                    page,
+                    template=PRODUCT_HEADER_TEMPLATE,
+                ),
                 fallback_text="\n".join(fallback_lines),
             )
         )
