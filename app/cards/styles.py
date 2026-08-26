@@ -1,5 +1,15 @@
-DAILY_HEADER_TEMPLATE = "turquoise"
+SUMMARY_HEADER_TEMPLATE = "turquoise"
+PRODUCT_HEADER_TEMPLATE = "blue"
+DAILY_HEADER_TEMPLATE = SUMMARY_HEADER_TEMPLATE
 DECISION_BACKGROUND = "grey"
+
+# 合规卡 Header 根据当日最高风险动态变化；正文仍使用文字 + Emoji 明确标注风险，
+# 颜色只做视觉辅助，不作为唯一风险信号。
+COMPLIANCE_HEADER_TEMPLATES = {
+    "high": "red",
+    "medium": "orange",
+    "low": "turquoise",
+}
 
 # 这是信息架构数量限制，不是文案长度限制。
 # Top Actions 固定最多 3 条；产品每页优先放 5 项，超出后继续分页，不丢弃内容。
