@@ -1,12 +1,28 @@
 """
 SQLite schema migration helper.
 
-Adds columns introduced by RadarItem persistence upgrades when an existing
-installation is upgraded from an older database.
+Creates the base schema for fresh installations and applies
+incremental migrations for upgraded installations.
 """
 
 import os
 import sqlite3
+
+
+CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS intelligence_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title VARCHAR(255) NOT NULL DEFAULT '',
+    url TEXT DEFAULT '',
+    source VARCHAR(50) DEFAULT '',
+    description TEXT DEFAULT '',
+    trend_score INTEGER DEFAULT 0,
+    created_at DATETIME,
+    category VARCHAR(50) DEFAULT 'ai',
+    metrics JSON DEFAULT '{}',
+    analysis JSON DEFAULT '{}'
+)
+"""
 
 
 MIGRATIONS = [
@@ -28,6 +44,8 @@ MIGRATIONS = [
 def migrate(database_path: str):
     conn = sqlite3.connect(database_path)
     cursor = conn.cursor()
+
+    cursor.execute(CREATE_TABLE)
 
     cursor.execute("PRAGMA table_info(intelligence_items)")
     existing = {row[1] for row in cursor.fetchall()}
