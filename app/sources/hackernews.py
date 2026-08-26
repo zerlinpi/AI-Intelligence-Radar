@@ -46,9 +46,11 @@ class HackerNewsCollector(BaseCollector):
             return []
 
         results = []
+        now = datetime.now(timezone.utc)
+        candidate_limit = max(limit * 3, 20)
 
         for item_id in ids[:80]:
-            if len(results) >= limit:
+            if len(results) >= candidate_limit:
                 break
 
             try:
@@ -67,15 +69,20 @@ class HackerNewsCollector(BaseCollector):
                     continue
 
                 timestamp = item.get("time")
-                created_at = None
-                if timestamp:
-                    created_at = datetime.fromtimestamp(
-                        timestamp,
-                        tz=timezone.utc,
-                    ).isoformat()
+                if not timestamp:
+                    continue
+
+                created = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                created_at = created.isoformat()
+                age_hours = max((now - created).total_seconds() / 3600, 1)
+
+                # Keep Show HN focused on recent launches rather than old threads.
+                if age_hours > 24 * 14:
+                    continue
 
                 score = item.get("score") or 0
                 comments = item.get("descendants") or 0
+                momentum = (score + comments * 2) / max(age_hours / 24, 0.25)
                 url = item.get("url") or f"https://news.ycombinator.com/item?id={item_id}"
 
                 results.append(
@@ -90,6 +97,7 @@ class HackerNewsCollector(BaseCollector):
                         "metrics": {
                             "upvotes": score,
                             "comments": comments,
+                            "momentum": round(momentum, 2),
                         },
                     }
                 )
@@ -97,7 +105,11 @@ class HackerNewsCollector(BaseCollector):
                 logger.exception("failed fetching hackernews item=%s", item_id)
                 continue
 
-        return results
+        results.sort(
+            key=lambda x: (x.get("metrics") or {}).get("momentum", 0),
+            reverse=True,
+        )
+        return results[:limit]
 
 
 def fetch_hackernews(limit=10):
