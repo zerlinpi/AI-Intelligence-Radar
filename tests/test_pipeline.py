@@ -48,5 +48,5 @@ def test_run_daily_radar_skips_when_another_execution_is_running(monkeypatch):
     result = pipeline.run_daily_radar()
 
     assert result["skipped"] is True
-    assert result["reason"] == "already_running"
+    assert result["reason"] == "已有任务正在运行"
     assert result["items"] == []
