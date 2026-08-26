@@ -14,10 +14,10 @@ from app.core.logger import get_logger
 
 logger = get_logger("AI分析")
 
-MAX_DESCRIPTION_CHARS = 240
+MAX_DESCRIPTION_CHARS = 220
 MAX_TITLE_CHARS = 120
-MAX_BATCH_ITEMS = 10
-MAX_OUTPUT_TOKENS = 700
+MAX_BATCH_ITEMS = 13
+MAX_OUTPUT_TOKENS = 900
 
 SOURCE_NAMES = {
     "github": "GitHub",
@@ -25,6 +25,9 @@ SOURCE_NAMES = {
     "huggingface": "Hugging Face",
     "arxiv": "arXiv",
     "producthunt": "Product Hunt",
+    "amazon_policy": "Amazon",
+    "tiktok_policy": "TikTok Shop",
+    "us_regulation": "美国跨境法规",
 }
 
 OPPORTUNITY_MAP = {
@@ -44,6 +47,7 @@ METRIC_LABELS = {
     "downloads": "下",
     "likes": "赞",
     "momentum": "势",
+    "policy_score": "政",
 }
 
 
@@ -54,9 +58,28 @@ def _local_trend_score(item: Dict) -> float:
         return 50
 
 
+def _is_policy(item: Dict) -> bool:
+    return str(item.get("category") or "").lower() == "policy"
+
+
 def _fallback_result(item: Dict, reason: str = "") -> Dict:
     if reason:
         logger.warning("AI 分析降级：%s", reason)
+
+    if _is_policy(item):
+        return {
+            "purpose": "政策内容暂无法生成，请查看官方原文。",
+            "summary": "影响判断暂不可用，建议优先查看原始政策。",
+            "trend_score": 0,
+            "business_score": 50,
+            "opportunity": "medium",
+            "startup_ideas": ["查看官方原文并核对适用范围"],
+            "llm_meta": {
+                "success": False,
+                "fallback": True,
+                "reason": reason,
+            },
+        }
 
     return {
         "purpose": "项目用途暂无法生成，请查看项目原始说明。",
@@ -84,6 +107,10 @@ def _compact_metrics(item: Dict) -> str:
         if value not in (None, "", 0, 0.0):
             parts.append(f"{label}={value}")
 
+    tags = metrics.get("priority_tags") or []
+    if isinstance(tags, list) and tags:
+        parts.append("标=" + "/".join(str(tag) for tag in tags[:2]))
+
     return ";".join(parts)
 
 
@@ -106,10 +133,12 @@ def _compact_item(item: Dict, index: int) -> list:
     description = " ".join(str(item.get("description") or "").split())
     description = description[:MAX_DESCRIPTION_CHARS]
     source = str(item.get("source") or "")
+    item_type = "政" if _is_policy(item) else "项"
 
-    # 顺序固定为：序号、名称、简介、来源、上线小时、热度、指标。
+    # 顺序固定：序号、类型、名称、简介、来源、时间小时、热度、指标。
     return [
         index,
+        item_type,
         title,
         description,
         SOURCE_NAMES.get(source, source),
@@ -208,9 +237,13 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
 
         results.append(
             {
-                "purpose": purpose or "项目用途暂不明确，请查看项目说明。",
+                "purpose": purpose or (
+                    "政策内容暂不明确，请查看官方原文。"
+                    if _is_policy(item)
+                    else "项目用途暂不明确，请查看项目说明。"
+                ),
                 "summary": summary or "暂无 AI 分析摘要。",
-                "trend_score": _local_trend_score(item),
+                "trend_score": 0 if _is_policy(item) else _local_trend_score(item),
                 "business_score": business_score,
                 "opportunity": opportunity,
                 "startup_ideas": [idea] if idea else [],
@@ -222,7 +255,7 @@ def _normalize_batch_result(raw: Dict, items: List[Dict], meta: Dict) -> List[Di
 
 
 def analyze_items(items: List[Dict]) -> List[Dict]:
-    """一次请求批量分析最多 10 个项目，并优先判断跨境电商与产品化价值。"""
+    """一次请求同时分析政策与项目，避免增加第二次 DeepSeek 调用。"""
     items = list(items or [])[:MAX_BATCH_ITEMS]
     if not items:
         return []
@@ -241,17 +274,17 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
     )
 
     prompt = (
-        "你是早期AI产品与跨境电商机会分析师。项目数组每项依次为"
-        "[序号,名称,简介,来源,上线小时,热度,指标]。"
-        "重点判断两类价值：1跨境电商相关，包括Amazon、Shopify、TikTok Shop、独立站、"
-        "选品、Listing、广告、内容本地化、客服、SEO、竞品、定价、物流、库存、评论、达人营销；"
-        "2可直接做成SaaS、Agent、插件、API、自动化工具或独立产品。"
-        "不要因历史规模或品牌知名度加分。"
-        "每项用简体中文：用途≤28字，直接说明它给谁用、解决什么问题；"
-        "判断≤32字，说明为什么值得关注；建议≤22字，给出最可产品化方向。"
-        "只返回JSON："
-        '{"结果":[[序号,"用途","判断",商业分,"高|中|低","建议"]]}。'
-        f"项目={compact_json}"
+        "你是跨境电商经营风险与早期AI产品机会分析师。数组每项依次为"
+        "[序号,类型(政/项),名称,简介,来源,时间小时,热度,指标]。"
+        "若类型=政：用途字段用≤36字概括新政策/规则，必须保留明确日期、阈值或限制；"
+        "摘要≤36字说明对跨境卖家的直接影响；分数代表影响程度0-100；高中低代表处理紧急度；"
+        "建议≤24字给出最具体的下一步动作。"
+        "若类型=项：重点判断Amazon、Shopify、TikTok Shop、独立站、选品、Listing、广告、"
+        "本地化、客服、SEO、竞品、定价、物流、库存、评论、达人营销，以及是否可做成SaaS、"
+        "Agent、插件、API或自动化产品；用途≤28字，摘要≤32字，建议≤22字。"
+        "不要因历史规模或品牌知名度加分。只返回JSON："
+        '{"结果":[[序号,"用途","判断",分数,"高|中|低","建议"]]}。'
+        f"数据={compact_json}"
     )
 
     output_tokens = min(max(int(LLM_MAX_TOKENS or 1), 1), MAX_OUTPUT_TOKENS)
@@ -277,7 +310,7 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
 
         usage = meta.get("usage") or {}
         logger.info(
-            "AI 批量分析完成：项目=%s 输入Token=%s 输出Token=%s 总Token=%s",
+            "AI 批量分析完成：条目=%s 输入Token=%s 输出Token=%s 总Token=%s",
             len(items),
             usage.get("prompt_tokens", 0),
             usage.get("completion_tokens", 0),
@@ -291,4 +324,4 @@ def analyze_items(items: List[Dict]) -> List[Dict]:
 def analyze_item(item: Dict) -> Dict:
     """兼容旧调用；单项分析仍复用批量逻辑。"""
     results = analyze_items([item])
-    return results[0] if results else _fallback_result(item, "没有可分析项目")
+    return results[0] if results else _fallback_result(item, "没有可分析条目")
