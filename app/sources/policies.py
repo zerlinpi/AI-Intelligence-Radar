@@ -131,11 +131,21 @@ def _entry_datetime(entry):
     return None
 
 
+def _count_signals(text: str, words) -> int:
+    normalized = str(text or "").lower()
+    return sum(1 for word in words if word in normalized)
+
+
 def _policy_relevance(title: str, description: str) -> int:
-    text = f"{title} {description}".lower()
-    matches = sum(1 for word in POLICY_SIGNAL_WORDS if word in text)
-    urgent = sum(1 for word in URGENT_WORDS if word in text)
-    return matches * 4 + min(urgent * 3, 12)
+    """要求标题有政策信号，或正文至少出现两个政策信号，减少普通内容误报。"""
+    title_matches = _count_signals(title, POLICY_SIGNAL_WORDS)
+    description_matches = _count_signals(description, POLICY_SIGNAL_WORDS)
+
+    if title_matches == 0 and description_matches < 2:
+        return 0
+
+    urgent = _count_signals(f"{title} {description}", URGENT_WORDS)
+    return title_matches * 7 + description_matches * 2 + min(urgent * 3, 12)
 
 
 def _google_news_rss(query: str) -> str:
