@@ -40,6 +40,14 @@ _CRITICAL_FACT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 同一政策主题跨天重新进入雷达时，不能仅因为文章换了一种说法。
+# 没有日期/阈值等关键事实变化时，至少要有这种明确的规则变更措辞。
+_POLICY_STRONG_CHANGE_RE = re.compile(
+    r"\b(?:amended|revised|supersedes?|replaces?|now\s+requires?|will\s+now\s+require|"
+    r"no\s+longer|has\s+changed|changes\s+to|effective\s+immediately|takes?\s+effect)\b",
+    re.IGNORECASE,
+)
+
 
 def _item_dict(item):
     if isinstance(item, RadarItem):
@@ -268,13 +276,17 @@ def _policy_material_update_reason(current: dict, previous: dict) -> str:
         return ""
 
     similarity = copy_similarity(current_description, previous_description)
-    if similarity < POLICY_TEXT_UPDATE_SIMILARITY:
-        return "同一政策主题出现更晚发布且内容实质变化的新版本"
-
     current_facts = _critical_facts(current_description)
     previous_facts = _critical_facts(previous_description)
-    if current_facts != previous_facts and (current_facts or previous_facts) and similarity < 0.94:
+
+    # 日期、阈值、金额、时限等关键事实真的变了，才是最强的“新版本”证据。
+    if current_facts != previous_facts and (current_facts or previous_facts) and similarity < 0.96:
         return "同一政策主题的新版本包含不同日期、阈值或数值要求"
+
+    # 没有可结构化数值变化时，必须同时存在明确规则变更措辞和显著语义变化。
+    # 单纯转载、标题改写或说明顺序变化不再触发重复推送。
+    if _POLICY_STRONG_CHANGE_RE.search(current_description) and similarity < 0.72:
+        return "同一政策主题出现明确修订、替代或新增要求"
 
     return ""
 
@@ -304,7 +316,8 @@ def _mark_material_update(item, reason: str) -> None:
 
 
 def _recent_records(db: Session, category: str, days: int) -> list:
-    cutoff = datetime.utcnow() - timedelta(days=max(int(days), 1))
+    # SQLite 中统一保存 naive UTC；这里显式从 timezone-aware UTC 转换，避免 utcnow() 弃用警告。
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(int(days), 1))
     return (
         db.query(IntelligenceItem)
         .filter(IntelligenceItem.category == category)
