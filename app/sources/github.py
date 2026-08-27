@@ -281,6 +281,8 @@ class GithubCollector(BaseCollector):
         since = (now - timedelta(days=7)).date().isoformat()
         fetch_limit = min(max(limit * 4, 40), 60)
         candidates = {}
+        search_successes = 0
+        search_failures = []
 
         for search_term in SEARCH_TERMS:
             params = {
@@ -294,20 +296,43 @@ class GithubCollector(BaseCollector):
                 response.raise_for_status()
                 payload = response.json()
                 if not isinstance(payload, dict):
+                    search_failures.append(f"{search_term}:返回格式无效")
                     logger.warning("GitHub 接口返回数据格式无效：查询=%s", search_term)
                     continue
-                items = payload.get("items", [])
+                items = payload.get("items")
                 if not isinstance(items, list):
+                    search_failures.append(f"{search_term}:缺少items")
+                    logger.warning("GitHub 接口返回内容缺少 items：查询=%s", search_term)
                     continue
+
+                search_successes += 1
                 for item in items:
                     if not isinstance(item, dict):
                         continue
                     key = item.get("id") or item.get("html_url")
                     if key:
                         candidates[key] = item
-            except Exception:
+            except Exception as error:
+                search_failures.append(f"{search_term}:{type(error).__name__}")
                 logger.exception("GitHub 搜索失败：查询=%s", search_term)
                 continue
+
+        if search_successes == 0:
+            raise RuntimeError(
+                f"GitHub 所有搜索查询均失败：0/{len(SEARCH_TERMS)} 成功，本轮不能视为成功空结果"
+            )
+
+        if search_failures:
+            self.collection_partial = True
+            self.collection_partial_reason = (
+                f"GitHub 搜索覆盖部分降级：成功 {search_successes}/{len(SEARCH_TERMS)}，"
+                f"失败 {len(search_failures)}"
+            )
+            logger.warning(
+                "%s 失败查询=%s",
+                self.collection_partial_reason,
+                search_failures[:5],
+            )
 
         preliminary = []
         for raw in candidates.values():
@@ -387,8 +412,10 @@ class GithubCollector(BaseCollector):
         )
 
         logger.info(
-            "GitHub 近期候选=%s README增强=%s 文件树增强=%s/%s 许可淘汰=%s 资格淘汰=%s 部署淘汰=%s 合格=%s 最终返回=%s",
+            "GitHub 近期候选=%s 搜索成功=%s/%s README增强=%s 文件树增强=%s/%s 许可淘汰=%s 资格淘汰=%s 部署淘汰=%s 合格=%s 最终返回=%s",
             len(candidates),
+            search_successes,
+            len(SEARCH_TERMS),
             enriched,
             tree_enriched,
             tree_attempted,
