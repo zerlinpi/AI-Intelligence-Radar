@@ -14,6 +14,7 @@ from app.cards.models import (
 )
 from app.cleaner import normalize_items
 from app.config import FEISHU_PROJECTS_PER_CARD, REPORT_TIMEZONE
+from app.content_quality import copy_similarity
 from app.core.logger import get_logger
 from app.core.preflight import run_preflight
 from app.core.run_lock import execution_lock
@@ -49,6 +50,14 @@ MIN_REPORT_PRIORITY_SCORE = 20
 MIN_REPORT_SELECTION_SCORE = 35
 MIN_STRATEGIC_PRIORITY_SCORE = 20
 MIN_STRATEGIC_SELECTION_SCORE = 35
+
+# DeepSeek 前只对“明确使用场景”做保守去同质化：
+# 1) 同场景原始能力说明高度相似时只保留排名更高的代表；
+# 2) 同一场景最多分析 3 个不同技术路线，避免 10 条都被 Listing/Seller Agent 占满；
+# 3) “其他”场景不套配额，防止粗分类误伤真正不同的新能力。
+PRE_LLM_MAX_PER_USE_CASE = 3
+PRE_LLM_SEMANTIC_DESCRIPTION_THRESHOLD = 0.84
+PRE_LLM_MIN_DESCRIPTION_CHARS = 48
 
 # DeepSeek 分析后再做一次最终价值裁决。论文/模型要求更高，避免纯研究信号混入日报。
 FINAL_BUSINESS_SCORE = {
@@ -214,10 +223,45 @@ def _project_selection_score(trend_score: float, priority_score: float) -> float
     return round(float(trend_score or 0) * 0.45 + float(priority_score or 0) * 0.55, 2)
 
 
+def _candidate_use_case(item: RadarItem) -> str:
+    """返回可用于 DeepSeek 前组合压缩的明确场景；粗粒度“其他”不参与限额。"""
+    value = str((item.metrics or {}).get("primary_use_case") or "").strip()
+    if not value or value == "其他":
+        return ""
+    return value
+
+
+def _candidate_description(item: RadarItem) -> str:
+    return " ".join(str(getattr(item, "description", "") or "").split()).strip()
+
+
+def _same_pre_llm_opportunity(left: RadarItem, right: RadarItem) -> bool:
+    """只在同一明确场景内，用原始能力说明识别高置信同质候选。
+
+    这里不使用标题、Star 或来源做判重，避免多个不同名字包装同一种能力绕过压缩；
+    也不对短说明做语义删除，避免证据不足时误伤不同技术路线。
+    """
+    left_use_case = _candidate_use_case(left)
+    right_use_case = _candidate_use_case(right)
+    if not left_use_case or left_use_case != right_use_case:
+        return False
+
+    left_description = _candidate_description(left)
+    right_description = _candidate_description(right)
+    if min(len(left_description), len(right_description)) < PRE_LLM_MIN_DESCRIPTION_CHARS:
+        return False
+
+    return (
+        copy_similarity(left_description, right_description)
+        >= PRE_LLM_SEMANTIC_DESCRIPTION_THRESHOLD
+    )
+
+
 def _portfolio_candidates(scored):
     """从已经达到质量底线的候选中构建多方向机会组合。
 
-    不为凑够 10 条降低质量门槛；来源上限只是软约束，合格候选不足时允许少于 10 条。
+    不为凑够 10 条降低质量门槛。DeepSeek 前先压掉同一明确使用场景的高置信重复，
+    并把单场景控制在最多 3 条；空出的名额继续从其他合格场景补位。来源上限仍是软约束。
     """
     ordered = sorted(
         scored,
@@ -232,16 +276,37 @@ def _portfolio_candidates(scored):
     selected = []
     selected_ids = set()
     source_counts = {}
+    use_case_counts = {}
+
+    def can_add(item):
+        if id(item) in selected_ids or len(selected) >= MAX_REPORT_ITEMS:
+            return False
+
+        use_case = _candidate_use_case(item)
+        if use_case:
+            if use_case_counts.get(use_case, 0) >= PRE_LLM_MAX_PER_USE_CASE:
+                return False
+            if any(
+                _same_pre_llm_opportunity(item, existing)
+                for existing in selected
+                if _candidate_use_case(existing) == use_case
+            ):
+                return False
+        return True
 
     def add(item):
-        marker = id(item)
-        if marker in selected_ids or len(selected) >= MAX_REPORT_ITEMS:
+        if not can_add(item):
             return False
+        marker = id(item)
         selected.append(item)
         selected_ids.add(marker)
         source_counts[item.source] = source_counts.get(item.source, 0) + 1
+        use_case = _candidate_use_case(item)
+        if use_case:
+            use_case_counts[use_case] = use_case_counts.get(use_case, 0) + 1
         return True
 
+    # 战略方向代表同样遵守同质化约束；若最高分候选与已选项重复，会继续寻找下一个不同候选。
     for tag in STRATEGIC_TAGS:
         candidate = next(
             (
@@ -252,7 +317,7 @@ def _portfolio_candidates(scored):
                 >= MIN_STRATEGIC_PRIORITY_SCORE
                 and float((item.metrics or {}).get("selection_score", 0) or 0)
                 >= MIN_STRATEGIC_SELECTION_SCORE
-                and id(item) not in selected_ids
+                and can_add(item)
             ),
             None,
         )
@@ -268,7 +333,7 @@ def _portfolio_candidates(scored):
             continue
         add(item)
 
-    # 只解除来源上限，不解除质量门槛；ordered 本身已经全是合格候选。
+    # 只解除来源上限，不解除质量/同质化门槛；ordered 本身已经全是合格候选。
     for item in ordered:
         if len(selected) >= MAX_REPORT_ITEMS:
             break
@@ -336,17 +401,24 @@ def select_project_candidates(items):
         for tag in STRATEGIC_TAGS
     }
     source_counts = {}
+    use_case_counts = {}
     for item in selected:
         source_counts[item.source] = source_counts.get(item.source, 0) + 1
+        use_case = _candidate_use_case(item)
+        if use_case:
+            use_case_counts[use_case] = use_case_counts.get(use_case, 0) + 1
 
     logger.info(
-        "项目筛选：合格候选=%s 相关性/证据淘汰=%s 分数淘汰=%s 入选DeepSeek=%s 方向=%s 来源=%s",
+        "项目筛选：合格候选=%s 相关性/证据淘汰=%s 分数淘汰=%s 入选DeepSeek=%s "
+        "同质/组合压缩=%s 方向=%s 来源=%s 场景=%s",
         len(scored),
         rejected_relevance,
         rejected_score,
         len(selected),
+        max(len(scored) - len(selected), 0),
         tag_counts,
         source_counts,
+        use_case_counts,
     )
     return selected
 
@@ -740,13 +812,17 @@ def _policy_priority(decision: ComplianceDecision):
 
 
 def _build_summary_actions(compliance, products):
+    """摘要只给决策导航，不复制正文中的完整动作/影响/实验字段。"""
     ordered_policies = sorted(compliance, key=_policy_priority, reverse=True)
     high_risk = [item for item in ordered_policies if item.risk_level == "high"]
     top_product = products[0] if products else None
 
     if high_risk:
         first = high_risk[0]
-        must_text = first.action or first.preparation or first.requirement
+        identity = first.authority or first.source_name
+        must_text = (
+            f"先处理 {identity}｜{first.title}；具体适用范围、资料清单和执行动作见合规卡。"
+        )
     elif ordered_policies:
         first = ordered_policies[0]
         must_text = "今日无新增高风险事项；完成最高影响合规变化的适用范围核对。"
@@ -755,15 +831,21 @@ def _build_summary_actions(compliance, products):
 
     if len(ordered_policies) > 1:
         second = ordered_policies[1]
-        focus_text = second.action or second.impact or second.requirement
+        identity = second.authority or second.source_name
+        focus_text = (
+            f"关注 {identity}｜{second.title}；确认是否影响当前在售或拟售产品，细节见合规卡。"
+        )
     elif ordered_policies:
         second = ordered_policies[0]
-        focus_text = second.impact or second.requirement
+        identity = second.authority or second.source_name
+        focus_text = f"继续跟踪 {identity}｜{second.title} 的适用范围与后续执行节点。"
     else:
         focus_text = "关注 Amazon、CBP、CPSC、FDA、FCC 后续新增要求。"
 
     if top_product:
-        research_text = top_product.direction or f"研究 {top_product.title} 的产品化与业务适配价值。"
+        research_text = (
+            f"优先验证 {top_product.title}；具体实验、成功条件和工程限制见产品机会卡。"
+        )
     else:
         research_text = "今日暂无达到最终价值门槛的新产品机会。"
 
