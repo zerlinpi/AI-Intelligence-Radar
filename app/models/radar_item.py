@@ -6,8 +6,9 @@ from typing import Any, Dict, Optional
 def _serialized_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
     """序列化前恢复产品决策所需证据，避免中间筛选步骤覆盖证据列表。
 
-    relevance 会重新生成 opportunity_evidence；商业许可和部署成熟度则保存在独立 metrics
-    字段中。这里在统一出口重新合并，使 DeepSeek、数据库和后续报告都能读取完整证据。
+    relevance/scoring 会重新生成 opportunity_evidence；商业许可、部署成熟度和 GitHub
+    版本/提交活动则保存在独立 metrics 字段中。这里在统一出口重新合并，使 DeepSeek、
+    数据库和后续报告都能读取完整证据。
     """
     metrics = dict(value or {})
     raw_evidence = metrics.get("opportunity_evidence") or []
@@ -35,6 +36,18 @@ def _serialized_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
         if details:
             # 合并成一个证据槽，避免 analyzer 的前5条证据预算被工程细节全部占满。
             prepend("部署证据", "/".join(details[:4]))
+
+    # Release、默认分支真实提交、package/deploy/test/CI 在 collector 中单独持久化。
+    # scoring 即使刷新 opportunity_evidence，这个独立字段仍可在进入 DeepSeek 前恢复。
+    github_activity = metrics.get("github_activity_evidence") or []
+    if isinstance(github_activity, list):
+        activity_details = [
+            " ".join(str(value or "").split()).strip()
+            for value in github_activity
+            if str(value or "").strip()
+        ]
+        if activity_details:
+            prepend("GitHub工程", "/".join(activity_details[:5]))
 
     license_reason = metrics.get("commercial_readiness_reason")
     if license_reason:
