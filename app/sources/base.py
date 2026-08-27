@@ -1,10 +1,34 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict
+from datetime import datetime, timezone
+import time
+from typing import Dict, List
+
+from requests import exceptions as requests_exceptions
 
 from app.core.logger import get_logger
 
 
 logger = get_logger("采集器")
+
+MAX_COLLECT_ATTEMPTS = 2
+RETRY_DELAY_SECONDS = 0.5
+RETRYABLE_HTTP_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def _retryable_error(error: Exception) -> bool:
+    """只重试明确的瞬时网络/上游错误，避免代码错误被重复执行。"""
+    if isinstance(
+        error,
+        (requests_exceptions.Timeout, requests_exceptions.ConnectionError),
+    ):
+        return True
+
+    if isinstance(error, requests_exceptions.HTTPError):
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", None)
+        return status in RETRYABLE_HTTP_STATUS
+
+    return False
 
 
 class BaseCollector(ABC):
@@ -12,30 +36,93 @@ class BaseCollector(ABC):
 
     name = "unknown"
 
+    def _set_health(
+        self,
+        *,
+        success: bool,
+        attempts: int,
+        result_count: int = 0,
+        error: str = "",
+    ) -> None:
+        self.last_run_health = {
+            "collector": self.__class__.__name__,
+            "source": str(getattr(self, "name", "unknown") or "unknown"),
+            "success": bool(success),
+            "attempts": max(int(attempts or 0), 0),
+            "result_count": max(int(result_count or 0), 0),
+            "error": str(error or ""),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def get_last_health(self) -> Dict:
+        """返回最近一次 collect_safe 的轻量健康状态，不包含密钥或业务正文。"""
+        return dict(getattr(self, "last_run_health", {}) or {})
+
     def collect_safe(self, *args, **kwargs) -> List[Dict]:
-        """安全执行采集器，并确保始终返回列表。"""
-        try:
-            result = self.collect(*args, **kwargs)
+        """安全执行采集器；瞬时网络错误最多自动重试一次，并区分空结果与失败。"""
+        for attempt in range(1, MAX_COLLECT_ATTEMPTS + 1):
+            try:
+                result = self.collect(*args, **kwargs)
 
-            if not result:
-                return []
+                if not result:
+                    self._set_health(success=True, attempts=attempt, result_count=0)
+                    return []
 
-            if not isinstance(result, list):
-                logger.warning(
-                    "采集器返回类型无效：采集器=%s 类型=%s",
+                if not isinstance(result, list):
+                    self._set_health(
+                        success=False,
+                        attempts=attempt,
+                        error=f"返回类型无效：{type(result).__name__}",
+                    )
+                    logger.warning(
+                        "采集器返回类型无效：采集器=%s 类型=%s",
+                        self.__class__.__name__,
+                        type(result).__name__,
+                    )
+                    return []
+
+                self._set_health(
+                    success=True,
+                    attempts=attempt,
+                    result_count=len(result),
+                )
+                return result
+
+            except Exception as error:
+                can_retry = (
+                    attempt < MAX_COLLECT_ATTEMPTS
+                    and _retryable_error(error)
+                )
+                if can_retry:
+                    logger.warning(
+                        "采集器瞬时失败，准备重试：采集器=%s 尝试=%s/%s 错误=%s",
+                        self.__class__.__name__,
+                        attempt,
+                        MAX_COLLECT_ATTEMPTS,
+                        error,
+                    )
+                    time.sleep(RETRY_DELAY_SECONDS)
+                    continue
+
+                self._set_health(
+                    success=False,
+                    attempts=attempt,
+                    error=f"{type(error).__name__}: {error}",
+                )
+                logger.exception(
+                    "采集器执行失败：采集器=%s 尝试=%s/%s",
                     self.__class__.__name__,
-                    type(result).__name__,
+                    attempt,
+                    MAX_COLLECT_ATTEMPTS,
                 )
                 return []
 
-            return result
-
-        except Exception:
-            logger.exception(
-                "采集器执行失败：采集器=%s",
-                self.__class__.__name__,
-            )
-            return []
+        self._set_health(
+            success=False,
+            attempts=MAX_COLLECT_ATTEMPTS,
+            error="超过最大采集尝试次数",
+        )
+        return []
 
     @abstractmethod
     def collect(self, *args, **kwargs) -> List[Dict]:
