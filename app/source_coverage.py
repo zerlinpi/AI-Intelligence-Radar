@@ -54,8 +54,9 @@ def collector_health_snapshot() -> Dict[str, Dict]:
 def coverage_snapshot() -> Dict:
     """汇总当前一轮数据覆盖状态。
 
-    success=True 但 result_count=0 表示“成功查询但没有新内容”，不是故障；
-    available=False 表示来源因缺少配置/权限根本没有执行，同样不能解释为“没有新内容”。
+    success=True 且 result_count=0 表示“成功查询但没有新内容”，不是故障；
+    available=False 表示来源因缺少配置/权限根本没有执行；partial=True 表示拿到部分结果，
+    但查询覆盖并不完整。后两种情况都不能解释为“今天没有变化/机会”。
     """
     health = collector_health_snapshot()
     if not EXPECTED_SOURCES.issubset(set(health)):
@@ -66,6 +67,7 @@ def coverage_snapshot() -> Dict:
             "policy_complete": True,
             "project_failed": [],
             "project_unavailable": [],
+            "project_degraded": [],
             "policy_failed": [],
             "policy_degraded": [],
             "note": "",
@@ -83,6 +85,12 @@ def coverage_snapshot() -> Dict:
         if not bool((health.get(source) or {}).get("success"))
         and (health.get(source) or {}).get("available") is not False
     ]
+    project_degraded = [
+        SOURCE_LABELS.get(source, source)
+        for source in project_sources
+        if bool((health.get(source) or {}).get("success"))
+        and bool((health.get(source) or {}).get("partial"))
+    ]
 
     policy_health = health.get("policy") or {}
     policy_sources = policy_health.get("policy_sources") or {}
@@ -98,7 +106,7 @@ def coverage_snapshot() -> Dict:
         policy_failed = ["美国合规政策采集"]
         policy_degraded = []
 
-    project_complete = not project_failed and not project_unavailable
+    project_complete = not project_failed and not project_unavailable and not project_degraded
     policy_complete = not policy_failed and not policy_degraded
     complete = project_complete and policy_complete
 
@@ -107,6 +115,8 @@ def coverage_snapshot() -> Dict:
         parts.append("项目源不可用：" + "、".join(project_unavailable))
     if project_failed:
         parts.append("项目源失败：" + "、".join(project_failed))
+    if project_degraded:
+        parts.append("项目源部分降级：" + "、".join(project_degraded))
     if policy_failed:
         parts.append("政策覆盖失败：" + "、".join(policy_failed))
     if policy_degraded:
@@ -123,6 +133,7 @@ def coverage_snapshot() -> Dict:
         "policy_complete": policy_complete,
         "project_failed": project_failed,
         "project_unavailable": project_unavailable,
+        "project_degraded": project_degraded,
         "policy_failed": policy_failed,
         "policy_degraded": policy_degraded,
         "note": note,
