@@ -17,7 +17,7 @@ class FakeResponse:
             raise RuntimeError(f"HTTP {self.status_code}")
 
 
-def _repo(repo_id, name, description, topics, stars=20, license_spdx="MIT"):
+def _repo(repo_id, name, description, topics, stars=20, license_spdx="MIT", size_kb=240):
     now = datetime.now(timezone.utc).isoformat()
     return {
         "id": repo_id,
@@ -31,6 +31,7 @@ def _repo(repo_id, name, description, topics, stars=20, license_spdx="MIT"):
         "stargazers_count": stars,
         "forks_count": 3,
         "open_issues_count": 1,
+        "size": size_kb,
         "topics": topics,
         "language": "Python",
         "license": {"spdx_id": license_spdx},
@@ -84,10 +85,13 @@ def test_github_readme_enrichment_rejects_demo_and_keeps_hardware(monkeypatch):
     assert "README:" in item["description"]
     assert "Production-oriented embedded edge AI runtime" in item["description"]
     assert "license: MIT" in item["description"]
+    assert item["metrics"]["repo_size_kb"] == 240
     assert item["metrics"]["readme_evidence"] is True
     assert item["metrics"]["readme_chars"] > 100
     assert item["metrics"]["license_spdx"] == "MIT"
     assert item["metrics"]["report_eligible"] is True
+    assert item["metrics"]["deployment_ready"] is True
+    assert item["metrics"]["deployment_readiness_score"] >= 35
 
 
 def test_clean_readme_removes_badges_images_and_code_blocks():
