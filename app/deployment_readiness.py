@@ -246,6 +246,12 @@ def attach_deployment_metrics(item: Dict, result: Dict | None = None) -> Dict:
     metrics["deployment_ready"] = bool(result.get("eligible"))
     metrics["deployment_readiness_score"] = int(result.get("score", 0) or 0)
     metrics["deployment_readiness_reason"] = str(result.get("reason") or "")
+    # 证据单独持久化，避免 relevance 重新生成 opportunity_evidence 时丢失工程事实。
+    metrics["deployment_evidence"] = [
+        str(value).strip()
+        for value in (result.get("evidence") or [])
+        if str(value or "").strip()
+    ]
     if result.get("push_age_hours") is not None:
         metrics["repo_push_age_hours"] = result.get("push_age_hours")
 
@@ -255,9 +261,8 @@ def attach_deployment_metrics(item: Dict, result: Dict | None = None) -> Dict:
     evidence_line = str(result.get("reason") or "").strip()
     if evidence_line:
         evidence.insert(0, f"部署成熟度:{evidence_line}")
-    for detail in result.get("evidence") or []:
-        detail = str(detail or "").strip()
-        if detail and detail not in evidence:
+    for detail in metrics["deployment_evidence"]:
+        if detail not in evidence:
             evidence.append(detail)
     metrics["opportunity_evidence"] = evidence
     return item
