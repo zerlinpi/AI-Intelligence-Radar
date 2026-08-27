@@ -146,20 +146,17 @@ class ProductHuntCollector(BaseCollector):
 
         payload = response.json()
         if not isinstance(payload, dict):
-            logger.warning("Product Hunt 返回数据格式无效")
-            return []
+            raise RuntimeError("Product Hunt 返回数据格式无效，本轮不能视为成功空结果")
 
         errors = payload.get("errors")
         if errors:
-            logger.error("Product Hunt 图查询返回错误=%s", errors)
-            return []
+            raise RuntimeError(f"Product Hunt GraphQL 返回错误：{errors}")
 
         data = payload.get("data") or {}
         posts = data.get("posts") if isinstance(data, dict) else {}
-        edges = posts.get("edges") if isinstance(posts, dict) else []
+        edges = posts.get("edges") if isinstance(posts, dict) else None
         if not isinstance(edges, list):
-            logger.warning("Product Hunt 返回内容中缺少产品列表")
-            return []
+            raise RuntimeError("Product Hunt 返回内容缺少 posts.edges，本轮不能视为成功空结果")
 
         results = []
         rejected = 0
