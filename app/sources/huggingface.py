@@ -4,6 +4,7 @@ from typing import Dict, List
 
 import requests
 
+from app.commercial_readiness import attach_commercial_metrics, commercial_readiness
 from app.core.logger import get_logger
 from app.sources.base import BaseCollector
 from app.relevance import attach_eligibility_metrics, report_eligibility
@@ -88,7 +89,7 @@ def _record_from_item(item: dict, now: datetime):
     if not description_parts:
         description_parts.append("新发布 AI 模型")
 
-    return {
+    record = {
         "source": "huggingface",
         "title": model_id,
         "url": f"https://huggingface.co/{model_id}",
@@ -106,14 +107,17 @@ def _record_from_item(item: dict, now: datetime):
             "model_card_chars": 0,
         },
     }
+    attach_commercial_metrics(record)
+    return record
 
 
 def _preliminary_score(record: dict) -> tuple:
     eligibility = report_eligibility(record)
     profile = eligibility.get("profile") or {}
     opportunity_score = float(profile.get("opportunity_score", 0) or 0)
+    commercial_score = float((record.get("metrics") or {}).get("commercial_readiness_score", 0) or 0)
     momentum = float((record.get("metrics") or {}).get("momentum", 0) or 0)
-    return opportunity_score, momentum
+    return opportunity_score, commercial_score, momentum
 
 
 class HuggingFaceCollector(BaseCollector):
@@ -143,7 +147,7 @@ class HuggingFaceCollector(BaseCollector):
             if record is not None:
                 preliminary.append(record)
 
-        # Model Card 请求优先给“机会分更高”的模型；当机会分相同，再参考近期下载/点赞势能。
+        # Model Card 请求优先给“机会高 + 许可证商业可用性清晰”的模型。
         preliminary.sort(key=_preliminary_score, reverse=True)
         enrich_count = min(max(limit * 2, 12), MODEL_CARD_ENRICH_LIMIT, len(preliminary))
 
@@ -166,9 +170,18 @@ class HuggingFaceCollector(BaseCollector):
 
         results = []
         rejected = 0
+        license_rejected = 0
         enriched = 0
 
         for record in preliminary:
+            # Model Card 可能补充明确的 Non-Commercial / Research-Only 限制，
+            # 必须在增强后重新计算许可证商业可用性。
+            commercial = commercial_readiness(record)
+            attach_commercial_metrics(record, commercial)
+            if not commercial["commercial_candidate"]:
+                license_rejected += 1
+                continue
+
             eligibility = report_eligibility(record)
             attach_eligibility_metrics(record, eligibility)
             if not eligibility["eligible"]:
@@ -178,10 +191,11 @@ class HuggingFaceCollector(BaseCollector):
                 enriched += 1
             results.append(record)
 
-        # 模型首先看是否能真正进入跨境业务或实体产品开发，再看下载/点赞热度。
+        # 模型首先看真实业务/实体产品价值，其次看许可证商业可用性，最后才看下载/点赞热度。
         results.sort(
             key=lambda x: (
                 float((x.get("metrics") or {}).get("opportunity_score", 0) or 0),
+                float((x.get("metrics") or {}).get("commercial_readiness_score", 0) or 0),
                 float((x.get("metrics") or {}).get("momentum", 0) or 0),
                 x.get("created_at") or "",
             ),
@@ -189,9 +203,10 @@ class HuggingFaceCollector(BaseCollector):
         )
 
         logger.info(
-            "Hugging Face 近期候选=%s Model Card增强=%s 资格淘汰=%s 合格=%s 最终返回=%s",
+            "Hugging Face 近期候选=%s Model Card增强=%s 许可淘汰=%s 资格淘汰=%s 合格=%s 最终返回=%s",
             len(preliminary),
             enriched,
+            license_rejected,
             rejected,
             len(results),
             min(len(results), limit),
