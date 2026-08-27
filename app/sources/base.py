@@ -82,12 +82,11 @@ class BaseCollector(ABC):
 
     def collect_safe(self, *args, **kwargs) -> List[Dict]:
         """安全执行采集器；瞬时网络错误最多自动重试一次，并区分空结果、不可用、部分降级与失败。"""
-        # 子采集器可在 collect() 内设置这两个字段，表示拿到了部分可用数据但覆盖不完整。
-        # 每轮开始必须清空，避免长驻 Scheduler 把上一轮的降级状态带到下一轮。
-        self.collection_partial = False
-        self.collection_partial_reason = ""
-
         for attempt in range(1, MAX_COLLECT_ATTEMPTS + 1):
+            # partial 属于单次尝试的覆盖状态。重试必须从干净状态开始，避免第一次失败留下假降级。
+            self.collection_partial = False
+            self.collection_partial_reason = ""
+
             try:
                 result = self.collect(*args, **kwargs)
 
