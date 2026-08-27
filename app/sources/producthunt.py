@@ -5,7 +5,7 @@ import re
 
 import requests
 
-from app.sources.base import BaseCollector
+from app.sources.base import BaseCollector, CollectorUnavailable
 from app.core.logger import get_logger
 from app.relevance import attach_eligibility_metrics, report_eligibility
 
@@ -96,8 +96,8 @@ class ProductHuntCollector(BaseCollector):
     def collect(self, limit: int = 10) -> List[Dict]:
         token = os.getenv("PRODUCT_HUNT_TOKEN", "").strip()
         if not token:
-            logger.warning("未配置 PRODUCT_HUNT_TOKEN，已跳过 Product Hunt")
-            return []
+            # 缺少访问令牌意味着本轮没有真正采集该来源，不能伪装成“成功查询但 0 条”。
+            raise CollectorUnavailable("未配置 PRODUCT_HUNT_TOKEN，本轮未采集 Product Hunt")
 
         fetch_limit = min(max(limit * 6, 40), 50)
 
