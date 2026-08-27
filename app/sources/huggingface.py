@@ -6,6 +6,7 @@ import requests
 
 from app.commercial_readiness import attach_commercial_metrics, commercial_readiness
 from app.core.logger import get_logger
+from app.deployment_readiness import attach_deployment_metrics, deployment_readiness
 from app.sources.base import BaseCollector
 from app.relevance import attach_eligibility_metrics, report_eligibility
 
@@ -171,6 +172,7 @@ class HuggingFaceCollector(BaseCollector):
         results = []
         rejected = 0
         license_rejected = 0
+        deployment_rejected = 0
         enriched = 0
 
         for record in preliminary:
@@ -189,15 +191,23 @@ class HuggingFaceCollector(BaseCollector):
             if not eligibility["eligible"]:
                 rejected += 1
                 continue
+
+            readiness = deployment_readiness(record)
+            attach_deployment_metrics(record, readiness)
+            if not readiness["eligible"]:
+                deployment_rejected += 1
+                continue
+
             if (record.get("metrics") or {}).get("model_card_evidence"):
                 enriched += 1
             results.append(record)
 
-        # 模型首先看真实业务/实体产品价值，其次看许可证商业可用性，最后才看下载/点赞热度。
+        # 模型首先看真实业务/实体产品价值，其次看许可证和部署成熟度，最后才看下载/点赞热度。
         results.sort(
             key=lambda x: (
                 float((x.get("metrics") or {}).get("opportunity_score", 0) or 0),
                 float((x.get("metrics") or {}).get("commercial_readiness_score", 0) or 0),
+                float((x.get("metrics") or {}).get("deployment_readiness_score", 0) or 0),
                 float((x.get("metrics") or {}).get("momentum", 0) or 0),
                 x.get("created_at") or "",
             ),
@@ -205,11 +215,12 @@ class HuggingFaceCollector(BaseCollector):
         )
 
         logger.info(
-            "Hugging Face 近期候选=%s Model Card增强=%s 许可淘汰=%s 资格淘汰=%s 合格=%s 最终返回=%s",
+            "Hugging Face 近期候选=%s Model Card增强=%s 许可淘汰=%s 资格淘汰=%s 部署淘汰=%s 合格=%s 最终返回=%s",
             len(preliminary),
             enriched,
             license_rejected,
             rejected,
+            deployment_rejected,
             len(results),
             min(len(results), limit),
         )
