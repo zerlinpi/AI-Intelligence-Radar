@@ -179,11 +179,20 @@ def _profile_for_eligibility(item: Dict, source: str) -> Dict:
 
     metrics = item.get("metrics") or {}
     if isinstance(metrics, dict):
-        cleaned_metrics = dict(metrics)
-        # Model Card/论文描述是主要语义证据；tags/pipeline 仍保留，但明确的否定正文不能被标题式标签覆盖。
-        cleaned["metrics"] = cleaned_metrics
+        cleaned["metrics"] = dict(metrics)
 
     return business_opportunity_profile(cleaned)
+
+
+def _physical_product_path(profile: Dict) -> bool:
+    """实体商品路径必须同时有硬件能力、实体商品语义和可识别商品品类。
+
+    防止 edge benchmark、camera dataset、sensor research 仅靠关键词就被判定为可售商品。
+    """
+    hardware = _dimension(profile, "hardware_enablement") >= DIMENSION_THRESHOLDS["hardware_enablement"]
+    physical = _dimension(profile, "physical_product") >= DIMENSION_THRESHOLDS["physical_product"]
+    categories = list(profile.get("product_categories") or [])
+    return bool(hardware and physical and categories)
 
 
 def report_eligibility(item: Dict) -> Dict:
@@ -200,6 +209,7 @@ def report_eligibility(item: Dict) -> Dict:
     hardware = _dimension(profile, "hardware_enablement") >= DIMENSION_THRESHOLDS["hardware_enablement"]
     physical = _dimension(profile, "physical_product") >= DIMENSION_THRESHOLDS["physical_product"]
     product_categories = list(profile.get("product_categories") or [])
+    physical_product_path = _physical_product_path(profile)
     evidence_sufficient = _evidence_sufficient(item)
 
     eligible = False
@@ -212,35 +222,44 @@ def report_eligibility(item: Dict) -> Dict:
             and _has_github_developer_product_signal(item)
             and not low_value_example
         )
-        eligible = cross_border or hardware or physical or developer_product
+        # GitHub 允许三条路径：跨境工具、明确实体商品链路、真正可复用的工程基础设施。
+        eligible = cross_border or physical_product_path or developer_product
         if eligible:
             if cross_border:
                 reason = "可直接用于跨境电商业务"
-            elif hardware or physical:
-                reason = "可用于硬件/实体商品开发"
+            elif physical_product_path:
+                reason = "具备明确硬件能力、实体商品形态和商品品类"
             else:
                 reason = "具备可复用的开发基础设施或工程突破"
         elif low_value_example and technical:
             reason = "主要是教程、模板或演示仓库，缺少可复用产品/工程价值证据"
+        elif hardware or physical:
+            reason = "存在硬件或商品关键词，但尚未形成可信的实体商品落地链路"
     elif source in {"arxiv", "huggingface"}:
-        # 论文和模型门槛更严格：纯技术前沿但无法服务跨境业务、硬件或实体商品时不推送。
-        eligible = cross_border or hardware or physical
+        # 论文/模型比 GitHub 更严格：技术新颖性或“可跑在硬件上”都不足以单独入选。
+        # 必须直接服务跨境业务，或者同时证明硬件能力 + 实体商品形态 + 商品品类。
+        eligible = cross_border or physical_product_path
         if eligible:
             reason = (
                 "可直接用于跨境业务"
                 if cross_border
-                else "可进入硬件或实体商品开发链路"
+                else "具备可验证的硬件到实体商品落地路径"
             )
+        elif hardware or physical or technical:
+            reason = "具有技术或硬件研究价值，但缺少跨境用途或明确实体商品落地路径"
     elif source in {"producthunt", "hackernews"}:
-        eligible = cross_border or hardware or physical
+        # 产品社区同样不再推泛 AI SaaS；只保留跨境直接用途或明确实体商品机会。
+        eligible = cross_border or physical_product_path
         if eligible:
             reason = (
                 "可直接用于跨境业务"
                 if cross_border
-                else "具备硬件/实体商品机会"
+                else "具备明确硬件与实体商品机会"
             )
+        elif hardware or physical:
+            reason = "存在硬件/商品概念，但缺少足够证据证明能形成实体产品"
     else:
-        eligible = cross_border or hardware or physical
+        eligible = cross_border or physical_product_path
         if eligible:
             reason = "满足跨境或实体产品价值门槛"
 
@@ -256,6 +275,7 @@ def report_eligibility(item: Dict) -> Dict:
         "technical_frontier": technical,
         "hardware_enablement": hardware,
         "physical_product": physical,
+        "physical_product_path": physical_product_path,
         "product_categories": product_categories,
         "evidence_sufficient": evidence_sufficient,
     }
@@ -281,6 +301,7 @@ def attach_eligibility_metrics(item: Dict, result: Dict) -> Dict:
 
     metrics["report_eligible"] = bool(result.get("eligible"))
     metrics["evidence_sufficient"] = bool(result.get("evidence_sufficient"))
+    metrics["physical_product_path"] = bool(result.get("physical_product_path"))
     metrics["eligibility_reason"] = str(result.get("reason") or "")
     metrics["opportunity_score"] = profile.get("opportunity_score", 0)
     metrics["opportunity_dimensions"] = dict(profile.get("dimensions") or {})
