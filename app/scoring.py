@@ -489,17 +489,46 @@ def calculate_priority_score(item):
     return profile["opportunity_score"]
 
 
+def _parse_datetime(value):
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def age_hours(item):
-    created_at = item.get("created_at") if isinstance(item, dict) else None
-    if not created_at:
+    if not isinstance(item, dict):
         return None
-    try:
-        created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        return max((datetime.now(timezone.utc) - created).total_seconds() / 3600, 0)
-    except Exception:
+    metrics = item.get("metrics") or {}
+    source = str(item.get("source") or "").strip().lower()
+    created_at = item.get("created_at")
+    # GitHub 日报的新鲜度按最近代码/版本信号，而不是仓库最初创建日期。
+    if source == "github" and isinstance(metrics, dict):
+        created_at = metrics.get("github_signal_at") or created_at
+    created = _parse_datetime(created_at)
+    if created is None:
         return None
+    return max((datetime.now(timezone.utc) - created).total_seconds() / 3600, 0)
+
+
+def _velocity_age_days(item, signal_hours) -> float:
+    """互动速度的分母与情报新鲜度分离；GitHub Star/Fork 永远按仓库真实年龄计算。"""
+    if isinstance(item, dict) and str(item.get("source") or "").strip().lower() == "github":
+        metrics = item.get("metrics") or {}
+        if isinstance(metrics, dict):
+            repo_created = _parse_datetime(metrics.get("repo_created_at") or item.get("created_at"))
+            if repo_created is not None:
+                repo_hours = max((datetime.now(timezone.utc) - repo_created).total_seconds() / 3600, 1)
+                return max(repo_hours / 24, 0.25)
+    return max((signal_hours if signal_hours is not None else 24) / 24, 0.25)
 
 
 def freshness_score(item):
@@ -520,19 +549,21 @@ def freshness_score(item):
 
 
 def calculate_score(item):
-    """计算 0-100 的早期趋势分：新鲜度、增长速度、早期互动、来源动量。"""
+    """计算 0-100 的早期趋势分：信号新鲜度、真实增长速度、早期互动、来源动量。"""
     if not isinstance(item, dict):
         return 0
 
     hours = age_hours(item)
-    age_days = max((hours or 24) / 24, 0.25)
+    signal_age_days = max((hours or 24) / 24, 0.25)
+    velocity_age_days = _velocity_age_days(item, hours)
 
-    stars_per_day = float(_metric(item, "stars") or 0) / age_days
-    upvotes_per_day = float(_metric(item, "upvotes") or 0) / age_days
-    downloads_per_day = float(_metric(item, "downloads") or 0) / age_days
-    forks_per_day = float(_metric(item, "forks") or 0) / age_days
-    comments_per_day = float(_metric(item, "comments") or 0) / age_days
-    likes_per_day = float(_metric(item, "likes") or 0) / age_days
+    # GitHub 的 Star/Fork 是仓库累计值，必须除以仓库真实年龄；其他来源继续按信号发布时间计算。
+    stars_per_day = float(_metric(item, "stars") or 0) / velocity_age_days
+    forks_per_day = float(_metric(item, "forks") or 0) / velocity_age_days
+    upvotes_per_day = float(_metric(item, "upvotes") or 0) / signal_age_days
+    downloads_per_day = float(_metric(item, "downloads") or 0) / signal_age_days
+    comments_per_day = float(_metric(item, "comments") or 0) / signal_age_days
+    likes_per_day = float(_metric(item, "likes") or 0) / signal_age_days
 
     community_velocity = (
         _normalize(stars_per_day, 150, 20)
