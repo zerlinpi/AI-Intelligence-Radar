@@ -1,6 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import requests
+
 from app.sources import policies
 
 
@@ -79,6 +81,74 @@ def test_cpsc_policy_is_tagged_as_product_compliance(monkeypatch):
     assert result[0]["source"] == "cpsc_compliance"
     assert result[0]["metrics"]["policy_focus"] == "产品合规审核"
     assert result[0]["metrics"]["policy_authority"] == "CPSC"
+
+
+def test_policy_source_health_marks_failed_authority(monkeypatch):
+    amazon_source = next(
+        source for source in policies.POLICY_QUERIES
+        if source["authority"] == "Amazon"
+    )
+    cbp_source = next(
+        source for source in policies.POLICY_QUERIES
+        if source["authority"] == "CBP"
+    )
+    cpsc_source = next(
+        source for source in policies.POLICY_QUERIES
+        if source["authority"] == "CPSC"
+    )
+    monkeypatch.setattr(
+        policies,
+        "POLICY_QUERIES",
+        (amazon_source, cbp_source, cpsc_source),
+    )
+
+    def fake_fetch(query):
+        if "site:cbp.gov" in query:
+            raise requests.ConnectionError("cbp unavailable")
+        return SimpleNamespace(entries=[])
+
+    monkeypatch.setattr(policies, "_fetch_feed", fake_fetch)
+    collector = policies.PolicyCollector()
+
+    assert collector.collect_safe(limit=5) == []
+    policy_health = collector.get_policy_source_health()
+    overall = collector.get_last_health()
+
+    assert policy_health["complete"] is False
+    assert policy_health["authorities_total"] == 3
+    assert policy_health["authorities_success"] == 2
+    assert policy_health["failed_authorities"] == ["CBP"]
+    assert policy_health["authorities"]["CBP"]["success"] is False
+    assert overall["success"] is False
+    assert "CBP" in overall["error"]
+
+
+def test_redundant_amazon_query_failure_is_degraded_not_full_failure(monkeypatch):
+    amazon_sources = tuple(
+        source for source in policies.POLICY_QUERIES
+        if source["authority"] == "Amazon"
+    )
+    assert len(amazon_sources) >= 2
+    monkeypatch.setattr(policies, "POLICY_QUERIES", amazon_sources)
+
+    def fake_fetch(query):
+        if "sellercentral.amazon.com" in query:
+            raise requests.ConnectionError("seller forums unavailable")
+        return SimpleNamespace(entries=[])
+
+    monkeypatch.setattr(policies, "_fetch_feed", fake_fetch)
+    collector = policies.PolicyCollector()
+
+    assert collector.collect_safe(limit=5) == []
+    policy_health = collector.get_policy_source_health()
+    overall = collector.get_last_health()
+
+    assert policy_health["complete"] is True
+    assert policy_health["query_complete"] is False
+    assert policy_health["failed_authorities"] == []
+    assert policy_health["degraded_authorities"] == ["Amazon"]
+    assert policy_health["authorities"]["Amazon"]["queries_success"] == 1
+    assert overall["success"] is True
 
 
 def test_policy_title_cleanup():
