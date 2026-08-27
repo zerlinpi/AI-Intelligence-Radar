@@ -14,6 +14,7 @@ from app.relevance import attach_eligibility_metrics, report_eligibility
 SEARCH_API = "https://api.github.com/search/repositories"
 README_ENRICH_LIMIT = 24
 README_TEXT_LIMIT = 4500
+ENGINEERING_TREE_ENRICH_LIMIT = 12
 
 logger = get_logger("GitHub采集")
 
@@ -29,6 +30,25 @@ SEARCH_TERMS = (
     '"amazon seller" in:name,description',
     '"shopify" ai in:name,description',
 )
+
+_CODE_EXTENSIONS = {
+    ".py", ".pyx", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java",
+    ".kt", ".kts", ".swift", ".c", ".cc", ".cpp", ".cxx", ".h", ".hh",
+    ".hpp", ".ino", ".lua", ".rb", ".php", ".cs", ".dart", ".scala", ".sh",
+}
+
+_PACKAGE_CONFIG_NAMES = {
+    "pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "poetry.lock",
+    "pipfile", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+    "bun.lockb", "cargo.toml", "cargo.lock", "go.mod", "go.sum", "pom.xml",
+    "build.gradle", "build.gradle.kts", "cmakelists.txt", "platformio.ini",
+    "idf_component.yml", "idf_component.yaml",
+}
+
+_DEPLOYMENT_FILE_NAMES = {
+    "dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml",
+    "procfile", "fly.toml", "render.yaml", "vercel.json",
+}
 
 
 def _headers():
@@ -68,6 +88,97 @@ def _fetch_readme(full_name: str, headers: dict) -> str:
         return _clean_readme(response.text)
     except Exception:
         return ""
+
+
+def _fetch_engineering_tree(full_name: str, default_branch: str, headers: dict):
+    """读取仓库文件树，用实际文件组成验证代码、包配置、测试与 CI 资产。
+
+    读取失败返回 None，不让额外的工程增强请求拖垮主采集；成功但仓库没有文件则返回空列表，
+    由部署成熟度 Gate 把“有 README/体量元数据但没有真实代码”的异常候选挡掉。
+    """
+    if not full_name or not default_branch:
+        return None
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{full_name}/git/trees/{default_branch}",
+            headers=headers,
+            params={"recursive": "1"},
+            timeout=15,
+        )
+        if response.status_code in {403, 404}:
+            return None
+        response.raise_for_status()
+        payload = response.json()
+        tree = payload.get("tree") if isinstance(payload, dict) else None
+        if not isinstance(tree, list):
+            return None
+        return [
+            str(row.get("path") or "").strip()
+            for row in tree
+            if isinstance(row, dict)
+            and row.get("type") == "blob"
+            and str(row.get("path") or "").strip()
+        ]
+    except Exception:
+        return None
+
+
+def _engineering_tree_profile(paths) -> dict:
+    files = [str(path or "").strip() for path in (paths or []) if str(path or "").strip()]
+    lower_files = [path.lower() for path in files]
+
+    code_files = []
+    package_configs = []
+    deployment_files = []
+    test_files = []
+    ci_files = []
+
+    for path, lower_path in zip(files, lower_files):
+        basename = lower_path.rsplit("/", 1)[-1]
+        dot = basename.rfind(".")
+        extension = basename[dot:] if dot >= 0 else ""
+        if extension in _CODE_EXTENSIONS:
+            code_files.append(path)
+
+        if basename in _PACKAGE_CONFIG_NAMES:
+            package_configs.append(path)
+
+        if (
+            basename in _DEPLOYMENT_FILE_NAMES
+            or lower_path.startswith(("deploy/", "deployment/", "k8s/", "kubernetes/", "helm/", "charts/"))
+        ):
+            deployment_files.append(path)
+
+        if (
+            lower_path.startswith(("tests/", "test/", "__tests__/"))
+            or "/tests/" in lower_path
+            or "/test/" in lower_path
+            or basename.startswith("test_")
+            or basename.endswith(("_test.py", ".test.js", ".test.ts", ".spec.js", ".spec.ts"))
+        ):
+            test_files.append(path)
+
+        if lower_path.startswith(".github/workflows/") or basename in {
+            ".gitlab-ci.yml", "circle.yml", "jenkinsfile",
+        }:
+            ci_files.append(path)
+
+    return {
+        "engineering_tree_evidence": True,
+        "repo_file_count": len(files),
+        "repo_code_file_count": len(code_files),
+        "package_config_files": package_configs[:8],
+        "deployment_files": deployment_files[:8],
+        "test_files": test_files[:8],
+        "ci_files": ci_files[:8],
+    }
+
+
+def _attach_engineering_tree_metrics(record: dict, paths) -> dict:
+    metrics = record.get("metrics") or {}
+    metrics.update(_engineering_tree_profile(paths))
+    record["metrics"] = metrics
+    return record
 
 
 def _license_spdx(item: dict) -> str:
@@ -139,6 +250,13 @@ def _build_record(item: dict, now: datetime):
             "default_branch": item.get("default_branch") or "",
             "readme_evidence": False,
             "readme_chars": 0,
+            "engineering_tree_evidence": False,
+            "repo_file_count": 0,
+            "repo_code_file_count": 0,
+            "package_config_files": [],
+            "deployment_files": [],
+            "test_files": [],
+            "ci_files": [],
         },
     }
     attach_commercial_metrics(record)
@@ -218,8 +336,10 @@ class GithubCollector(BaseCollector):
         license_rejected = 0
         deployment_rejected = 0
         enriched = 0
+        tree_attempted = 0
+        tree_enriched = 0
 
-        for record, _raw in preliminary:
+        for record, raw in preliminary:
             commercial = commercial_readiness(record)
             if not commercial["commercial_candidate"]:
                 attach_commercial_metrics(record, commercial)
@@ -233,6 +353,17 @@ class GithubCollector(BaseCollector):
             if not eligibility["eligible"]:
                 rejected += 1
                 continue
+
+            # 只对已经通过商业许可和业务资格 Gate 的前若干仓库读取文件树，控制 GitHub API 预算。
+            # 文件树是额外增强：请求失败时保留原有成熟度逻辑；请求成功时用真实代码/配置/测试证据加强 Gate。
+            if tree_attempted < ENGINEERING_TREE_ENRICH_LIMIT:
+                tree_attempted += 1
+                full_name = str(raw.get("full_name") or "").strip()
+                default_branch = str(raw.get("default_branch") or "").strip()
+                paths = _fetch_engineering_tree(full_name, default_branch, headers)
+                if paths is not None:
+                    _attach_engineering_tree_metrics(record, paths)
+                    tree_enriched += 1
 
             readiness = deployment_readiness(record)
             attach_deployment_metrics(record, readiness)
@@ -256,9 +387,11 @@ class GithubCollector(BaseCollector):
         )
 
         logger.info(
-            "GitHub 近期候选=%s README增强=%s 许可淘汰=%s 资格淘汰=%s 部署淘汰=%s 合格=%s 最终返回=%s",
+            "GitHub 近期候选=%s README增强=%s 文件树增强=%s/%s 许可淘汰=%s 资格淘汰=%s 部署淘汰=%s 合格=%s 最终返回=%s",
             len(candidates),
             enriched,
+            tree_enriched,
+            tree_attempted,
             license_rejected,
             rejected,
             deployment_rejected,
