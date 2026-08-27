@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from app.sources.policies import (
     _candidate_key,
     _dedupe_policy_topics,
+    _policy_change_signal,
     _recency_first_score,
     _same_policy_topic,
 )
@@ -99,3 +100,36 @@ def test_recency_sort_score_prioritizes_newer_policy_even_with_lower_quality():
     older_score = _recency_first_score(older, 100, 200)
     newer_score = _recency_first_score(newer, 1, 1)
     assert newer_score > older_score
+
+
+def test_evergreen_compliance_overview_has_no_change_signal():
+    score, evidence = _policy_change_signal(
+        "FCC Equipment Authorization Requirements for RF Devices",
+        "This page explains certification requirements, marketing rules and import compliance for RF devices.",
+    )
+    assert score == 0
+    assert evidence == []
+
+
+def test_actual_rule_update_has_change_signal():
+    score, evidence = _policy_change_signal(
+        "FCC Updates Equipment Authorization Rules",
+        "The revised rule takes effect September 15 and now requires updated authorization information.",
+    )
+    assert score > 0
+    assert "updates" in evidence or "revised" in evidence
+    assert "takes effect" in evidence or "now requires" in evidence
+
+
+def test_enforcement_and_recall_are_valid_recent_change_signals():
+    enforcement_score, _ = _policy_change_signal(
+        "Amazon announces new product safety enforcement",
+        "Enforcement begins next month for affected listings.",
+    )
+    recall_score, recall_evidence = _policy_change_signal(
+        "CPSC Recall Notice for Consumer Product",
+        "The agency announced a recall after a safety issue was identified.",
+    )
+    assert enforcement_score > 0
+    assert recall_score > 0
+    assert "recall" in recall_evidence
