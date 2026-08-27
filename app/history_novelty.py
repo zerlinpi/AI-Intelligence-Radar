@@ -13,6 +13,7 @@ from app.storage.repository import exists
 PROJECT_HISTORY_DAYS = 30
 POLICY_HISTORY_DAYS = 120
 MAX_HISTORY_RECORDS = 800
+MAX_HISTORY_SCAN_RECORDS = 2400
 
 # 重复抑制不能把真正的重要变化永久封掉。阈值故意偏保守：
 # 只有明显的增长爆发、仓库功能说明实质变化，或官方政策新版本才重新进入雷达。
@@ -95,6 +96,13 @@ def _metric_datetime(data: dict, key: str):
     return _as_utc_naive(metrics.get(key))
 
 
+def _record_processed_at(record: IntelligenceItem):
+    """优先使用 Radar 处理时间；旧记录没有该字段时回退来源发布时间。"""
+    metrics = record.metrics if isinstance(record.metrics, dict) else {}
+    processed = _as_utc_naive(metrics.get("history_processed_at"))
+    return processed or _as_utc_naive(record.created_at)
+
+
 def _number(value) -> float:
     try:
         return max(float(value or 0), 0)
@@ -117,6 +125,7 @@ def _record_dict(record: IntelligenceItem) -> dict:
         "category": record.category or "ai",
         "source": record.source or "unknown",
         "metrics": record.metrics if isinstance(record.metrics, dict) else {},
+        # created_at 始终保留来源发布时间，供政策“新版本”比较使用。
         "created_at": record.created_at,
     }
 
@@ -316,16 +325,29 @@ def _mark_material_update(item, reason: str) -> None:
 
 
 def _recent_records(db: Session, category: str, days: int) -> list:
-    # SQLite 中统一保存 naive UTC；这里显式从 timezone-aware UTC 转换，避免 utcnow() 弃用警告。
+    """按 Radar 实际处理时间取历史，而不是按来源发布时间取历史。
+
+    旧数据库记录没有 history_processed_at 时回退 created_at，保持向后兼容。
+    查询扫描量有上限，避免长期运行后每次把整张历史表拉进内存。
+    """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max(int(days), 1))
-    return (
+    candidates = (
         db.query(IntelligenceItem)
         .filter(IntelligenceItem.category == category)
-        .filter(IntelligenceItem.created_at >= cutoff)
-        .order_by(IntelligenceItem.created_at.desc())
-        .limit(MAX_HISTORY_RECORDS)
+        .order_by(IntelligenceItem.id.desc())
+        .limit(MAX_HISTORY_SCAN_RECORDS)
         .all()
     )
+    recent = [
+        record
+        for record in candidates
+        if (_record_processed_at(record) or datetime.min) >= cutoff
+    ]
+    recent.sort(
+        key=lambda record: _record_processed_at(record) or datetime.min,
+        reverse=True,
+    )
+    return recent[:MAX_HISTORY_RECORDS]
 
 
 def filter_recently_reported(
