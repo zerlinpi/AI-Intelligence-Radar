@@ -91,13 +91,26 @@ def _collector_health_status():
             continue
 
         source = str(health.get("source") or getattr(collector, "name", "unknown"))
-        rows[source] = {
+        row = {
             "成功": bool(health.get("success", False)),
             "尝试次数": int(health.get("attempts") or 0),
             "结果数量": int(health.get("result_count") or 0),
             "最近完成": str(health.get("completed_at") or ""),
             "错误": str(health.get("error") or ""),
         }
+
+        policy_sources = health.get("policy_sources")
+        if isinstance(policy_sources, dict) and policy_sources:
+            row["机构覆盖"] = {
+                "完整": bool(policy_sources.get("complete", False)),
+                "所有查询成功": bool(policy_sources.get("query_complete", False)),
+                "成功机构数": int(policy_sources.get("authorities_success") or 0),
+                "机构总数": int(policy_sources.get("authorities_total") or 0),
+                "失败机构": list(policy_sources.get("failed_authorities") or []),
+                "降级机构": list(policy_sources.get("degraded_authorities") or []),
+            }
+
+        rows[source] = row
     return rows
 
 
