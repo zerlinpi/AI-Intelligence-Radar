@@ -100,7 +100,7 @@ def test_short_daily_report_keeps_three_logical_cards():
     ]
 
 
-def test_summary_contains_today_judgment_and_only_three_actions():
+def test_summary_contains_today_conclusion_and_only_three_actions():
     summary_card = build_daily_cards(_model(project_count=2))[0].payload
     blocks = [
         item
@@ -108,11 +108,13 @@ def test_summary_contains_today_judgment_and_only_three_actions():
         if item.get("tag") == "column_set"
     ]
 
-    # 今日判断 + ①必须 + ②关注 + ③研究。
+    # 今日结论 + ①必须 + ②关注 + ③研究。
     assert len(blocks) == 4
     assert all(block["background_style"] == "grey" for block in blocks)
     serialized = str(summary_card)
-    assert "今日判断" in serialized
+    assert "今日结论" in serialized
+    assert "今日状态" in serialized
+    assert "执行优先级" in serialized
     assert "① 必须" in serialized
     assert "② 关注" in serialized
     assert "③ 研究" in serialized
@@ -127,27 +129,33 @@ def test_compliance_card_highlights_decision_fields_and_uses_buttons():
         if item.get("tag") == "column_set"
     ]
 
-    # Amazon 下一步 + 产品审核简报/影响产品/风险/准备资料/下一步。
+    # Amazon 现在要做 + 产品审核本组判断/影响产品/风险/准备资料/现在要做。
     assert len(blocks) >= 6
     assert all(block["background_style"] == "grey" for block in blocks)
     serialized = str(compliance_card)
     assert "影响产品" in serialized
-    assert "风险" in serialized
-    assert "准备资料" in serialized
-    assert "下一步" in serialized
+    assert "不满足的风险" in serialized
+    assert "应准备资料" in serialized
+    assert "现在要做" in serialized
     assert "查看官方原文" in serialized
     assert "button" in serialized
+    # 来源/风险元信息与完整标题分层展示。
+    assert "01｜Amazon" in serialized
+    assert "Testing and certification requirements" in serialized
 
 
-def test_product_card_separates_description_judgment_direction_and_uses_button():
+def test_product_card_separates_capability_evidence_judgment_action_and_button():
     cards = build_daily_cards(_model(project_count=1))
     product_card = cards[-1].payload
     serialized = str(product_card)
-    assert "做什么" in serialized
-    assert "增长信号" in serialized
-    assert "价值判断" in serialized
-    assert "可借鉴方向" in serialized
-    assert "查看项目" in serialized
+    assert "它能做什么" in serialized
+    assert "增长证据" in serialized
+    assert "为什么值得看" in serialized
+    assert "落地动作" in serialized
+    assert "打开 GitHub 仓库" in serialized
+    assert "高机会" in serialized
+    assert "趋势" in serialized
+    assert "价值" in serialized
     assert "button" in serialized
 
 
