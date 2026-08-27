@@ -114,23 +114,27 @@ def test_decision_model_builds_three_feishu_cards():
     compliance = str(cards[1].payload)
     products = str(cards[2].payload)
 
-    assert "今日判断" in summary
+    assert "今日结论" in summary
+    assert "今日状态" in summary
+    assert "执行优先级" in summary
     assert "① 必须" in summary
     assert "② 关注" in summary
     assert "③ 研究" in summary
 
     assert "A｜Amazon 政策与审核" in compliance
     assert "C｜美国市场产品审核" in compliance
-    assert "审核简报" in compliance
+    assert "本组判断" in compliance
     assert "影响产品" in compliance
     assert "儿童产品" in compliance
-    assert "风险" in compliance
+    assert "不满足的风险" in compliance
     assert "清关延误" in compliance
-    assert "准备资料" in compliance
+    assert "应准备资料" in compliance
     assert "CPC" in compliance
+    assert "现在要做" in compliance
 
     assert "跨境电商直接相关" in products
     assert "Seller AI Tool" in products
     assert "Listing" in products
-    assert "判断" in products
-    assert "方向" in products
+    assert "为什么值得看" in products
+    assert "落地动作" in products
+    assert "打开 GitHub 仓库" in products
