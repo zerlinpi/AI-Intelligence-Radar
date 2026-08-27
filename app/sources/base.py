@@ -49,12 +49,14 @@ class BaseCollector(ABC):
         result_count: int = 0,
         error: str = "",
         available: bool = True,
+        partial: bool = False,
     ) -> None:
         self.last_run_health = {
             "collector": self.__class__.__name__,
             "source": str(getattr(self, "name", "unknown") or "unknown"),
             "success": bool(success),
             "available": bool(available),
+            "partial": bool(partial),
             "attempts": max(int(attempts or 0), 0),
             "result_count": max(int(result_count or 0), 0),
             "error": str(error or ""),
@@ -79,15 +81,17 @@ class BaseCollector(ABC):
         return dict(getattr(self, "last_run_health", {}) or {})
 
     def collect_safe(self, *args, **kwargs) -> List[Dict]:
-        """安全执行采集器；瞬时网络错误最多自动重试一次，并区分空结果、不可用与失败。"""
+        """安全执行采集器；瞬时网络错误最多自动重试一次，并区分空结果、不可用、部分降级与失败。"""
+        # 子采集器可在 collect() 内设置这两个字段，表示拿到了部分可用数据但覆盖不完整。
+        # 每轮开始必须清空，避免长驻 Scheduler 把上一轮的降级状态带到下一轮。
+        self.collection_partial = False
+        self.collection_partial_reason = ""
+
         for attempt in range(1, MAX_COLLECT_ATTEMPTS + 1):
             try:
                 result = self.collect(*args, **kwargs)
 
-                if not result:
-                    self._set_health(success=True, attempts=attempt, result_count=0)
-                    return []
-
+                # 先校验类型再判断空值；空 dict / 空 tuple 不能被误记为“成功 0 条”。
                 if not isinstance(result, list):
                     self._set_health(
                         success=False,
@@ -101,10 +105,25 @@ class BaseCollector(ABC):
                     )
                     return []
 
+                partial = bool(getattr(self, "collection_partial", False))
+                partial_reason = str(getattr(self, "collection_partial_reason", "") or "")
+
+                if not result:
+                    self._set_health(
+                        success=True,
+                        attempts=attempt,
+                        result_count=0,
+                        partial=partial,
+                        error=partial_reason,
+                    )
+                    return []
+
                 self._set_health(
                     success=True,
                     attempts=attempt,
                     result_count=len(result),
+                    partial=partial,
+                    error=partial_reason,
                 )
                 return result
 
