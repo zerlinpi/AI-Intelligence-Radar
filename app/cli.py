@@ -5,7 +5,7 @@ from app.core.preflight import run_preflight
 from app.core.run_history import latest_run, record_run_safe
 from app.database.backup import list_backups
 from app.feishu import flush_feishu_outbox
-from app.pipeline import run_daily_radar
+from app.pipeline import COLLECTORS, POLICY_COLLECTOR, run_daily_radar
 
 
 def check():
@@ -23,8 +23,51 @@ def check():
     return result.ok
 
 
+def _print_collector_health():
+    rows = []
+    for collector in [*COLLECTORS, POLICY_COLLECTOR]:
+        getter = getattr(collector, "get_last_health", None)
+        if not callable(getter):
+            continue
+        health = getter()
+        if isinstance(health, dict) and health:
+            rows.append((collector, health))
+
+    if not rows:
+        print("采集器状态：暂无本进程采集记录")
+        return
+
+    print("采集器状态：")
+    for collector, health in rows:
+        source = str(health.get("source") or getattr(collector, "name", "unknown"))
+        ok = bool(health.get("success", False))
+        label = "正常" if ok else "失败"
+        print(
+            f"[{label}] {source} "
+            f"尝试={int(health.get('attempts') or 0)} "
+            f"结果={int(health.get('result_count') or 0)}"
+        )
+        error = str(health.get("error") or "").strip()
+        if error:
+            print(f"  错误：{error}")
+
+        policy_sources = health.get("policy_sources")
+        if not isinstance(policy_sources, dict) or not policy_sources:
+            continue
+
+        success_count = int(policy_sources.get("authorities_success") or 0)
+        total_count = int(policy_sources.get("authorities_total") or 0)
+        print(f"  政策机构覆盖：{success_count}/{total_count}")
+        failed = [str(value) for value in policy_sources.get("failed_authorities") or []]
+        degraded = [str(value) for value in policy_sources.get("degraded_authorities") or []]
+        if failed:
+            print("  失败机构：" + "、".join(failed))
+        if degraded:
+            print("  降级机构：" + "、".join(degraded))
+
+
 def status():
-    """展示最近执行、待补发飞书队列与数据库备份状态，不访问外部 API。"""
+    """展示最近执行、采集器健康、待补发飞书队列与数据库备份状态，不访问外部 API。"""
     last = latest_run()
     pending = list_pending()
     backups = list_backups()
@@ -45,6 +88,8 @@ def status():
             print(f"[异常] {error}")
     else:
         print("最近执行：暂无持久化运行历史")
+
+    _print_collector_health()
 
     print(f"飞书待补发队列：{len(pending)}")
     if pending:
