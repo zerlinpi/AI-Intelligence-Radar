@@ -3,6 +3,7 @@ from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Tuple
 
 from app.cards.models import ProductDecision
+from app.content_quality import copy_similarity
 
 
 # 这里只压缩“已经通过本地 Gate + DeepSeek 最终 Gate”的项目组合，
@@ -11,6 +12,14 @@ DEFAULT_MAX_ITEMS = 10
 DEFAULT_MAX_PER_USE_CASE = 2
 DEFAULT_MAX_PER_LANE = 4
 EXCEPTIONAL_BUSINESS_SCORE = 92
+
+# “同一个使用场景”不代表一定要保留两条。若能力说明和最终分析高度相似，
+# 只保留主流程已经排在前面的代表项目，避免飞书出现换名字但内容基本相同的机会。
+SEMANTIC_DESCRIPTION_THRESHOLD = 0.84
+SEMANTIC_SUPPORT_DESCRIPTION_THRESHOLD = 0.72
+SEMANTIC_ANALYSIS_THRESHOLD = 0.88
+SEMANTIC_MIN_DESCRIPTION_CHARS = 24
+SEMANTIC_MIN_ANALYSIS_CHARS = 36
 
 
 _USE_CASE_SIGNALS = (
@@ -142,6 +151,51 @@ def product_use_case(product: ProductDecision) -> str:
     return "其他"
 
 
+def _semantic_description(product: ProductDecision) -> str:
+    return " ".join(str(product.description or "").split()).strip()
+
+
+def _semantic_analysis(product: ProductDecision) -> str:
+    return " ".join(
+        part
+        for part in (
+            " ".join(str(product.judgment or "").split()).strip(),
+            " ".join(str(product.direction or "").split()).strip(),
+        )
+        if part
+    ).strip()
+
+
+def _same_semantic_opportunity(left: ProductDecision, right: ProductDecision) -> bool:
+    """判断同一使用场景里的两条机会是否只是在重复表达同一种能力。
+
+    标题、标签和热度不参与判重，避免同一技术被不同项目名称包装后绕过压缩；
+    同时要求有足够正文证据，短描述不会仅凭几个相同关键词被误删。
+    """
+    left_description = _semantic_description(left)
+    right_description = _semantic_description(right)
+    if (
+        min(len(left_description), len(right_description))
+        < SEMANTIC_MIN_DESCRIPTION_CHARS
+    ):
+        return False
+
+    description_similarity = copy_similarity(left_description, right_description)
+    if description_similarity >= SEMANTIC_DESCRIPTION_THRESHOLD:
+        return True
+
+    left_analysis = _semantic_analysis(left)
+    right_analysis = _semantic_analysis(right)
+    if min(len(left_analysis), len(right_analysis)) < SEMANTIC_MIN_ANALYSIS_CHARS:
+        return False
+
+    analysis_similarity = copy_similarity(left_analysis, right_analysis)
+    return (
+        description_similarity >= SEMANTIC_SUPPORT_DESCRIPTION_THRESHOLD
+        and analysis_similarity >= SEMANTIC_ANALYSIS_THRESHOLD
+    )
+
+
 def _age_hours(age_text: str):
     value = str(age_text or "").strip()
     if not value or value == "时间未知":
@@ -192,10 +246,11 @@ def compress_product_portfolio(
     max_per_use_case: int = DEFAULT_MAX_PER_USE_CASE,
     max_per_lane: int = DEFAULT_MAX_PER_LANE,
 ) -> Tuple[List[ProductDecision], Dict]:
-    """压缩最终飞书产品组合，优先保留同场景中“价值更高且更新”的代表项目。
+    """压缩最终飞书产品组合，优先保留同场景中真正不同的高价值机会。
 
-    输入顺序通常已经是主流程最终效用排序。这里不会引入低价值候选，只在已经合格的
-    项目之间做同场景去重。被压缩项目仍保留在数据库历史中，因此不会在下一轮重复消耗 LLM。
+    输入顺序通常已经是主流程最终效用排序。这里不会引入低价值候选；先在同一使用场景
+    内删除功能/判断/方向高度相似的机会，再执行场景和大方向配额。被压缩项目仍保留在
+    数据库历史中，因此不会在下一轮重复消耗 LLM。
     """
     products = list(products or [])
     if not products:
@@ -203,6 +258,7 @@ def compress_product_portfolio(
             "input": 0,
             "selected": 0,
             "suppressed": 0,
+            "semantic_suppressed": 0,
             "use_cases": {},
             "lanes": {},
         }
@@ -214,8 +270,10 @@ def compress_product_portfolio(
 
     use_case_candidates = []
     use_case_suppressed = 0
+    semantic_suppressed = 0
     for use_case, group in grouped.items():
-        # 每个场景固定保留主流程已经排在最前面的代表，避免组合压缩后摘要仍引用被删除项目。
+        # 主流程顺序已经融合最终价值、证据和时间，固定保留排在最前面的代表，
+        # 同时避免组合压缩后摘要仍引用被删除项目。
         primary = min(group, key=lambda product: original_index[id(product)])
         ranked_others = sorted(
             [product for product in group if product is not primary],
@@ -230,13 +288,16 @@ def compress_product_portfolio(
         keep_limit = max_per_use_case
         exceptional_count = sum(1 for product in group if _is_exceptional(product))
         if exceptional_count > max_per_use_case:
-            # 同场景极高价值项目允许最多再保留一条，但仍阻止一类内容占满日报。
+            # 极高价值项目可以突破数量上限，但“高度重复”永远不能靠高分绕过语义去重。
             keep_limit = max_per_use_case + 1
 
         kept = [primary]
         for product in ranked_others:
+            if any(_same_semantic_opportunity(product, existing) for existing in kept):
+                semantic_suppressed += 1
+                continue
             if len(kept) >= keep_limit:
-                break
+                continue
             kept.append(product)
 
         use_case_candidates.extend(kept)
@@ -270,6 +331,7 @@ def compress_product_portfolio(
         "input": len(products),
         "selected": len(selected),
         "suppressed": len(products) - len(selected),
+        "semantic_suppressed": semantic_suppressed,
         "use_case_suppressed": use_case_suppressed,
         "lane_suppressed": lane_suppressed,
         "use_cases": dict(use_case_counts),
