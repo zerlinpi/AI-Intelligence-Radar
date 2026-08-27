@@ -5,15 +5,26 @@ from typing import Iterable, Tuple
 from sqlalchemy.orm import Session
 
 from app.content_quality import copy_similarity
+from app.core.logger import get_logger
 from app.database.models import IntelligenceItem
 from app.models.radar_item import RadarItem
+from app.relevance import attach_eligibility_metrics, report_eligibility
 from app.storage.repository import exists
 
+
+logger = get_logger("历史新颖性")
 
 PROJECT_HISTORY_DAYS = 30
 POLICY_HISTORY_DAYS = 120
 MAX_HISTORY_RECORDS = 800
 MAX_HISTORY_SCAN_RECORDS = 2400
+
+# 跨天“同类机会疲劳”只抑制最近已经进入最终日报价值池的高置信重复能力。
+# 它与“同一个项目”去重不同：项目名称和 URL 可以不同，但必须 lane/use case 都一致，
+# 并且原始能力说明高度相似。窗口故意短于项目历史窗口，避免长期封死一个重要赛道。
+OPPORTUNITY_FATIGUE_DAYS = 7
+OPPORTUNITY_FATIGUE_SIMILARITY = 0.76
+OPPORTUNITY_FATIGUE_MIN_DESCRIPTION_CHARS = 72
 
 # 重复抑制不能把真正的重要变化永久封掉。阈值故意偏保守：
 # 只有明显的增长爆发、仓库功能说明实质变化，或官方政策新版本才重新进入雷达。
@@ -324,6 +335,113 @@ def _mark_material_update(item, reason: str) -> None:
         metrics["history_material_update_reason"] = reason
 
 
+def _ensure_project_opportunity_identity(item) -> dict:
+    """在历史 Gate 内补齐本地机会身份，不调用任何外部服务。"""
+    data = _item_dict(item)
+    if str(data.get("category") or "ai").lower() == "policy":
+        return data
+
+    metrics = data.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    needs_identity = (
+        "report_eligible" not in metrics
+        or not str(metrics.get("primary_lane") or "").strip()
+        or not str(metrics.get("primary_use_case") or "").strip()
+    )
+    if not needs_identity:
+        return data
+
+    eligibility = report_eligibility(data)
+    attach_eligibility_metrics(data, eligibility)
+    if isinstance(item, RadarItem):
+        item.metrics = dict(data.get("metrics") or {})
+    return data
+
+
+def _historical_opportunity_was_reported(previous: dict) -> bool:
+    metrics = previous.get("metrics") or {}
+    if not isinstance(metrics, dict):
+        return False
+
+    # 新记录可写 final_displayed；部署前的旧记录没有该字段时，回退最终价值 Gate。
+    if "final_displayed" in metrics:
+        return metrics.get("final_displayed") is True
+    return metrics.get("final_report_eligible") is True
+
+
+def _within_opportunity_fatigue_window(previous: dict) -> bool:
+    metrics = previous.get("metrics") or {}
+    processed = None
+    if isinstance(metrics, dict):
+        processed = _as_utc_naive(metrics.get("history_processed_at"))
+    processed = processed or _as_utc_naive(previous.get("created_at"))
+    if processed is None:
+        return False
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=OPPORTUNITY_FATIGUE_DAYS)
+    return processed >= cutoff
+
+
+def _same_recent_opportunity(current: dict, previous: dict) -> bool:
+    """不同项目只有在近期已报告、场景一致且能力说明高度相似时才算机会疲劳。"""
+    if not _historical_opportunity_was_reported(previous):
+        return False
+    if not _within_opportunity_fatigue_window(previous):
+        return False
+
+    current_metrics = current.get("metrics") or {}
+    previous_metrics = previous.get("metrics") or {}
+    if not isinstance(current_metrics, dict) or not isinstance(previous_metrics, dict):
+        return False
+    if current_metrics.get("report_eligible") is not True:
+        return False
+
+    current_lane = str(current_metrics.get("primary_lane") or "").strip()
+    previous_lane = str(previous_metrics.get("primary_lane") or "").strip()
+    current_use_case = str(current_metrics.get("primary_use_case") or "").strip()
+    previous_use_case = str(previous_metrics.get("primary_use_case") or "").strip()
+
+    if (
+        not current_lane
+        or current_lane == "其他"
+        or current_lane != previous_lane
+        or not current_use_case
+        or current_use_case == "其他"
+        or current_use_case != previous_use_case
+    ):
+        return False
+
+    current_description = " ".join(str(current.get("description") or "").split()).strip()
+    previous_description = " ".join(str(previous.get("description") or "").split()).strip()
+    if min(len(current_description), len(previous_description)) < OPPORTUNITY_FATIGUE_MIN_DESCRIPTION_CHARS:
+        return False
+
+    return (
+        copy_similarity(current_description, previous_description)
+        >= OPPORTUNITY_FATIGUE_SIMILARITY
+    )
+
+
+def _mark_opportunity_fatigue(item, previous: dict) -> None:
+    previous_title = str(previous.get("title") or "").strip()
+    previous_metrics = previous.get("metrics") or {}
+    use_case = str(previous_metrics.get("primary_use_case") or "").strip()
+    reason = f"近{OPPORTUNITY_FATIGUE_DAYS}天已报告高度相似的{use_case}机会"
+    if previous_title:
+        reason += f"：{previous_title}"
+
+    if isinstance(item, RadarItem):
+        item.metrics = dict(item.metrics or {})
+        item.metrics["history_opportunity_fatigue"] = True
+        item.metrics["history_opportunity_fatigue_reason"] = reason
+    elif isinstance(item, dict):
+        metrics = item.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+            item["metrics"] = metrics
+        metrics["history_opportunity_fatigue"] = True
+        metrics["history_opportunity_fatigue_reason"] = reason
+
+
 def _recent_records(db: Session, category: str, days: int) -> list:
     """按 Radar 实际处理时间取历史，而不是按来源发布时间取历史。
 
@@ -358,12 +476,17 @@ def filter_recently_reported(
 ) -> Tuple[list, int]:
     """过滤近期已处理内容，但允许有证据的重大更新重新进入雷达。
 
-    普通重复不会再次消耗 DeepSeek Token；重大更新会带 history_material_update 标记，
-    后续存储层据此覆盖同 URL 的旧快照，避免每天都拿旧数据重复比较。
+    第一层处理同 URL / 同项目 / 同政策主题；第二层对项目增加短周期“机会疲劳”控制：
+    最近已经进入最终日报价值池、lane/use case 相同且原始能力高度相似的不同项目，
+    本轮也不再消耗 DeepSeek Token。重大更新仍按原有规则优先放行。
     """
     rows = list(items or [])
     if not rows:
         return [], 0
+
+    # 项目在进入历史比较前补齐本地机会身份。这里只复用既有本地评分逻辑，不发起网络请求。
+    for item in rows:
+        _ensure_project_opportunity_identity(item)
 
     categories = {
         str(_item_dict(item).get("category") or "ai").lower()
@@ -381,6 +504,7 @@ def filter_recently_reported(
 
     fresh = []
     duplicates = 0
+    fatigue_duplicates = 0
     for item in rows:
         data = _item_dict(item)
         category = str(data.get("category") or "ai").lower()
@@ -402,6 +526,22 @@ def filter_recently_reported(
                 duplicates += 1
             continue
 
+        # 不同项目也可能连续几天只是重复同一种机会。只在明确场景和高语义相似时抑制。
+        if category != "policy":
+            fatigue_match = next(
+                (
+                    previous
+                    for previous in histories.get(category, [])
+                    if _same_recent_opportunity(data, previous)
+                ),
+                None,
+            )
+            if fatigue_match is not None:
+                _mark_opportunity_fatigue(item, fatigue_match)
+                duplicates += 1
+                fatigue_duplicates += 1
+                continue
+
         # 防止非常旧、已超出语义回看窗口的同 URL 再次触发唯一键冲突。
         url = str(data.get("url") or "").strip()
         if url and exists(db, url):
@@ -410,4 +550,11 @@ def filter_recently_reported(
 
         fresh.append(item)
 
+    if fatigue_duplicates:
+        logger.info(
+            "跨天机会疲劳抑制：输入=%s 抑制=%s 窗口=%s天",
+            len(rows),
+            fatigue_duplicates,
+            OPPORTUNITY_FATIGUE_DAYS,
+        )
     return fresh, duplicates
