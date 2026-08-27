@@ -106,6 +106,12 @@ def github_engineering_readiness(item: Dict) -> Dict:
     test_files = _list_metric(metrics, "test_files")
     ci_files = _list_metric(metrics, "ci_files")
 
+    latest_release_tag = str(metrics.get("latest_release_tag") or "").strip()
+    release_published = _parse_time(metrics.get("latest_release_published_at"))
+    recent_commit_checked = bool(metrics.get("recent_commit_activity_checked"))
+    recent_commit_count = int(_number(metrics.get("recent_commit_sample_count")))
+    commit_window_days = int(_number(metrics.get("recent_commit_window_days"))) or 14
+
     pushed = _parse_time(metrics.get("pushed_at"))
     push_age_hours = None
     active = False
@@ -131,9 +137,37 @@ def github_engineering_readiness(item: Dict) -> Dict:
     elif size_kb >= 5:
         score += 8
         evidence.append(f"仓库体量:{int(size_kb)}KB")
-    if active:
+
+    # commits API 成功时，以默认分支真实提交样本替代 pushed_at 的间接活跃度证据。
+    # API增强不可用时仍回退 pushed_at，避免限流导致误杀。
+    if recent_commit_checked:
+        if recent_commit_count >= 5:
+            score += 18
+        elif recent_commit_count >= 2:
+            score += 13
+        elif recent_commit_count == 1:
+            score += 7
+        if recent_commit_count:
+            evidence.append(f"近{commit_window_days}天默认分支提交样本:{recent_commit_count}")
+        else:
+            evidence.append(f"近{commit_window_days}天默认分支未发现提交")
+    elif active:
         score += 18
         evidence.append("近14天有代码提交")
+
+    # 正式 Release 是“有人维护 + 有可消费版本”的强工程信号，但不能替代代码/文件树/许可条件。
+    if latest_release_tag:
+        score += 8
+        evidence.append(f"正式Release:{latest_release_tag}")
+        if release_published is not None:
+            release_age_days = max(
+                (datetime.now(timezone.utc) - release_published).total_seconds() / 86400,
+                0,
+            )
+            if release_age_days <= 30:
+                score += 4
+                evidence.append("Release近30天")
+
     if license_status == "permissive":
         score += 12
     elif license_status == "conditional":
@@ -220,7 +254,9 @@ def github_engineering_readiness(item: Dict) -> Dict:
         "eligible": score >= 35,
         "score": min(score, 100),
         "reason": (
-            "具备可验证的代码文件、工程说明、配置资产和近期开发活动"
+            "具备可验证的代码文件、版本/提交活动、工程说明和配置资产"
+            if tree_evidence and (latest_release_tag or recent_commit_count) and score >= 35
+            else "具备可验证的代码文件、工程说明、配置资产和近期开发活动"
             if tree_evidence and score >= 35
             else "具备可验证的代码资产、工程说明和近期开发活动"
             if score >= 35
