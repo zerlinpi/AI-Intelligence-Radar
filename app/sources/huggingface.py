@@ -177,13 +177,15 @@ class HuggingFaceCollector(BaseCollector):
             # Model Card 可能补充明确的 Non-Commercial / Research-Only 限制，
             # 必须在增强后重新计算许可证商业可用性。
             commercial = commercial_readiness(record)
-            attach_commercial_metrics(record, commercial)
             if not commercial["commercial_candidate"]:
+                attach_commercial_metrics(record, commercial)
                 license_rejected += 1
                 continue
 
             eligibility = report_eligibility(record)
             attach_eligibility_metrics(record, eligibility)
+            # 资格证据写完之后再附加许可证据，确保 analyzer 的“据=”能收到许可证风险。
+            attach_commercial_metrics(record, commercial)
             if not eligibility["eligible"]:
                 rejected += 1
                 continue
