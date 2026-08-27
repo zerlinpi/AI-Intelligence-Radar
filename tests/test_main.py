@@ -68,12 +68,54 @@ def test_runtime_status_is_lightweight(monkeypatch):
     monkeypatch.setattr(main, "latest_run", lambda: {"execution_id": "run-1", "status": "success"})
     monkeypatch.setattr(main, "list_pending", lambda: ["a.json", "b.json"])
     monkeypatch.setattr(main, "list_backups", lambda: ["backup.db"])
+    monkeypatch.setattr(main, "COLLECTORS", [])
+    monkeypatch.setattr(main, "POLICY_COLLECTOR", SimpleNamespace(get_last_health=lambda: {}))
 
     result = main.runtime_status()
     assert result["调度器运行中"] is True
     assert result["最近执行"]["execution_id"] == "run-1"
+    assert result["采集器状态"] == {}
     assert result["飞书待补发队列"] == 2
     assert result["数据库备份数量"] == 1
+
+
+def test_runtime_status_exposes_collector_health_without_secrets(monkeypatch):
+    collector = SimpleNamespace(
+        name="github",
+        get_last_health=lambda: {
+            "source": "github",
+            "success": False,
+            "attempts": 2,
+            "result_count": 0,
+            "completed_at": "2026-08-27T02:00:00+00:00",
+            "error": "ConnectionError: timeout",
+        },
+    )
+    policy = SimpleNamespace(
+        name="policy",
+        get_last_health=lambda: {
+            "source": "policy",
+            "success": True,
+            "attempts": 1,
+            "result_count": 3,
+            "completed_at": "2026-08-27T02:00:10+00:00",
+            "error": "",
+        },
+    )
+    monkeypatch.setattr(main, "COLLECTORS", [collector])
+    monkeypatch.setattr(main, "POLICY_COLLECTOR", policy)
+    monkeypatch.setattr(main, "scheduler", SimpleNamespace(running=True))
+    monkeypatch.setattr(main, "latest_run", lambda: None)
+    monkeypatch.setattr(main, "list_pending", lambda: [])
+    monkeypatch.setattr(main, "list_backups", lambda: [])
+
+    result = main.runtime_status()
+
+    assert result["采集器状态"]["github"]["成功"] is False
+    assert result["采集器状态"]["github"]["尝试次数"] == 2
+    assert result["采集器状态"]["policy"]["成功"] is True
+    assert "Webhook" not in str(result)
+    assert "token" not in str(result).lower()
 
 
 def test_home_uses_chinese_public_fields():
