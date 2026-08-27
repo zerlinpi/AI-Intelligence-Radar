@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 
 from app import pipeline
+from app.cards.models import ComplianceDecision, ProductDecision
 from app.models.radar_item import RadarItem
 from app.pipeline import build_report
 
@@ -193,12 +194,12 @@ def test_strategic_portfolio_preserves_quality_without_forcing_ten_items():
     assert 1 <= len(result) < pipeline.MAX_REPORT_ITEMS
 
 
-def test_source_cap_is_soft_for_many_genuinely_useful_github_projects():
+def test_pre_llm_homogeneous_use_case_does_not_fill_daily_token_budget():
     now = datetime.now(timezone.utc).isoformat()
     items = [
         {
             "title": f"GitHub Commerce Automation SDK {index}",
-            "description": "Reusable Amazon seller API framework and workflow automation SDK for listings, inventory and ecommerce operations",
+            "description": "Reusable Amazon seller API framework and workflow automation SDK for product listing localization and ecommerce operations",
             "source": "github",
             "created_at": now,
             "stars": 100 - index,
@@ -207,8 +208,131 @@ def test_source_cap_is_soft_for_many_genuinely_useful_github_projects():
     ]
 
     result = pipeline.select_project_candidates(items)
-    assert len(result) == pipeline.MAX_REPORT_ITEMS
+
+    assert 1 <= len(result) <= pipeline.PRE_LLM_MAX_PER_USE_CASE
+    assert len(result) < pipeline.MAX_REPORT_ITEMS
+    assert all(
+        (item.metrics or {}).get("primary_use_case") == "Listing/内容"
+        for item in result
+    )
+
+
+def test_pre_llm_portfolio_backfills_other_use_cases_instead_of_more_listing_agents():
+    now = datetime.now(timezone.utc).isoformat()
+    items = [
+        {
+            "title": f"Listing Agent {index}",
+            "description": "Amazon seller product listing localization and SEO workflow automation SDK with API integration",
+            "source": "github",
+            "created_at": now,
+            "stars": 120 - index,
+        }
+        for index in range(8)
+    ]
+    items.extend(
+        [
+            {
+                "title": "Competitor Research SDK",
+                "description": "Amazon seller product research competitor research sourcing workflow automation SDK with API integration",
+                "source": "github",
+                "created_at": now,
+                "stars": 60,
+            },
+            {
+                "title": "Ad Creative Workflow SDK",
+                "description": "Amazon seller advertising ad creative influencer workflow automation SDK with API integration",
+                "source": "github",
+                "created_at": now,
+                "stars": 58,
+            },
+            {
+                "title": "Inventory Operations SDK",
+                "description": "Amazon seller inventory fulfillment logistics warehouse workflow automation SDK with API integration",
+                "source": "github",
+                "created_at": now,
+                "stars": 56,
+            },
+            {
+                "title": "Review Support SDK",
+                "description": "Amazon seller customer support review analysis workflow automation SDK with API integration",
+                "source": "github",
+                "created_at": now,
+                "stars": 54,
+            },
+        ]
+    )
+
+    result = pipeline.select_project_candidates(items)
+    use_cases = [str((item.metrics or {}).get("primary_use_case") or "") for item in result]
+
+    assert use_cases.count("Listing/内容") <= pipeline.PRE_LLM_MAX_PER_USE_CASE
+    assert "选品/竞品" in use_cases
+    assert "广告/增长" in use_cases
+    assert "库存/履约" in use_cases
+    assert "客服/评论" in use_cases
+
+
+def test_source_cap_remains_soft_when_same_source_has_different_use_cases():
+    now = datetime.now(timezone.utc).isoformat()
+    descriptions = [
+        ("Listing SDK", "Amazon seller product listing localization SEO workflow automation SDK API"),
+        ("Research SDK", "Amazon seller product research competitor research sourcing workflow automation SDK API"),
+        ("Ads SDK", "Amazon seller advertising ad creative influencer workflow automation SDK API"),
+        ("Inventory SDK", "Amazon seller inventory fulfillment logistics warehouse workflow automation SDK API"),
+        ("Support SDK", "Amazon seller customer support review analysis workflow automation SDK API"),
+        ("Pricing SDK", "Amazon seller pricing price tracking workflow automation SDK API"),
+        ("Edge Runtime", "On-device edge AI inference runtime compiler quantization framework SDK for embedded deployment"),
+    ]
+    items = [
+        {
+            "title": title,
+            "description": description,
+            "source": "github",
+            "created_at": now,
+            "stars": 100 - index,
+        }
+        for index, (title, description) in enumerate(descriptions)
+    ]
+
+    result = pipeline.select_project_candidates(items)
+
+    assert len(result) == 7
     assert all(item.source == "github" for item in result)
+    assert len({(item.metrics or {}).get("primary_use_case") for item in result}) >= 7
+
+
+def test_summary_actions_reference_detail_cards_instead_of_repeating_body_copy():
+    policy_action = "立即整理CPC、测试报告和eFiling字段并完成适用范围核对。"
+    product_action = "先在ESP32样机验证延迟、RAM、功耗和识别准确率。"
+    compliance = [
+        ComplianceDecision(
+            focus="产品合规审核",
+            title="CPSC eFiling 新要求",
+            source_name="CPSC",
+            authority="CPSC",
+            risk_level="high",
+            impact_score=95,
+            requirement="进口受监管消费品需要电子申报合规证书。",
+            preparation="准备CPC、测试报告和eFiling字段。",
+            action=policy_action,
+        )
+    ]
+    products = [
+        ProductDecision(
+            title="ESP32 Edge Camera",
+            source_name="GitHub",
+            business_score=90,
+            opportunity="high",
+            direction=product_action,
+        )
+    ]
+
+    actions = pipeline._build_summary_actions(compliance, products)
+
+    assert actions[0].text != policy_action
+    assert "见合规卡" in actions[0].text
+    assert actions[2].text != product_action
+    assert "见产品机会卡" in actions[2].text
 
 
 def test_deepseek_final_gate_rejects_low_value_analysis(monkeypatch):
