@@ -175,6 +175,7 @@ POLICY_CHANGE_PHRASES = (
     "effective date",
     "deadline",
     "starting",
+    "beginning",
     "begins",
     "will require",
     "now requires",
