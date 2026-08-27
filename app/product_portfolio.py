@@ -110,18 +110,29 @@ def product_lane(product: ProductDecision) -> str:
 
 def product_use_case(product: ProductDecision) -> str:
     text = _normalized_text(product)
+    tags = list(product.tags or [])
+    tag_set = set(str(tag or "").strip() for tag in tags)
 
     # 跨境业务场景优先细分，避免多个 Listing/选品/广告工具重复占位。
     for label, signals in _USE_CASE_SIGNALS:
         if any(_contains(text, signal) for signal in signals):
             return label
 
-    tags = list(product.tags or [])
+    # 已经识别出的具体实体商品品类优先于泛化的 edge AI / vision 等技术词。
     category = _first_product_category(tags)
     if category:
         return f"实体商品·{category}"
 
-    if any(_contains(text, signal) for signal in _HARDWARE_SIGNALS):
+    # “技术前沿”但没有硬件/实体商品标签时，优先理解为开发基础设施。
+    # 这样 Edge AI Runtime 不会和真正的摄像头/传感器硬件原型误归为一类。
+    if "技术前沿" in tag_set and not ({"硬件开发", "实体商品机会"} & tag_set):
+        for label, signals in _INFRA_SIGNALS:
+            if any(_contains(text, signal) for signal in signals):
+                return label
+
+    if ({"硬件开发", "实体商品机会"} & tag_set) or any(
+        _contains(text, signal) for signal in _HARDWARE_SIGNALS
+    ):
         return "实体商品·硬件原型"
 
     for label, signals in _INFRA_SIGNALS:
