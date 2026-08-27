@@ -3,6 +3,7 @@ import re
 
 import requests
 
+from app.commercial_readiness import attach_commercial_metrics, commercial_readiness
 from app.config import GITHUB_TOKEN
 from app.sources.base import BaseCollector
 from app.core.logger import get_logger
@@ -119,7 +120,7 @@ def _build_record(item: dict, now: datetime):
     if license_spdx:
         description_parts.append(f"license: {license_spdx}")
 
-    return {
+    record = {
         "source": "github",
         "title": item.get("full_name") or item.get("name") or "",
         "url": item.get("html_url") or "",
@@ -137,6 +138,8 @@ def _build_record(item: dict, now: datetime):
             "language": language,
             "license_spdx": license_spdx,
             "homepage": homepage,
+            "archived": bool(item.get("archived")),
+            "disabled": bool(item.get("disabled")),
             # 保存更新时间快照，供跨天新颖性判断区分“小幅热度波动”和“真正重大更新”。
             "updated_at": item.get("updated_at") or "",
             "pushed_at": item.get("pushed_at") or "",
@@ -145,15 +148,18 @@ def _build_record(item: dict, now: datetime):
             "readme_chars": 0,
         },
     }
+    attach_commercial_metrics(record)
+    return record
 
 
 def _preliminary_score(record: dict) -> tuple:
-    """README 请求预算只给更可能有实际价值的仓库，不按 Star 暴力分配。"""
+    """README 请求预算优先给有产品价值、商业可用性更清晰的仓库。"""
     eligibility = report_eligibility(record)
     profile = eligibility.get("profile") or {}
     opportunity_score = float(profile.get("opportunity_score", 0) or 0)
+    commercial_score = float((record.get("metrics") or {}).get("commercial_readiness_score", 0) or 0)
     momentum = float((record.get("metrics") or {}).get("momentum", 0) or 0)
-    return opportunity_score, momentum
+    return opportunity_score, commercial_score, momentum
 
 
 class GithubCollector(BaseCollector):
@@ -210,7 +216,7 @@ class GithubCollector(BaseCollector):
             if record is not None:
                 preliminary.append((record, raw))
 
-        # 先用标题/简介/topics做机会预判，再把有限的 API 请求用于高潜候选 README。
+        # 先用标题/简介/topics/许可证做机会预判，再把有限 API 请求用于高潜候选 README。
         preliminary.sort(key=lambda pair: _preliminary_score(pair[0]), reverse=True)
         enrich_count = min(max(limit * 2, 12), README_ENRICH_LIMIT, len(preliminary))
 
@@ -235,9 +241,18 @@ class GithubCollector(BaseCollector):
 
         result = []
         rejected = 0
+        license_rejected = 0
         enriched = 0
 
         for record, _raw in preliminary:
+            # README 可能包含 SPDX 元数据未识别到的 Non-Commercial / Research-Only 限制，
+            # 因此在证据增强后重新计算商业可用性。
+            commercial = commercial_readiness(record)
+            attach_commercial_metrics(record, commercial)
+            if not commercial["commercial_candidate"]:
+                license_rejected += 1
+                continue
+
             eligibility = report_eligibility(record)
             attach_eligibility_metrics(record, eligibility)
             if not eligibility["eligible"]:
@@ -248,11 +263,11 @@ class GithubCollector(BaseCollector):
                 enriched += 1
             result.append(record)
 
-        # 先看“是否真正有产品/开发价值”，再看近期增长速度；
-        # 热度不能把普通 AI Demo 排到强产品机会前面。
+        # 产品/开发价值第一，商业就绪度第二，再看近期增长速度。
         result.sort(
             key=lambda x: (
                 float((x.get("metrics") or {}).get("opportunity_score", 0) or 0),
+                float((x.get("metrics") or {}).get("commercial_readiness_score", 0) or 0),
                 float((x.get("metrics") or {}).get("momentum", 0) or 0),
                 x.get("created_at") or "",
             ),
@@ -260,9 +275,10 @@ class GithubCollector(BaseCollector):
         )
 
         logger.info(
-            "GitHub 近期候选=%s README增强=%s 资格淘汰=%s 合格=%s 最终返回=%s",
+            "GitHub 近期候选=%s README增强=%s 许可淘汰=%s 资格淘汰=%s 合格=%s 最终返回=%s",
             len(candidates),
             enriched,
+            license_rejected,
             rejected,
             len(result),
             min(len(result), limit),
