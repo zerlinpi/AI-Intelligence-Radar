@@ -55,7 +55,7 @@ def coverage_snapshot() -> Dict:
     """汇总当前一轮数据覆盖状态。
 
     success=True 但 result_count=0 表示“成功查询但没有新内容”，不是故障；
-    只有采集失败、政策机构完全失败或机构内查询降级才产生覆盖提醒。
+    available=False 表示来源因缺少配置/权限根本没有执行，同样不能解释为“没有新内容”。
     """
     health = collector_health_snapshot()
     if not EXPECTED_SOURCES.issubset(set(health)):
@@ -65,15 +65,23 @@ def coverage_snapshot() -> Dict:
             "project_complete": True,
             "policy_complete": True,
             "project_failed": [],
+            "project_unavailable": [],
             "policy_failed": [],
             "policy_degraded": [],
             "note": "",
         }
 
+    project_sources = ("github", "hackernews", "huggingface", "arxiv", "producthunt")
+    project_unavailable = [
+        SOURCE_LABELS.get(source, source)
+        for source in project_sources
+        if (health.get(source) or {}).get("available") is False
+    ]
     project_failed = [
         SOURCE_LABELS.get(source, source)
-        for source in ("github", "hackernews", "huggingface", "arxiv", "producthunt")
+        for source in project_sources
         if not bool((health.get(source) or {}).get("success"))
+        and (health.get(source) or {}).get("available") is not False
     ]
 
     policy_health = health.get("policy") or {}
@@ -90,11 +98,13 @@ def coverage_snapshot() -> Dict:
         policy_failed = ["美国合规政策采集"]
         policy_degraded = []
 
-    project_complete = not project_failed
+    project_complete = not project_failed and not project_unavailable
     policy_complete = not policy_failed and not policy_degraded
     complete = project_complete and policy_complete
 
     parts = []
+    if project_unavailable:
+        parts.append("项目源不可用：" + "、".join(project_unavailable))
     if project_failed:
         parts.append("项目源失败：" + "、".join(project_failed))
     if policy_failed:
@@ -112,6 +122,7 @@ def coverage_snapshot() -> Dict:
         "project_complete": project_complete,
         "policy_complete": policy_complete,
         "project_failed": project_failed,
+        "project_unavailable": project_unavailable,
         "policy_failed": policy_failed,
         "policy_degraded": policy_degraded,
         "note": note,
