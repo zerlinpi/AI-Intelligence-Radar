@@ -22,6 +22,7 @@ def test_product_cards_split_cross_border_hardware_frontier_and_other_groups():
         ProductDecision(
             title="Amazon Listing Agent",
             source_name="GitHub",
+            age_text="8小时前",
             cross_border=True,
             tags=["跨境电商", "可产品化"],
             description="Listing automation",
@@ -30,6 +31,7 @@ def test_product_cards_split_cross_border_hardware_frontier_and_other_groups():
         ProductDecision(
             title="ESP32 Pet Camera",
             source_name="GitHub",
+            age_text="6小时前",
             tags=[
                 "硬件开发",
                 "实体商品机会",
@@ -43,6 +45,7 @@ def test_product_cards_split_cross_border_hardware_frontier_and_other_groups():
         ProductDecision(
             title="Recursive Agent Memory",
             source_name="arXiv",
+            age_text="12小时前",
             tags=["技术前沿", "可产品化"],
             description="Long horizon memory architecture",
             direction="复现并验证长任务可靠性",
@@ -50,6 +53,7 @@ def test_product_cards_split_cross_border_hardware_frontier_and_other_groups():
         ProductDecision(
             title="Generic API Tool",
             source_name="Product Hunt",
+            age_text="1天前",
             tags=["可产品化"],
             description="Generic API",
             direction="验证需求",
@@ -64,14 +68,18 @@ def test_product_cards_split_cross_border_hardware_frontier_and_other_groups():
     assert "🧪 其他可产品化信号" in serialized
     assert "商品·宠物用品" in serialized
     assert "证据·esp32/edge ai/pet camera" in serialized
-    assert "商品/原型方向" in serialized
-    assert "产品化方向" in serialized
+    assert "落地动作" in serialized
+    assert "原型验证" in serialized
+    assert "产品化验证" in serialized
+    assert "下一步" in serialized
+    assert "1项" in serialized
 
 
 def test_project_is_not_duplicated_across_multiple_value_groups():
     project = ProductDecision(
         title="Cross-border Smart Camera",
         source_name="GitHub",
+        age_text="3小时前",
         cross_border=True,
         tags=["跨境电商", "硬件开发", "实体商品机会", "可产品化"],
         description="Smart camera for marketplace sellers",
