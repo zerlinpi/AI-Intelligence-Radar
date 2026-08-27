@@ -63,6 +63,12 @@ def _same_project(left: dict, right: dict) -> bool:
     return False
 
 
+def _same_url(left: dict, right: dict) -> bool:
+    left_url = str(left.get("url") or "").strip()
+    right_url = str(right.get("url") or "").strip()
+    return bool(left_url and right_url and left_url == right_url)
+
+
 def _item_quality(item: dict) -> float:
     source = str(item.get("source") or "").lower()
     description = str(item.get("description") or "")
@@ -118,8 +124,7 @@ def _merge_duplicate(left: dict, right: dict) -> dict:
 
 
 def normalize_items(items) -> List[dict]:
-    """统一数据结构，并去掉 URL 重复与跨来源的同项目重复。"""
-    exact_seen = set()
+    """统一数据结构，并合并 URL 重复与跨来源的同项目重复。"""
     result = []
 
     for raw in items or []:
@@ -137,30 +142,26 @@ def normalize_items(items) -> List[dict]:
         if not item.title:
             continue
 
-        key = item.url or _canonical_title(item.title)
-        if key in exact_seen:
-            continue
-
         data = item.to_dict()
         data.setdefault(
             "collected_at",
             datetime.now(timezone.utc).isoformat(),
         )
 
+        # 同一个外链可能同时来自 GitHub、HN、Product Hunt。以前 URL 先命中 exact_seen
+        # 会直接丢掉后出现来源的票数/评论等证据；现在统一走 merge，保留跨来源验证信号。
         duplicate_index = next(
             (
                 index
                 for index, existing in enumerate(result)
-                if _same_project(existing, data)
+                if _same_url(existing, data) or _same_project(existing, data)
             ),
             None,
         )
         if duplicate_index is not None:
             result[duplicate_index] = _merge_duplicate(result[duplicate_index], data)
-            exact_seen.add(key)
             continue
 
-        exact_seen.add(key)
         result.append(data)
 
     return result
