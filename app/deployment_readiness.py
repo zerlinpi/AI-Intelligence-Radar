@@ -73,6 +73,13 @@ def _deployment_signals(item: Dict) -> list:
     return [signal for signal in EDGE_DEPLOYMENT_SIGNALS if signal in text]
 
 
+def _list_metric(metrics: dict, key: str) -> list:
+    value = metrics.get(key) or []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item or "").strip()]
+
+
 def github_engineering_readiness(item: Dict) -> Dict:
     metrics = _metrics(item)
     if bool(metrics.get("archived")) or bool(metrics.get("disabled")):
@@ -90,6 +97,14 @@ def github_engineering_readiness(item: Dict) -> Dict:
     homepage = bool(str(metrics.get("homepage") or "").strip())
     license_status = str(metrics.get("commercial_license_status") or "unknown").strip().lower()
     lane = str(metrics.get("primary_lane") or "").strip()
+
+    tree_evidence = bool(metrics.get("engineering_tree_evidence"))
+    repo_file_count = int(_number(metrics.get("repo_file_count")))
+    code_file_count = int(_number(metrics.get("repo_code_file_count")))
+    package_configs = _list_metric(metrics, "package_config_files")
+    deployment_files = _list_metric(metrics, "deployment_files")
+    test_files = _list_metric(metrics, "test_files")
+    ci_files = _list_metric(metrics, "ci_files")
 
     pushed = _parse_time(metrics.get("pushed_at"))
     push_age_hours = None
@@ -128,6 +143,41 @@ def github_engineering_readiness(item: Dict) -> Dict:
     if homepage:
         score += 3
 
+    # 文件树增强是比仓库 size/language 更直接的工程资产证据。只有请求成功时才启用这些判断，
+    # 因此 GitHub API 限流或瞬时失败不会把原本合格的候选误伤。
+    if tree_evidence:
+        if code_file_count >= 20:
+            score += 10
+        elif code_file_count >= 5:
+            score += 7
+        elif code_file_count >= 2:
+            score += 3
+        evidence.append(f"文件树:{repo_file_count}文件/{code_file_count}代码文件")
+
+        if package_configs:
+            score += 7
+            evidence.append("包/构建配置:" + "/".join(package_configs[:3]))
+        if deployment_files:
+            score += 5
+            evidence.append("部署配置:" + "/".join(deployment_files[:3]))
+        if test_files:
+            score += 4
+            evidence.append("测试资产:存在")
+        if ci_files:
+            score += 4
+            evidence.append("CI资产:存在")
+
+        # GitHub 元数据的 language/size 可能被 notebook、二进制或文档资源放大；
+        # 文件树已经成功读取时，以真实代码文件数量作为更强的反证。
+        if code_file_count < 2:
+            return {
+                "eligible": False,
+                "score": min(score, 100),
+                "reason": "文件树证据显示实际代码文件不足，不能仅凭README、仓库体量或热度判为可开发项目",
+                "evidence": evidence,
+                "push_age_hours": round(push_age_hours, 1) if push_age_hours is not None else None,
+            }
+
     # README 只是说明材料，不等于代码。至少要看到一定仓库体量，并配合语言或 README 证据。
     # 这能排除 README-only、概念页、营销仓库，即使它们有 Star 或写得很完整。
     has_real_asset = size_kb >= 5 and (language or readme)
@@ -148,6 +198,15 @@ def github_engineering_readiness(item: Dict) -> Dict:
             "evidence": evidence,
         }
 
+    if tree_evidence and lane in {"开发基础设施", "实体商品/硬件"} and code_file_count < 5:
+        return {
+            "eligible": False,
+            "score": min(score, 100),
+            "reason": "工程/硬件候选的文件树代码资产过少，暂不足以作为可复用开发基础",
+            "evidence": evidence,
+            "push_age_hours": round(push_age_hours, 1) if push_age_hours is not None else None,
+        }
+
     # 新仓库允许提交时间缺失，但如果明确有 pushed_at，则必须保持活跃。
     if pushed is not None and not active:
         return {
@@ -160,7 +219,13 @@ def github_engineering_readiness(item: Dict) -> Dict:
     return {
         "eligible": score >= 35,
         "score": min(score, 100),
-        "reason": "具备可验证的代码资产、工程说明和近期开发活动" if score >= 35 else "工程成熟度不足",
+        "reason": (
+            "具备可验证的代码文件、工程说明、配置资产和近期开发活动"
+            if tree_evidence and score >= 35
+            else "具备可验证的代码资产、工程说明和近期开发活动"
+            if score >= 35
+            else "工程成熟度不足"
+        ),
         "evidence": evidence,
         "push_age_hours": round(push_age_hours, 1) if push_age_hours is not None else None,
     }
