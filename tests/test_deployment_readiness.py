@@ -52,6 +52,26 @@ def test_github_empty_hype_repo_is_rejected_even_if_named_like_product():
     assert "代码体量" in result["reason"] or "README" in result["reason"]
 
 
+def test_github_readme_only_repo_is_not_treated_as_real_code_product():
+    item = {
+        "source": "github",
+        "title": "AI Seller Platform Concept",
+        "description": "Amazon seller platform concept with detailed architecture documentation",
+        "metrics": {
+            "primary_lane": "跨境业务工具",
+            "repo_size_kb": 2,
+            "language": "",
+            "readme_evidence": True,
+            "readme_chars": 4200,
+            "pushed_at": _now(),
+            "commercial_license_status": "permissive",
+        },
+    }
+    result = github_engineering_readiness(item)
+    assert result["eligible"] is False
+    assert "代码体量" in result["reason"]
+
+
 def test_github_archived_repo_is_rejected():
     result = github_engineering_readiness(
         {
