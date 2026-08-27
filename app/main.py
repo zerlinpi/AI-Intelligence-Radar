@@ -7,7 +7,7 @@ from app.core.outbox import list_pending
 from app.core.preflight import run_preflight
 from app.core.run_history import latest_run, record_run_safe
 from app.database.backup import list_backups
-from app.pipeline import run_daily_radar
+from app.pipeline import COLLECTORS, POLICY_COLLECTOR, run_daily_radar
 from app.scheduler import start_scheduler, stop_scheduler, scheduler
 
 
@@ -79,6 +79,28 @@ def readiness_check():
     )
 
 
+def _collector_health_status():
+    """汇总当前服务进程中各采集器最近一次执行状态，不暴露请求参数或密钥。"""
+    rows = {}
+    for collector in [*COLLECTORS, POLICY_COLLECTOR]:
+        getter = getattr(collector, "get_last_health", None)
+        if not callable(getter):
+            continue
+        health = getter()
+        if not isinstance(health, dict) or not health:
+            continue
+
+        source = str(health.get("source") or getattr(collector, "name", "unknown"))
+        rows[source] = {
+            "成功": bool(health.get("success", False)),
+            "尝试次数": int(health.get("attempts") or 0),
+            "结果数量": int(health.get("result_count") or 0),
+            "最近完成": str(health.get("completed_at") or ""),
+            "错误": str(health.get("error") or ""),
+        }
+    return rows
+
+
 @app.get("/status")
 def runtime_status():
     """只返回轻量运行状态，不暴露密钥、Webhook 或完整项目内容。"""
@@ -94,6 +116,7 @@ def runtime_status():
     return {
         "调度器运行中": bool(scheduler.running),
         "最近执行": latest_run(),
+        "采集器状态": _collector_health_status(),
         "飞书待补发队列": pending_count,
         "数据库备份数量": backup_count,
     }
