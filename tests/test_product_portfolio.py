@@ -102,6 +102,27 @@ def test_different_physical_product_categories_are_not_collapsed():
     assert [item.title for item in selected] == [pet.title, auto.title]
 
 
+def test_edge_runtime_is_not_collapsed_into_real_hardware_prototype():
+    runtime = _product(
+        "Edge AI Runtime",
+        "On-device inference runtime with quantization and low-memory execution",
+        tags=["技术前沿", "可产品化"],
+        cross_border=False,
+    )
+    camera = _product(
+        "Pet Camera Hardware",
+        "ESP32 camera with BLE sensor and on-device recognition",
+        tags=["硬件开发", "实体商品机会", "商品·宠物用品"],
+        cross_border=False,
+    )
+
+    assert product_use_case(runtime) == "开发基础设施·端侧/推理"
+    assert product_use_case(camera) == "实体商品·宠物用品"
+
+    selected, _ = compress_product_portfolio([runtime, camera])
+    assert [item.title for item in selected] == [runtime.title, camera.title]
+
+
 def test_one_cross_border_lane_cannot_fill_entire_report():
     products = [
         _product("Listing Tool", "Amazon listing optimization"),
