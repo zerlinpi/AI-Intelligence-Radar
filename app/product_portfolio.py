@@ -204,8 +204,10 @@ def compress_product_portfolio(
     use_case_candidates = []
     use_case_suppressed = 0
     for use_case, group in grouped.items():
-        ranked = sorted(
-            group,
+        # 每个场景固定保留主流程已经排在最前面的代表，避免组合压缩后摘要仍引用被删除项目。
+        primary = min(group, key=lambda product: original_index[id(product)])
+        ranked_others = sorted(
+            [product for product in group if product is not primary],
             key=lambda product: (
                 _portfolio_score(product),
                 float(product.business_score or 0),
@@ -215,12 +217,17 @@ def compress_product_portfolio(
         )
 
         keep_limit = max_per_use_case
-        exceptional = [product for product in ranked if _is_exceptional(product)]
-        if len(exceptional) > max_per_use_case:
+        exceptional_count = sum(1 for product in group if _is_exceptional(product))
+        if exceptional_count > max_per_use_case:
             # 同场景极高价值项目允许最多再保留一条，但仍阻止一类内容占满日报。
             keep_limit = max_per_use_case + 1
 
-        kept = ranked[:keep_limit]
+        kept = [primary]
+        for product in ranked_others:
+            if len(kept) >= keep_limit:
+                break
+            kept.append(product)
+
         use_case_candidates.extend(kept)
         use_case_suppressed += max(len(group) - len(kept), 0)
 
