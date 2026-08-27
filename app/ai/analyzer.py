@@ -181,6 +181,14 @@ def _compact_metrics(item: Dict) -> str:
     if eligibility_reason:
         parts.append("资=" + eligibility_reason)
 
+    primary_lane = str(metrics.get("primary_lane") or "").strip()
+    if primary_lane:
+        parts.append("道=" + primary_lane)
+
+    primary_use_case = str(metrics.get("primary_use_case") or "").strip()
+    if primary_use_case:
+        parts.append("场=" + primary_use_case)
+
     product_categories = metrics.get("product_categories") or []
     if isinstance(product_categories, list) and product_categories:
         parts.append("品=" + "/".join(str(value) for value in product_categories))
@@ -508,11 +516,20 @@ def _build_prompt(compact_json: str) -> str:
         "运动控制、语音、视觉或其他真实硬件系统；"
         "第四，美国市场实体商品机会：技术是否能形成或升级消费者可购买的家居、厨房、宠物、运动、"
         "户外、汽车、工具、穿戴、健康辅助、智能设备等实体产品，并说明实现路径及工程/合规不确定性。"
-        "指标中的资=本地资格判断理由，维=四维机会分，品=候选商品品类，据=本地命中证据；"
-        "这些是辅助证据，不得原样抄成结论，必须结合简介判断。"
-        "GitHub项目重点看代码是否真实可复用、工程门槛和开发效率；Hugging Face模型重点看模型任务能力、"
-        "部署条件、端侧/边缘可能性和可嵌入产品的场景；arXiv重点看能否进入跨境业务、硬件或实体商品，"
-        "不再为了学术新颖性本身写长篇介绍；Product Hunt重点看真实需求和现有产品验证。"
+        "指标中的资=本地资格判断理由，维=四维机会分，道=本地机会大类，场=主要使用场景，"
+        "品=候选商品品类，据=本地真实证据；这些是辅助证据，不得原样抄成结论，必须结合简介判断。"
+        "当标包含硬件开发/实体商品机会，或品=非空时，禁止只写‘可做智能硬件/摄像头/机器人’这类泛结论。"
+        "判断字段必须在证据允许范围内明确：可转化的具体商品形态、关键技术模块或算力/传感/连接要求、"
+        "主要工程风险，以及美国销售可能需要先确认的合规方向；无法从证据确认的部分必须写‘需验证’。"
+        "建议字段必须给一个单一MVP验证计划：说明优先使用的原型平台或关键BOM模块，并给出2到4个最关键的"
+        "量化验证指标，例如端到端延迟、RAM/Flash、功耗、温升、识别准确率、误报率、续航、BOM成本或稳定性，"
+        "同时写清满足什么条件才进入下一阶段。涉及Bluetooth/Wi-Fi/RF、消费品安全、儿童用品、健康/医疗相关"
+        "产品时，应指出先确认FCC/CPSC/FDA等适用性，但不得在材料没有提供时编造具体标准号或认证结论。"
+        "GitHub项目重点看代码是否真实可复用、工程门槛和开发效率；据=若包含代码文件、包/构建配置、测试、CI、"
+        "部署配置等文件树证据，应优先据此判断工程成熟度，不得把README或Star本身当作真实代码成熟度。"
+        "Hugging Face模型重点看模型任务能力、部署条件、端侧/边缘可能性和可嵌入产品的场景；"
+        "arXiv重点看能否进入跨境业务、硬件或实体商品，不再为了学术新颖性本身写长篇介绍；"
+        "Product Hunt重点看真实需求和现有产品验证。"
         "商业分不是‘电商相关度分’：只要四条路径中至少一条价值强、落地路径清晰，就可以高分；"
         "但仅有热度、普通套壳、没有技术差异或没有真实使用路径的项目不应高分。"
         "项目用途字段必须只回答‘它实际能做什么/怎么工作/给谁用’，不要评价；"
