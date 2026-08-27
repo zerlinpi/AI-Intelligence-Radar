@@ -45,12 +45,15 @@ def test_arxiv_uses_research_semantics_instead_of_growth_semantics():
     serialized = _serialized(product_cards)
 
     assert "arXiv 研究论文" in serialized
-    assert "产品化价值 70" in serialized
+    assert "产品化价值" in serialized
+    assert "70/100" in serialized
+    assert "中机会" in serialized
     assert "研究内容" in serialized
     assert "研究阶段" in serialized
-    assert "产品化方向" in serialized
+    assert "为什么值得看" in serialized
+    assert "产品化验证" in serialized
     assert "查看 arXiv 论文" in serialized
-    assert "增长信号" not in serialized
+    assert "增长证据" not in serialized
     assert "🔥" not in serialized
 
 
