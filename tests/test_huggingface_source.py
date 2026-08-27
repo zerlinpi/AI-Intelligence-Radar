@@ -51,22 +51,17 @@ def test_model_card_can_surface_real_hardware_use_and_reject_generic_model(monke
         if url == huggingface.API:
             return FakeResponse(payload=[generic, hardware])
         if url.endswith("/org/generic-chat-model/raw/main/README.md"):
-            return FakeResponse(
-                text="# Generic Chat Model\nGeneral-purpose text generation and chatbot research model."
-            )
+            return FakeResponse(text="# Generic Chat Model\nGeneral-purpose text generation and chatbot research model.")
         if url.endswith("/org/edge-wearable-audio/raw/main/README.md"):
-            return FakeResponse(
-                text=(
-                    "---\nlanguage: en\n---\n# Edge Wearable Audio\n"
-                    "On-device keyword spotting and audio classification for a low-power wearable "
-                    "consumer device using embedded sensors and a TFLite runtime. Suitable for "
-                    "fitness and personal safety hardware prototypes."
-                )
-            )
+            return FakeResponse(text=(
+                "---\nlanguage: en\n---\n# Edge Wearable Audio\n"
+                "On-device keyword spotting and audio classification for a low-power wearable "
+                "consumer device using embedded sensors and a TFLite runtime. Suitable for "
+                "fitness and personal safety hardware prototypes."
+            ))
         return FakeResponse(status_code=404)
 
     monkeypatch.setattr(huggingface.requests, "get", fake_get)
-
     results = huggingface.HuggingFaceCollector().collect(limit=10)
     titles = [item["title"] for item in results]
 
@@ -81,6 +76,10 @@ def test_model_card_can_surface_real_hardware_use_and_reject_generic_model(monke
     assert item["metrics"]["report_eligible"] is True
     assert item["metrics"]["commercial_license_status"] == "permissive"
     assert item["metrics"]["commercial_direct_reuse_ready"] is True
+    assert any(
+        "商业许可:apache-2.0" in str(value)
+        for value in item["metrics"]["opportunity_evidence"]
+    )
     assert "硬件开发" in item["metrics"]["priority_tags"]
 
 
@@ -98,12 +97,10 @@ def test_noncommercial_hardware_model_is_filtered_before_report(monkeypatch):
         if url == huggingface.API:
             return FakeResponse(payload=[restricted])
         if url.endswith("/org/nc-edge-camera/raw/main/README.md"):
-            return FakeResponse(
-                text=(
-                    "# Edge Camera\nOn-device object detection for an embedded smart security camera "
-                    "with real-time inference and consumer hardware deployment."
-                )
-            )
+            return FakeResponse(text=(
+                "# Edge Camera\nOn-device object detection for an embedded smart security camera "
+                "with real-time inference and consumer hardware deployment."
+            ))
         return FakeResponse(status_code=404)
 
     monkeypatch.setattr(huggingface.requests, "get", fake_get)
@@ -124,12 +121,10 @@ def test_unknown_license_hardware_model_is_not_treated_as_commercial_product_can
         if url == huggingface.API:
             return FakeResponse(payload=[unknown])
         if url.endswith("/org/unknown-edge-camera/raw/main/README.md"):
-            return FakeResponse(
-                text=(
-                    "# Edge Camera\nOn-device object detection for an embedded smart security camera "
-                    "with production deployment and measured latency."
-                )
-            )
+            return FakeResponse(text=(
+                "# Edge Camera\nOn-device object detection for an embedded smart security camera "
+                "with production deployment and measured latency."
+            ))
         return FakeResponse(status_code=404)
 
     monkeypatch.setattr(huggingface.requests, "get", fake_get)
