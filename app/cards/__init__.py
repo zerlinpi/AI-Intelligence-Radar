@@ -9,8 +9,12 @@ from app.cards.models import (
     ProductDecision,
     ReportDecisionModel,
 )
+from app.core.logger import get_logger
+from app.product_portfolio import compress_product_portfolio
 from app.source_coverage import coverage_snapshot
 
+
+logger = get_logger("飞书机会组合")
 
 _EMPTY_COMPLIANCE_TEXT = "今日未发现新增的高影响 Amazon 政策、美国进口新规或产品审核要求。"
 _EMPTY_PRODUCT_TEXT = "今日暂无通过最终价值门槛的新产品机会；不使用低价值候选补位。"
@@ -38,6 +42,47 @@ def _prepend_coverage_note(model: ReportDecisionModel, note: str) -> None:
     if note in judgment:
         return
     model.summary.judgment = f"⚠️ {note} {judgment}".strip()
+
+
+def _apply_product_portfolio(model: ReportDecisionModel) -> dict:
+    """在最终飞书展示前压缩同质项目，不改变底层历史数据库。
+
+    主流程已经完成相关性 Gate、DeepSeek 价值 Gate 和最终效用排序；本函数只处理
+    “多条都合格但本质属于同一使用场景”的重复展示问题。
+    """
+    metrics = dict(getattr(model.summary, "metrics", {}) or {})
+    if metrics.get("portfolio_applied"):
+        return {
+            "input": metrics.get("portfolio_input", len(model.products)),
+            "selected": len(model.products),
+            "suppressed": metrics.get("portfolio_suppressed", 0),
+        }
+
+    selected, stats = compress_product_portfolio(list(model.products or []))
+    model.products = selected
+
+    metrics["portfolio_applied"] = 1
+    metrics["portfolio_input"] = int(stats.get("input", 0) or 0)
+    metrics["portfolio_suppressed"] = int(stats.get("suppressed", 0) or 0)
+    metrics["projects"] = len(selected)
+    metrics["opportunities"] = sum(
+        1
+        for item in selected
+        if str(item.opportunity or "").lower() == "high"
+        or float(item.business_score or 0) >= 80
+    )
+    model.summary.metrics = metrics
+
+    if stats.get("input"):
+        logger.info(
+            "最终机会组合：合格=%s 展示=%s 同场景压缩=%s 场景=%s 方向=%s",
+            stats.get("input"),
+            stats.get("selected"),
+            stats.get("suppressed"),
+            stats.get("use_cases"),
+            stats.get("lanes"),
+        )
+    return stats
 
 
 def _rewrite_empty_state_cards(cards, model: ReportDecisionModel, coverage: dict) -> None:
@@ -71,11 +116,13 @@ def build_daily_cards(
     model: ReportDecisionModel,
     max_projects=None,
 ):
-    """生产卡片入口：在现有无损分页前注入本轮数据覆盖可信度。
+    """生产卡片入口：最终组合去同质化 + 数据覆盖可信度 + 现有无损分页。
 
-    单独调用 Card Builder、单元测试或采集健康信息尚未收齐时保持原行为；
-    只有生产一轮已经完成全部基础采集器后，才会显示覆盖告警。
+    组合压缩只在已经通过主流程最终价值 Gate 的项目之间进行，不会为了多样性引入低价值项目；
+    采集健康信息完整时，再根据覆盖状态决定是否显示数据源告警。
     """
+    _apply_product_portfolio(model)
+
     coverage = coverage_snapshot()
     if coverage.get("available") and not coverage.get("complete"):
         _prepend_coverage_note(model, coverage.get("note") or "")
