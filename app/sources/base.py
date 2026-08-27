@@ -16,6 +16,10 @@ RETRY_DELAY_SECONDS = 0.5
 RETRYABLE_HTTP_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
 
 
+class CollectorUnavailable(RuntimeError):
+    """采集器因缺少必要配置或访问条件而没有真正执行。"""
+
+
 def _retryable_error(error: Exception) -> bool:
     """只重试明确的瞬时网络/上游错误，避免代码错误被重复执行。"""
     if isinstance(
@@ -44,11 +48,13 @@ class BaseCollector(ABC):
         attempts: int,
         result_count: int = 0,
         error: str = "",
+        available: bool = True,
     ) -> None:
         self.last_run_health = {
             "collector": self.__class__.__name__,
             "source": str(getattr(self, "name", "unknown") or "unknown"),
             "success": bool(success),
+            "available": bool(available),
             "attempts": max(int(attempts or 0), 0),
             "result_count": max(int(result_count or 0), 0),
             "error": str(error or ""),
@@ -73,7 +79,7 @@ class BaseCollector(ABC):
         return dict(getattr(self, "last_run_health", {}) or {})
 
     def collect_safe(self, *args, **kwargs) -> List[Dict]:
-        """安全执行采集器；瞬时网络错误最多自动重试一次，并区分空结果与失败。"""
+        """安全执行采集器；瞬时网络错误最多自动重试一次，并区分空结果、不可用与失败。"""
         for attempt in range(1, MAX_COLLECT_ATTEMPTS + 1):
             try:
                 result = self.collect(*args, **kwargs)
@@ -101,6 +107,21 @@ class BaseCollector(ABC):
                     result_count=len(result),
                 )
                 return result
+
+            except CollectorUnavailable as error:
+                # 缺少 Token/权限与“查询成功但 0 条”语义完全不同；不重试，也不打印异常堆栈。
+                self._set_health(
+                    success=False,
+                    available=False,
+                    attempts=attempt,
+                    error=str(error),
+                )
+                logger.warning(
+                    "采集器当前不可用：采集器=%s 原因=%s",
+                    self.__class__.__name__,
+                    error,
+                )
+                return []
 
             except Exception as error:
                 can_retry = (
