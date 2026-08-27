@@ -143,7 +143,7 @@ def commercial_readiness(item: Dict) -> Dict:
     status = _classify_license(license_name)
 
     # LICENSE 元数据未知时，README / Model Card 中非常明确的限制语句可作为兜底；
-    # 若 SPDX 已明确为 MIT/Apache 等，则不让正文中的一般性“research only”讨论覆盖许可证事实。
+    # 若 SPDX 已明确为 MIT/Apache 等，则不让正文的一般 research 措辞覆盖许可证事实。
     if status == "unknown" and _explicit_text_restriction(item):
         status = "restricted"
 
@@ -196,6 +196,20 @@ def commercial_readiness(item: Dict) -> Dict:
     }
 
 
+def _evidence_line(result: Dict) -> str:
+    status = str(result.get("status") or "unknown")
+    license_name = str(result.get("license") or "").strip() or "未知"
+    if status == "permissive":
+        return f"商业许可:{license_name}，可作为商业复用候选，仍需核对具体条款"
+    if status == "conditional":
+        return f"商业许可:{license_name}，可商用但存在许可证义务，集成前需核对"
+    if status == "restricted":
+        return f"商业许可:{license_name}，存在明确非商业/研究用途限制"
+    if status == "unknown":
+        return "商业许可:未知，不得假设代码或模型可直接商业复用"
+    return ""
+
+
 def attach_commercial_metrics(item: Dict, result: Dict | None = None) -> Dict:
     item = item if isinstance(item, dict) else {}
     result = result or commercial_readiness(item)
@@ -210,4 +224,14 @@ def attach_commercial_metrics(item: Dict, result: Dict | None = None) -> Dict:
     metrics["commercial_direct_reuse_ready"] = bool(result.get("direct_reuse_ready", False))
     metrics["commercial_readiness_score"] = int(result.get("score", 0) or 0)
     metrics["commercial_readiness_reason"] = str(result.get("reason") or "")
+
+    # analyzer 已经把 opportunity_evidence 作为“据=”发送给 DeepSeek；
+    # 在这里复用现有字段，避免再扩大模型协议，同时确保许可风险进入最终判断。
+    evidence = metrics.get("opportunity_evidence") or []
+    evidence = list(evidence) if isinstance(evidence, list) else []
+    line = _evidence_line(result)
+    evidence = [value for value in evidence if not str(value).startswith("商业许可:")]
+    if line:
+        evidence.insert(0, line)
+    metrics["opportunity_evidence"] = evidence
     return item
