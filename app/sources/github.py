@@ -16,8 +16,6 @@ README_TEXT_LIMIT = 4500
 
 logger = get_logger("GitHub采集")
 
-# 不再只找通用 AI/LLM 项目。加入跨境、边缘 AI、嵌入式、机器人和视觉方向，
-# 让后续筛选优先发现能直接用于业务、开发工具、硬件或实体商品的技术。
 SEARCH_TERMS = (
     "topic:ai",
     "llm in:name,description",
@@ -44,8 +42,6 @@ def _clean_readme(value: str) -> str:
     text = str(value or "")
     if not text:
         return ""
-
-    # 图片、徽章、HTML 和大段代码会显著增加噪音；保留链接文字和普通正文。
     text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)
     text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
@@ -59,7 +55,6 @@ def _clean_readme(value: str) -> str:
 def _fetch_readme(full_name: str, headers: dict) -> str:
     if not full_name:
         return ""
-
     try:
         response = requests.get(
             f"https://api.github.com/repos/{full_name}/readme",
@@ -71,7 +66,6 @@ def _fetch_readme(full_name: str, headers: dict) -> str:
         response.raise_for_status()
         return _clean_readme(response.text)
     except Exception:
-        # README 是证据增强，不应因为单个仓库读取失败拖垮整轮采集。
         return ""
 
 
@@ -87,7 +81,6 @@ def _build_record(item: dict, now: datetime):
     created_at = item.get("created_at")
     if not created_at:
         return None
-
     try:
         created = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
         if created.tzinfo is None:
@@ -101,11 +94,9 @@ def _build_record(item: dict, now: datetime):
     open_issues = item.get("open_issues_count", 0) or 0
     age_days = max(age_hours / 24, 0.25)
     momentum = (stars + forks * 3) / age_days
-
     topics = item.get("topics") or []
     if not isinstance(topics, list):
         topics = []
-
     language = str(item.get("language") or "").strip()
     license_spdx = _license_spdx(item)
     homepage = str(item.get("homepage") or "").strip()
@@ -140,7 +131,6 @@ def _build_record(item: dict, now: datetime):
             "homepage": homepage,
             "archived": bool(item.get("archived")),
             "disabled": bool(item.get("disabled")),
-            # 保存更新时间快照，供跨天新颖性判断区分“小幅热度波动”和“真正重大更新”。
             "updated_at": item.get("updated_at") or "",
             "pushed_at": item.get("pushed_at") or "",
             "default_branch": item.get("default_branch") or "",
@@ -153,7 +143,6 @@ def _build_record(item: dict, now: datetime):
 
 
 def _preliminary_score(record: dict) -> tuple:
-    """README 请求预算优先给有产品价值、商业可用性更清晰的仓库。"""
     eligibility = report_eligibility(record)
     profile = eligibility.get("profile") or {}
     opportunity_score = float(profile.get("opportunity_score", 0) or 0)
@@ -170,7 +159,6 @@ class GithubCollector(BaseCollector):
         now = datetime.now(timezone.utc)
         since = (now - timedelta(days=7)).date().isoformat()
         fetch_limit = min(max(limit * 4, 40), 60)
-
         candidates = {}
 
         for search_term in SEARCH_TERMS:
@@ -180,32 +168,22 @@ class GithubCollector(BaseCollector):
                 "order": "desc",
                 "per_page": fetch_limit,
             }
-
             try:
-                response = requests.get(
-                    SEARCH_API,
-                    headers=headers,
-                    params=params,
-                    timeout=20,
-                )
+                response = requests.get(SEARCH_API, headers=headers, params=params, timeout=20)
                 response.raise_for_status()
-
                 payload = response.json()
                 if not isinstance(payload, dict):
                     logger.warning("GitHub 接口返回数据格式无效：查询=%s", search_term)
                     continue
-
                 items = payload.get("items", [])
                 if not isinstance(items, list):
                     continue
-
                 for item in items:
                     if not isinstance(item, dict):
                         continue
                     key = item.get("id") or item.get("html_url")
                     if key:
                         candidates[key] = item
-
             except Exception:
                 logger.exception("GitHub 搜索失败：查询=%s", search_term)
                 continue
@@ -216,7 +194,6 @@ class GithubCollector(BaseCollector):
             if record is not None:
                 preliminary.append((record, raw))
 
-        # 先用标题/简介/topics/许可证做机会预判，再把有限 API 请求用于高潜候选 README。
         preliminary.sort(key=lambda pair: _preliminary_score(pair[0]), reverse=True)
         enrich_count = min(max(limit * 2, 12), README_ENRICH_LIMIT, len(preliminary))
 
@@ -225,14 +202,8 @@ class GithubCollector(BaseCollector):
             readme = _fetch_readme(full_name, headers)
             if not readme:
                 continue
-
             record["description"] = " | ".join(
-                part
-                for part in (
-                    record.get("description") or "",
-                    f"README: {readme}",
-                )
-                if part
+                part for part in (record.get("description") or "", f"README: {readme}") if part
             )
             metrics = record.get("metrics") or {}
             metrics["readme_evidence"] = True
@@ -245,16 +216,16 @@ class GithubCollector(BaseCollector):
         enriched = 0
 
         for record, _raw in preliminary:
-            # README 可能包含 SPDX 元数据未识别到的 Non-Commercial / Research-Only 限制，
-            # 因此在证据增强后重新计算商业可用性。
             commercial = commercial_readiness(record)
-            attach_commercial_metrics(record, commercial)
             if not commercial["commercial_candidate"]:
+                attach_commercial_metrics(record, commercial)
                 license_rejected += 1
                 continue
 
             eligibility = report_eligibility(record)
             attach_eligibility_metrics(record, eligibility)
+            # 资格证据写完之后再附加许可证据，确保 analyzer 的“据=”包含商业复用风险。
+            attach_commercial_metrics(record, commercial)
             if not eligibility["eligible"]:
                 rejected += 1
                 continue
@@ -263,7 +234,6 @@ class GithubCollector(BaseCollector):
                 enriched += 1
             result.append(record)
 
-        # 产品/开发价值第一，商业就绪度第二，再看近期增长速度。
         result.sort(
             key=lambda x: (
                 float((x.get("metrics") or {}).get("opportunity_score", 0) or 0),
@@ -276,12 +246,7 @@ class GithubCollector(BaseCollector):
 
         logger.info(
             "GitHub 近期候选=%s README增强=%s 许可淘汰=%s 资格淘汰=%s 合格=%s 最终返回=%s",
-            len(candidates),
-            enriched,
-            license_rejected,
-            rejected,
-            len(result),
-            min(len(result), limit),
+            len(candidates), enriched, license_rejected, rejected, len(result), min(len(result), limit),
         )
         return result[:limit]
 
