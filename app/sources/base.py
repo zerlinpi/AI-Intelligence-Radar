@@ -6,6 +6,7 @@ from typing import Dict, List
 from requests import exceptions as requests_exceptions
 
 from app.core.logger import get_logger
+from app.source_coverage import record_collector_health
 
 
 logger = get_logger("采集器")
@@ -53,6 +54,19 @@ class BaseCollector(ABC):
             "error": str(error or ""),
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }
+
+        # 复用子类 get_last_health()，因此 PolicyCollector 可以把机构级覆盖状态
+        # 一并写入当前运行快照。健康记录失败不能反向影响业务采集。
+        try:
+            record_collector_health(
+                str(getattr(self, "name", "unknown") or "unknown"),
+                self.get_last_health(),
+            )
+        except Exception:
+            logger.exception(
+                "采集健康状态记录失败：采集器=%s",
+                self.__class__.__name__,
+            )
 
     def get_last_health(self) -> Dict:
         """返回最近一次 collect_safe 的轻量健康状态，不包含密钥或业务正文。"""
