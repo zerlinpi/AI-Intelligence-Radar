@@ -1,6 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.sources import producthunt
+from app.sources.base import CollectorUnavailable
 
 
 class MockResponse:
@@ -14,10 +17,19 @@ class MockResponse:
         return self._payload
 
 
-def test_producthunt_missing_token_returns_empty(monkeypatch):
+def test_producthunt_missing_token_is_not_reported_as_successful_empty_result(monkeypatch):
     monkeypatch.delenv("PRODUCT_HUNT_TOKEN", raising=False)
 
-    assert producthunt.ProductHuntCollector().collect() == []
+    collector = producthunt.ProductHuntCollector()
+    with pytest.raises(CollectorUnavailable):
+        collector.collect()
+
+    assert collector.collect_safe() == []
+    health = collector.get_last_health()
+    assert health["success"] is False
+    assert health["available"] is False
+    assert health["result_count"] == 0
+    assert "PRODUCT_HUNT_TOKEN" in health["error"]
 
 
 def test_producthunt_collects_recent_relevant_ai_products(monkeypatch):
