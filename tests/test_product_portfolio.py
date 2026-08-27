@@ -13,6 +13,8 @@ def _product(
     opportunity="medium",
     tags=None,
     cross_border=True,
+    judgment="该项目具有明确的实际使用价值，但仍需在真实业务中验证稳定性和成本。",
+    direction="先用真实SKU或硬件原型做小规模验证，再根据结果决定是否进入正式开发。",
 ):
     return ProductDecision(
         title=title,
@@ -25,8 +27,8 @@ def _product(
         tags=list(tags or (["跨境电商", "可产品化"] if cross_border else ["可产品化"])),
         description=description,
         growth_signal="测试增长信号",
-        judgment="该项目具有明确的实际使用价值，但仍需在真实业务中验证稳定性和成本。",
-        direction="先用真实SKU或硬件原型做小规模验证，再根据结果决定是否进入正式开发。",
+        judgment=judgment,
+        direction=direction,
         cross_border=cross_border,
     )
 
@@ -61,15 +63,60 @@ def test_same_listing_use_case_keeps_primary_and_best_fresh_alternative():
 
     assert [item.title for item in selected] == ["Listing Leader", "Listing Fresh"]
     assert stats["suppressed"] == 2
+    assert stats["semantic_suppressed"] >= 1
     assert stats["use_cases"] == {"Listing/内容": 2}
 
 
-def test_exceptional_same_use_case_can_keep_one_extra_item():
+def test_semantically_reworded_same_opportunity_is_collapsed():
+    primary = _product(
+        "Seller Listing Writer",
+        "Generates Amazon listing titles, bullet points and localized descriptions from product data",
+        business=90,
+        opportunity="high",
+    )
+    duplicate = _product(
+        "Marketplace Copy Copilot",
+        "Creates Amazon listing titles, bullet points and localized descriptions using product information",
+        business=94,
+        opportunity="high",
+    )
+
+    selected, stats = compress_product_portfolio([primary, duplicate])
+
+    # 主流程已经把 primary 排在第一；组合层不能因为换了项目名就重复展示同一种能力。
+    assert [item.title for item in selected] == [primary.title]
+    assert stats["semantic_suppressed"] == 1
+    assert stats["suppressed"] == 1
+
+
+def test_same_use_case_with_different_capability_is_preserved():
+    generator = _product(
+        "Listing Copy Generator",
+        "Generates Amazon listing titles, bullet points and localized descriptions from product data",
+        business=89,
+    )
+    validator = _product(
+        "Listing Schema Validator",
+        "Validates Amazon listing compliance attributes and category schema through SP-API before submission",
+        business=87,
+        judgment="价值在于减少类目属性错误和提交失败，而不是生成Listing文案。",
+        direction="先连接一个Seller Central测试账号，对20个SKU验证属性缺失和提交错误拦截率。",
+    )
+
+    assert product_use_case(generator) == "Listing/内容"
+    assert product_use_case(validator) == "Listing/内容"
+
+    selected, stats = compress_product_portfolio([generator, validator])
+    assert [item.title for item in selected] == [generator.title, validator.title]
+    assert stats["semantic_suppressed"] == 0
+
+
+def test_exceptional_score_does_not_bypass_semantic_deduplication():
     products = [
         _product(
             f"Listing Exceptional {index}",
-            "Amazon listing optimization and localization",
-            business=95 - index,
+            "Amazon listing optimization and localization for seller product content workflows",
+            business=97 - index,
             opportunity="high",
         )
         for index in range(3)
@@ -77,8 +124,9 @@ def test_exceptional_same_use_case_can_keep_one_extra_item():
 
     selected, stats = compress_product_portfolio(products)
 
-    assert len(selected) == 3
-    assert stats["suppressed"] == 0
+    assert [item.title for item in selected] == [products[0].title]
+    assert stats["semantic_suppressed"] == 2
+    assert stats["suppressed"] == 2
 
 
 def test_different_physical_product_categories_are_not_collapsed():
@@ -140,12 +188,12 @@ def test_one_cross_border_lane_cannot_fill_entire_report():
     assert stats["suppressed"] == 2
 
 
-def test_card_entry_applies_portfolio_and_updates_summary_metrics():
+def test_card_entry_applies_semantic_portfolio_and_updates_summary_metrics():
     reset_collection_health()
     products = [
         _product(
             f"Listing Product {index}",
-            "Amazon listing optimization and localization",
+            "Amazon listing optimization and localization for seller content workflows",
             business=90 - index,
             age=f"{index + 1}小时前",
         )
@@ -169,13 +217,13 @@ def test_card_entry_applies_portfolio_and_updates_summary_metrics():
 
     cards = build_daily_cards(model)
 
-    assert len(model.products) == 2
+    assert len(model.products) == 1
     assert model.products[0].title == "Listing Product 0"
-    assert model.summary.metrics["projects"] == 2
+    assert model.summary.metrics["projects"] == 1
     assert model.summary.metrics["portfolio_input"] == 5
-    assert model.summary.metrics["portfolio_suppressed"] == 3
+    assert model.summary.metrics["portfolio_suppressed"] == 4
     rendered = "\n".join(str(card.payload) for card in cards)
     assert "Listing Product 0" in rendered
-    assert "Listing Product 1" in rendered
+    assert "Listing Product 1" not in rendered
     assert "Listing Product 4" not in rendered
     reset_collection_health()
