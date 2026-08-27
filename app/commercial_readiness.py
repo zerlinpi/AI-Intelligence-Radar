@@ -45,6 +45,16 @@ RESTRICTED_LICENSE_MARKERS = (
     "polyform-noncommercial",
 )
 
+# 只有明确表达“使用限制”的自然语言才作为补充证据；
+# 不能因为正文讨论 academic research 就把普通开源项目误判为 Research-Only。
+RESTRICTED_TEXT_PATTERNS = (
+    re.compile(r"\b(?:for\s+)?non[- ]commercial\s+(?:use|purposes?)\s+only\b", re.IGNORECASE),
+    re.compile(r"\bresearch\s+(?:use|purposes?)\s+only\b", re.IGNORECASE),
+    re.compile(r"\bacademic\s+(?:use|purposes?)\s+only\b", re.IGNORECASE),
+    re.compile(r"\bnot\s+(?:for|licensed\s+for)\s+commercial\s+(?:use|purposes?)\b", re.IGNORECASE),
+    re.compile(r"\bcommercial\s+use\s+(?:is\s+)?(?:not\s+permitted|prohibited|forbidden)\b", re.IGNORECASE),
+)
+
 UNKNOWN_LICENSE_MARKERS = {
     "",
     "unknown",
@@ -102,11 +112,16 @@ def _classify_license(license_name: str) -> str:
     return "conditional"
 
 
+def _explicit_text_restriction(item: Dict) -> bool:
+    text = " ".join(str((item or {}).get("description") or "").split())
+    return bool(text and any(pattern.search(text) for pattern in RESTRICTED_TEXT_PATTERNS))
+
+
 def commercial_readiness(item: Dict) -> Dict:
     """返回用于产品筛选的许可证/商业复用状态。
 
-    该函数只根据公开元数据判断“是否值得进入产品候选”，不对许可证
-    的具体法律义务作最终解释。部署或销售前仍应核对原始 LICENSE / Model Card。
+    该函数只根据公开元数据与明确使用限制判断“是否值得进入产品候选”，
+    不对许可证具体法律义务作最终解释。部署或销售前仍应核对原始 LICENSE / Model Card。
     """
     item = item if isinstance(item, dict) else {}
     source = str(item.get("source") or "").strip().lower()
@@ -126,6 +141,12 @@ def commercial_readiness(item: Dict) -> Dict:
         }
 
     status = _classify_license(license_name)
+
+    # LICENSE 元数据未知时，README / Model Card 中非常明确的限制语句可作为兜底；
+    # 若 SPDX 已明确为 MIT/Apache 等，则不让正文中的一般性“research only”讨论覆盖许可证事实。
+    if status == "unknown" and _explicit_text_restriction(item):
+        status = "restricted"
+
     if status == "permissive":
         return {
             "status": status,
@@ -151,7 +172,7 @@ def commercial_readiness(item: Dict) -> Dict:
             "commercial_candidate": False,
             "direct_reuse_ready": False,
             "score": 0,
-            "reason": "公开许可证包含明确非商业或研究用途限制",
+            "reason": "公开许可证或项目说明包含明确非商业/研究用途限制",
         }
 
     # GitHub 无许可证仍可能有很强的架构/产品参考价值，但不能声称代码可直接商用；
