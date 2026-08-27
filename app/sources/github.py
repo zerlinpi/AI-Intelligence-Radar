@@ -6,6 +6,10 @@ import requests
 from app.commercial_readiness import attach_commercial_metrics, commercial_readiness
 from app.config import GITHUB_TOKEN
 from app.deployment_readiness import attach_deployment_metrics, deployment_readiness
+from app.github_activity import (
+    RECENT_COMMIT_WINDOW_DAYS,
+    attach_github_activity_metrics,
+)
 from app.sources.base import BaseCollector
 from app.core.logger import get_logger
 from app.relevance import attach_eligibility_metrics, report_eligibility
@@ -15,6 +19,7 @@ SEARCH_API = "https://api.github.com/search/repositories"
 README_ENRICH_LIMIT = 24
 README_TEXT_LIMIT = 4500
 ENGINEERING_TREE_ENRICH_LIMIT = 12
+ENGINEERING_ACTIVITY_ENRICH_LIMIT = 8
 
 logger = get_logger("GitHub采集")
 
@@ -181,6 +186,97 @@ def _attach_engineering_tree_metrics(record: dict, paths) -> dict:
     return record
 
 
+def _enrich_latest_release(record: dict, full_name: str, headers: dict) -> bool:
+    """获取最新正式 Release；404 表示已确认当前没有正式 Release，不算采集失败。"""
+    if not full_name:
+        return False
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{full_name}/releases/latest",
+            headers=headers,
+            timeout=12,
+        )
+        metrics = record.get("metrics") or {}
+        if response.status_code == 404:
+            metrics["release_checked"] = True
+            metrics["latest_release_tag"] = ""
+            metrics["latest_release_name"] = ""
+            metrics["latest_release_published_at"] = ""
+            metrics["latest_release_url"] = ""
+            record["metrics"] = metrics
+            return True
+        if response.status_code == 403:
+            return False
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return False
+
+        metrics["release_checked"] = True
+        metrics["latest_release_tag"] = str(payload.get("tag_name") or "").strip()
+        metrics["latest_release_name"] = str(payload.get("name") or "").strip()
+        metrics["latest_release_published_at"] = str(payload.get("published_at") or "").strip()
+        metrics["latest_release_url"] = str(payload.get("html_url") or "").strip()
+        record["metrics"] = metrics
+        return True
+    except Exception:
+        return False
+
+
+def _enrich_recent_commits(
+    record: dict,
+    full_name: str,
+    default_branch: str,
+    headers: dict,
+    now: datetime,
+) -> bool:
+    """抽样默认分支近14天提交，验证“最近有开发”而不是仅依赖 pushed_at 元数据。"""
+    if not full_name or not default_branch:
+        return False
+    since = (now - timedelta(days=RECENT_COMMIT_WINDOW_DAYS)).isoformat()
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{full_name}/commits",
+            headers=headers,
+            params={"sha": default_branch, "since": since, "per_page": 10},
+            timeout=12,
+        )
+        metrics = record.get("metrics") or {}
+        if response.status_code == 409:
+            rows = []
+        else:
+            if response.status_code in {403, 404}:
+                return False
+            response.raise_for_status()
+            rows = response.json()
+            if not isinstance(rows, list):
+                return False
+
+        latest_at = ""
+        latest_sha = ""
+        if rows:
+            first = rows[0] if isinstance(rows[0], dict) else {}
+            latest_sha = str(first.get("sha") or "").strip()
+            commit = first.get("commit") or {}
+            if isinstance(commit, dict):
+                committer = commit.get("committer") or {}
+                author = commit.get("author") or {}
+                if isinstance(committer, dict):
+                    latest_at = str(committer.get("date") or "").strip()
+                if not latest_at and isinstance(author, dict):
+                    latest_at = str(author.get("date") or "").strip()
+
+        metrics["recent_commit_activity_checked"] = True
+        metrics["recent_commit_window_days"] = RECENT_COMMIT_WINDOW_DAYS
+        metrics["recent_commit_sample_count"] = len(rows)
+        metrics["recent_commit_latest_at"] = latest_at
+        metrics["recent_commit_latest_sha"] = latest_sha
+        record["metrics"] = metrics
+        return True
+    except Exception:
+        return False
+
+
 def _license_spdx(item: dict) -> str:
     license_data = item.get("license") or {}
     if not isinstance(license_data, dict):
@@ -213,6 +309,9 @@ def _build_record(item: dict, now: datetime):
     license_spdx = _license_spdx(item)
     homepage = str(item.get("homepage") or "").strip()
     repo_size_kb = item.get("size", 0) or 0
+    pushed_at = str(item.get("pushed_at") or "").strip()
+    updated_at = str(item.get("updated_at") or "").strip()
+    signal_at = pushed_at or updated_at or str(created_at)
 
     description_parts = []
     if item.get("description"):
@@ -229,6 +328,7 @@ def _build_record(item: dict, now: datetime):
         "title": item.get("full_name") or item.get("name") or "",
         "url": item.get("html_url") or "",
         "description": " | ".join(part for part in description_parts if part),
+        # 保留仓库真实创建时间；“今天是否值得看”由 github_signal_at 单独表达，避免成熟仓库被伪装成新仓库。
         "created_at": created_at,
         "stars": stars,
         "forks": forks,
@@ -245,8 +345,10 @@ def _build_record(item: dict, now: datetime):
             "homepage": homepage,
             "archived": bool(item.get("archived")),
             "disabled": bool(item.get("disabled")),
-            "updated_at": item.get("updated_at") or "",
-            "pushed_at": item.get("pushed_at") or "",
+            "repo_created_at": created_at,
+            "github_signal_at": signal_at,
+            "updated_at": updated_at,
+            "pushed_at": pushed_at,
             "default_branch": item.get("default_branch") or "",
             "readme_evidence": False,
             "readme_chars": 0,
@@ -257,6 +359,18 @@ def _build_record(item: dict, now: datetime):
             "deployment_files": [],
             "test_files": [],
             "ci_files": [],
+            "release_checked": False,
+            "latest_release_tag": "",
+            "latest_release_name": "",
+            "latest_release_published_at": "",
+            "latest_release_url": "",
+            "recent_commit_activity_checked": False,
+            "recent_commit_window_days": RECENT_COMMIT_WINDOW_DAYS,
+            "recent_commit_sample_count": 0,
+            "recent_commit_latest_at": "",
+            "recent_commit_latest_sha": "",
+            "github_activity_score": 0,
+            "github_activity_evidence": [],
         },
     }
     attach_commercial_metrics(record)
@@ -286,8 +400,9 @@ class GithubCollector(BaseCollector):
 
         for search_term in SEARCH_TERMS:
             params = {
-                "q": f"{search_term} created:>={since} stars:>=5 fork:false archived:false",
-                "sort": "stars",
+                # pushed 同时覆盖新仓库与成熟仓库的新版本/新提交，不再把 GitHub 雷达限制为“最近7天刚建仓库”。
+                "q": f"{search_term} pushed:>={since} stars:>=5 fork:false archived:false",
+                "sort": "updated",
                 "order": "desc",
                 "per_page": fetch_limit,
             }
@@ -363,6 +478,8 @@ class GithubCollector(BaseCollector):
         enriched = 0
         tree_attempted = 0
         tree_enriched = 0
+        activity_attempted = 0
+        activity_enriched = 0
 
         for record, raw in preliminary:
             commercial = commercial_readiness(record)
@@ -379,17 +496,33 @@ class GithubCollector(BaseCollector):
                 rejected += 1
                 continue
 
+            full_name = str(raw.get("full_name") or "").strip()
+            default_branch = str(raw.get("default_branch") or "").strip()
+
             # 只对已经通过商业许可和业务资格 Gate 的前若干仓库读取文件树，控制 GitHub API 预算。
             # 文件树是额外增强：请求失败时保留原有成熟度逻辑；请求成功时用真实代码/配置/测试证据加强 Gate。
             if tree_attempted < ENGINEERING_TREE_ENRICH_LIMIT:
                 tree_attempted += 1
-                full_name = str(raw.get("full_name") or "").strip()
-                default_branch = str(raw.get("default_branch") or "").strip()
                 paths = _fetch_engineering_tree(full_name, default_branch, headers)
                 if paths is not None:
                     _attach_engineering_tree_metrics(record, paths)
                     tree_enriched += 1
 
+            # Release + commits 每个仓库最多额外两次 core API；限制8个候选，使无Token场景仍控制在GitHub公共额度内。
+            if activity_attempted < ENGINEERING_ACTIVITY_ENRICH_LIMIT:
+                activity_attempted += 1
+                release_ok = _enrich_latest_release(record, full_name, headers)
+                commits_ok = _enrich_recent_commits(
+                    record,
+                    full_name,
+                    default_branch,
+                    headers,
+                    now,
+                )
+                if release_ok or commits_ok:
+                    activity_enriched += 1
+
+            attach_github_activity_metrics(record)
             readiness = deployment_readiness(record)
             attach_deployment_metrics(record, readiness)
             if not readiness["eligible"]:
@@ -405,20 +538,23 @@ class GithubCollector(BaseCollector):
                 float((x.get("metrics") or {}).get("opportunity_score", 0) or 0),
                 float((x.get("metrics") or {}).get("commercial_readiness_score", 0) or 0),
                 float((x.get("metrics") or {}).get("deployment_readiness_score", 0) or 0),
+                float((x.get("metrics") or {}).get("github_activity_score", 0) or 0),
                 float((x.get("metrics") or {}).get("momentum", 0) or 0),
-                x.get("created_at") or "",
+                str((x.get("metrics") or {}).get("github_signal_at") or ""),
             ),
             reverse=True,
         )
 
         logger.info(
-            "GitHub 近期候选=%s 搜索成功=%s/%s README增强=%s 文件树增强=%s/%s 许可淘汰=%s 资格淘汰=%s 部署淘汰=%s 合格=%s 最终返回=%s",
+            "GitHub 活跃候选=%s 搜索成功=%s/%s README增强=%s 文件树增强=%s/%s 版本提交增强=%s/%s 许可淘汰=%s 资格淘汰=%s 部署淘汰=%s 合格=%s 最终返回=%s",
             len(candidates),
             search_successes,
             len(SEARCH_TERMS),
             enriched,
             tree_enriched,
             tree_attempted,
+            activity_enriched,
+            activity_attempted,
             license_rejected,
             rejected,
             deployment_rejected,
