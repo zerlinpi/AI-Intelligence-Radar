@@ -95,11 +95,19 @@ def test_runtime_status_exposes_collector_health_without_secrets(monkeypatch):
         name="policy",
         get_last_health=lambda: {
             "source": "policy",
-            "success": True,
+            "success": False,
             "attempts": 1,
             "result_count": 3,
             "completed_at": "2026-08-27T02:00:10+00:00",
-            "error": "",
+            "error": "政策机构覆盖失败：CBP",
+            "policy_sources": {
+                "complete": False,
+                "query_complete": False,
+                "authorities_success": 4,
+                "authorities_total": 5,
+                "failed_authorities": ["CBP"],
+                "degraded_authorities": ["Amazon"],
+            },
         },
     )
     monkeypatch.setattr(main, "COLLECTORS", [collector])
@@ -113,7 +121,12 @@ def test_runtime_status_exposes_collector_health_without_secrets(monkeypatch):
 
     assert result["采集器状态"]["github"]["成功"] is False
     assert result["采集器状态"]["github"]["尝试次数"] == 2
-    assert result["采集器状态"]["policy"]["成功"] is True
+    assert result["采集器状态"]["policy"]["成功"] is False
+    coverage = result["采集器状态"]["policy"]["机构覆盖"]
+    assert coverage["完整"] is False
+    assert coverage["成功机构数"] == 4
+    assert coverage["失败机构"] == ["CBP"]
+    assert coverage["降级机构"] == ["Amazon"]
     assert "Webhook" not in str(result)
     assert "token" not in str(result).lower()
 
