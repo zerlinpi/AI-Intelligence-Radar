@@ -4,135 +4,48 @@ from typing import Dict
 from app.scoring import business_opportunity_profile
 
 
-# GitHub 可以额外保留真正可复用的开发基础设施/工程突破，
-# 但仅有“AI/Agent/Chat”字样的普通 Demo 不视为可产品化开发能力。
 GITHUB_DEVELOPER_PRODUCT_SIGNALS = (
-    "sdk",
-    "api",
-    "framework",
-    "library",
-    "runtime",
-    "compiler",
-    "engine",
-    "toolkit",
-    "cli",
-    "server",
-    "platform",
-    "database",
-    "workflow",
-    "automation",
-    "firmware",
-    "embedded",
-    "edge ai",
-    "on-device",
-    "mcu",
-    "esp32",
-    "robotics",
+    "sdk", "api", "framework", "library", "runtime", "compiler", "engine",
+    "toolkit", "cli", "server", "platform", "database", "workflow", "automation",
+    "firmware", "embedded", "edge ai", "on-device", "mcu", "esp32", "robotics",
     "computer vision",
 )
 
-# 跨境关键词必须落到真实工具/代码形态，避免 “Amazon reviews dataset”
-# 仅靠 Amazon/reviews 之类词进入日报。
 GITHUB_CROSS_BORDER_PRODUCT_SIGNALS = (
-    "sdk",
-    "api",
-    "tool",
-    "app",
-    "platform",
-    "workflow",
-    "automation",
-    "dashboard",
-    "plugin",
-    "extension",
-    "integration",
-    "analytics",
-    "copilot",
-    "assistant",
-    "agent",
-    "scraper",
-    "crawler",
-    "monitor",
-    "optimizer",
-    "generator",
+    "sdk", "api", "tool", "app", "platform", "workflow", "automation", "dashboard",
+    "plugin", "extension", "integration", "analytics", "copilot", "assistant", "agent",
+    "scraper", "crawler", "monitor", "optimizer", "generator",
 )
 
-# 这些词经常让教程、模板、演示仓库因为同时出现 framework/runtime 等词被误判为工程突破。
-# 只用于“纯开发基础设施”路径；若项目本身有明确实体商品价值，不会被这里误杀。
 GITHUB_LOW_VALUE_SIGNALS = (
-    "demo",
-    "example project",
-    "example app",
-    "tutorial",
-    "course",
-    "workshop tutorial",
-    "boilerplate",
-    "starter template",
-    "template repo",
-    "toy project",
-    "awesome list",
+    "demo", "example project", "example app", "tutorial", "course", "workshop tutorial",
+    "boilerplate", "starter template", "template repo", "toy project", "awesome list",
     "prompt collection",
 )
 
-# 对论文和模型而言，这些词通常代表“研究材料”而非可直接开发的机会。
-# 它们不是绝对否决项；如果同时存在明确跨境工作流或实体商品验证路径，仍可通过。
 RESEARCH_ONLY_SIGNALS = (
-    "benchmark",
-    "benchmarking",
-    "dataset",
-    "survey",
-    "leaderboard",
-    "ablation",
-    "synthetic benchmark",
-    "evaluation suite",
-    "research benchmark",
-    "taxonomy",
+    "benchmark", "benchmarking", "dataset", "survey", "leaderboard", "ablation",
+    "synthetic benchmark", "evaluation suite", "research benchmark", "taxonomy",
     "literature review",
 )
 
-# 论文/模型若声称可落到硬件或商品，至少应出现某种实际验证/部署语义，
-# 防止“camera + sensor + smart device”只在背景描述里共现就被判定可售产品。
 APPLIED_VALIDATION_SIGNALS = (
-    "prototype",
-    "prototype system",
-    "deployed",
-    "deployment",
-    "deployable",
-    "demonstrate",
-    "demonstrates",
-    "real-time",
-    "real time",
-    "latency",
-    "memory footprint",
-    "power consumption",
-    "energy consumption",
-    "on-device inference",
-    "embedded hardware",
-    "field test",
-    "user study",
-    "production",
+    "prototype", "prototype system", "deployed", "deployment", "deployable", "demonstrate",
+    "demonstrates", "real-time", "real time", "latency", "memory footprint",
+    "power consumption", "energy consumption", "on-device inference", "embedded hardware",
+    "field test", "user study", "production",
 )
 
-# 直接跨境业务用途必须比 “amazon/reviews” 这种宽泛词更具体。
+STRONG_APPLIED_VALIDATION_SIGNALS = (
+    "prototype", "prototype system", "deployed", "deployment", "deployable", "demonstrate",
+    "demonstrates", "field test", "user study", "production system", "production deployment",
+)
+
 DIRECT_CROSS_BORDER_APPLICATION_SIGNALS = (
-    "product listing",
-    "listing optimization",
-    "keyword research",
-    "product research",
-    "competitor research",
-    "inventory",
-    "fulfillment",
-    "logistics",
-    "pricing",
-    "price tracking",
-    "advertising",
-    "ad creative",
-    "customer service",
-    "customer support",
-    "localization",
-    "sourcing",
-    "procurement",
-    "seller workflow",
-    "merchant workflow",
+    "product listing", "listing optimization", "keyword research", "product research",
+    "competitor research", "inventory", "fulfillment", "logistics", "pricing",
+    "price tracking", "advertising", "ad creative", "customer service", "customer support",
+    "localization", "sourcing", "procurement", "seller workflow", "merchant workflow",
 )
 
 DIMENSION_THRESHOLDS = {
@@ -142,8 +55,6 @@ DIMENSION_THRESHOLDS = {
     "physical_product": 8,
 }
 
-# 不同来源的信息结构不同，不能用同一个“描述长度”标准。
-# 分数是证据充分度，不是热度；只负责决定是否值得进入后续排序/DeepSeek。
 SOURCE_EVIDENCE_MIN = {
     "github": 25,
     "arxiv": 45,
@@ -153,8 +64,6 @@ SOURCE_EVIDENCE_MIN = {
 }
 DEFAULT_EVIDENCE_MIN = 25
 
-# 论文和 Model Card 经常用“without hardware deployment / no sensor integration”描述研究边界。
-# 这些否定句里的关键词不能反过来成为“硬件开发/实体商品”的正面证据。
 _NEGATED_CLAUSE_PATTERNS = (
     re.compile(
         r"\bwithout\b.*?(?=\b(?:but|however|yet|while|although)\b|[.;!?]|$)",
@@ -179,6 +88,13 @@ _NEGATED_CLAUSE_PATTERNS = (
         r".*?(?=\b(?:but|however|yet|while|although)\b|[.;!?]|$)",
         re.IGNORECASE,
     ),
+    # “no seller automation, SDK, app, workflow...” 这类研究边界说明不能产生正向产品信号。
+    re.compile(
+        r"\b(?:no|without)\s+(?:seller\s+|merchant\s+|production\s+)?"
+        r"(?:automation|sdk|api|app|workflow|integration|optimizer|tool|platform)\b"
+        r".*?(?=\b(?:but|however|yet|while|although)\b|[.;!?]|$)",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -192,13 +108,11 @@ def _text(item: Dict) -> str:
                 extra.extend(str(part) for part in value)
             elif value:
                 extra.append(str(value))
-    return " ".join(
-        [
-            str(item.get("title") or ""),
-            str(item.get("description") or ""),
-            *extra,
-        ]
-    ).lower()
+    return " ".join([
+        str(item.get("title") or ""),
+        str(item.get("description") or ""),
+        *extra,
+    ]).lower()
 
 
 def _contains(text: str, keyword: str) -> bool:
@@ -208,8 +122,19 @@ def _contains(text: str, keyword: str) -> bool:
     return keyword in text
 
 
-def _contains_any(item: Dict, signals) -> bool:
-    text = _text(item)
+def _strip_negated_application_claims(value: str) -> str:
+    text = " ".join(str(value or "").split())
+    for pattern in _NEGATED_CLAUSE_PATTERNS:
+        text = pattern.sub(" ", text)
+    return " ".join(text.split())
+
+
+def _positive_text(item: Dict) -> str:
+    return _strip_negated_application_claims(_text(item))
+
+
+def _contains_any(item: Dict, signals, *, positive_only: bool = False) -> bool:
+    text = _positive_text(item) if positive_only else _text(item)
     return any(_contains(text, keyword) for keyword in signals)
 
 
@@ -221,11 +146,11 @@ def _dimension(profile: Dict, name: str) -> float:
 
 
 def _has_github_developer_product_signal(item: Dict) -> bool:
-    return _contains_any(item, GITHUB_DEVELOPER_PRODUCT_SIGNALS)
+    return _contains_any(item, GITHUB_DEVELOPER_PRODUCT_SIGNALS, positive_only=True)
 
 
 def _has_github_cross_border_product_signal(item: Dict) -> bool:
-    return _contains_any(item, GITHUB_CROSS_BORDER_PRODUCT_SIGNALS)
+    return _contains_any(item, GITHUB_CROSS_BORDER_PRODUCT_SIGNALS, positive_only=True)
 
 
 def _has_github_low_value_signal(item: Dict) -> bool:
@@ -237,15 +162,18 @@ def _has_research_only_signal(item: Dict) -> bool:
 
 
 def _has_applied_validation_signal(item: Dict) -> bool:
-    return _contains_any(item, APPLIED_VALIDATION_SIGNALS)
+    return _contains_any(item, APPLIED_VALIDATION_SIGNALS, positive_only=True)
+
+
+def _has_strong_applied_validation_signal(item: Dict) -> bool:
+    return _contains_any(item, STRONG_APPLIED_VALIDATION_SIGNALS, positive_only=True)
 
 
 def _has_direct_cross_border_application(item: Dict) -> bool:
-    return _contains_any(item, DIRECT_CROSS_BORDER_APPLICATION_SIGNALS)
+    return _contains_any(item, DIRECT_CROSS_BORDER_APPLICATION_SIGNALS, positive_only=True)
 
 
 def _evidence_quality(item: Dict) -> int:
-    """返回 0-100 的来源证据质量分，不把热度当作证据。"""
     source = str(item.get("source") or "").lower()
     description = " ".join(str(item.get("description") or "").split())
     metrics = item.get("metrics") or {}
@@ -259,7 +187,6 @@ def _evidence_quality(item: Dict) -> int:
             score += 30
         elif len(description) >= 18:
             score += 25
-
         topics = metrics.get("topics") or []
         if isinstance(topics, list):
             score += min(len(topics) * 4, 12)
@@ -312,10 +239,8 @@ def _evidence_quality(item: Dict) -> int:
         if str(item.get("url") or "").strip():
             score += 10
         metrics_values = (
-            metrics.get("upvotes"),
-            metrics.get("comments"),
-            item.get("upvotes"),
-            item.get("comments"),
+            metrics.get("upvotes"), metrics.get("comments"),
+            item.get("upvotes"), item.get("comments"),
         )
         if any(value not in (None, "", 0, 0.0) for value in metrics_values):
             score += 10
@@ -334,35 +259,17 @@ def _evidence_sufficient(item: Dict) -> bool:
     return _evidence_quality(item) >= SOURCE_EVIDENCE_MIN.get(source, DEFAULT_EVIDENCE_MIN)
 
 
-def _strip_negated_application_claims(value: str) -> str:
-    """删除明确否定的应用范围子句，避免关键词评分把“没有硬件用途”当成硬件证据。
-
-    只删除否定子句本身；遇到 but/however/yet/while/although 会停止，保留后面的正面转折。
-    该函数只用于相关性评分，不修改最终展示或保存的原始文本。
-    """
-    text = " ".join(str(value or "").split())
-    for pattern in _NEGATED_CLAUSE_PATTERNS:
-        text = pattern.sub(" ", text)
-    return " ".join(text.split())
-
-
 def _profile_for_eligibility(item: Dict, source: str) -> Dict:
-    """论文/模型先屏蔽否定应用声明，再计算真正可用于资格判断的机会画像。"""
-    if source not in {"arxiv", "huggingface"}:
-        return business_opportunity_profile(item)
-
+    # 所有来源都先去掉明确否定的应用声明；不修改原始展示文本。
     cleaned = dict(item)
     cleaned["description"] = _strip_negated_application_claims(item.get("description") or "")
-
     metrics = item.get("metrics") or {}
     if isinstance(metrics, dict):
         cleaned["metrics"] = dict(metrics)
-
     return business_opportunity_profile(cleaned)
 
 
 def _physical_product_path(profile: Dict) -> bool:
-    """实体商品路径必须同时有硬件能力、实体商品语义和可识别商品品类。"""
     hardware = _dimension(profile, "hardware_enablement") >= DIMENSION_THRESHOLDS["hardware_enablement"]
     physical = _dimension(profile, "physical_product") >= DIMENSION_THRESHOLDS["physical_product"]
     categories = list(profile.get("product_categories") or [])
@@ -370,8 +277,7 @@ def _physical_product_path(profile: Dict) -> bool:
 
 
 def _primary_use_case(item: Dict, profile: Dict, source: str, physical_product_path: bool) -> str:
-    text = _text(item)
-
+    text = _positive_text(item)
     cross_border_cases = (
         ("Listing/内容", ("product listing", "listing optimization", "localization", "translation", "seo")),
         ("选品/竞品", ("product research", "competitor research", "sourcing", "procurement")),
@@ -398,7 +304,6 @@ def _primary_use_case(item: Dict, profile: Dict, source: str, physical_product_p
         for label, signals in developer_cases:
             if any(_contains(text, signal) for signal in signals):
                 return label
-
     return "其他"
 
 
@@ -413,11 +318,6 @@ def _primary_lane(source: str, cross_border: bool, physical_product_path: bool, 
 
 
 def report_eligibility(item: Dict) -> Dict:
-    """判断一个项目是否有资格进入最终日报。
-
-    热度和新鲜度只能影响已合格项目之间的排序，不能让无业务价值、证据不足、
-    或只有宽泛关键词的项目绕过本门槛。
-    """
     item = item if isinstance(item, dict) else {}
     source = str(item.get("source") or "").lower()
     profile = _profile_for_eligibility(item, source)
@@ -432,6 +332,7 @@ def report_eligibility(item: Dict) -> Dict:
     evidence_sufficient = _evidence_sufficient(item)
     research_only = _has_research_only_signal(item)
     applied_validation = _has_applied_validation_signal(item)
+    strong_applied_validation = _has_strong_applied_validation_signal(item)
     direct_cross_border_application = _has_direct_cross_border_application(item)
 
     eligible = False
@@ -440,13 +341,8 @@ def report_eligibility(item: Dict) -> Dict:
 
     if source == "github":
         low_value_example = _has_github_low_value_signal(item)
-        developer_product = (
-            technical
-            and _has_github_developer_product_signal(item)
-            and not low_value_example
-        )
+        developer_product = technical and _has_github_developer_product_signal(item) and not low_value_example
         cross_border_product = cross_border and _has_github_cross_border_product_signal(item)
-
         eligible = cross_border_product or physical_product_path or developer_product
         if eligible:
             if cross_border_product:
@@ -464,9 +360,14 @@ def report_eligibility(item: Dict) -> Dict:
 
     elif source in {"arxiv", "huggingface"}:
         cross_border_applied = cross_border and direct_cross_border_application
-        physical_applied = physical_product_path and (applied_validation or source == "huggingface")
+        if source == "arxiv":
+            # 一般应用论文：实体路径已经很明确即可进入；
+            # benchmark/dataset/survey：必须再有 prototype/deployment/demonstration 等强验证。
+            physical_applied = physical_product_path and (not research_only or strong_applied_validation)
+        else:
+            # Model Card 已通过任务/库/标签/卡片证据门槛，明确实体路径即可进入。
+            physical_applied = physical_product_path
         eligible = cross_border_applied or physical_applied
-
         if eligible:
             if cross_border_applied:
                 reason = "具有明确跨境业务工作流或运营用途"
@@ -474,8 +375,8 @@ def report_eligibility(item: Dict) -> Dict:
                 reason = "具备可验证的硬件到实体商品落地路径"
         elif cross_border and not direct_cross_border_application:
             reason = "提到跨境平台/数据，但缺少可直接用于运营或开发的具体工作流"
-        elif research_only and not applied_validation:
-            reason = "主要是benchmark、dataset、survey等研究材料，缺少实际应用验证"
+        elif research_only and not strong_applied_validation:
+            reason = "主要是benchmark、dataset、survey等研究材料，缺少实际原型或部署验证"
         elif hardware or physical or technical:
             reason = "具有技术或硬件研究价值，但缺少跨境用途或明确实体商品落地路径"
 
@@ -483,11 +384,7 @@ def report_eligibility(item: Dict) -> Dict:
         cross_border_applied = cross_border and direct_cross_border_application
         eligible = cross_border_applied or physical_product_path
         if eligible:
-            reason = (
-                "具备明确跨境业务用途"
-                if cross_border_applied
-                else "具备明确硬件与实体商品机会"
-            )
+            reason = "具备明确跨境业务用途" if cross_border_applied else "具备明确硬件与实体商品机会"
         elif cross_border:
             reason = "与电商相关但用途过于宽泛，缺少具体运营/产品价值路径"
         elif hardware or physical:
@@ -504,20 +401,14 @@ def report_eligibility(item: Dict) -> Dict:
 
     primary_lane = _primary_lane(source, cross_border, physical_product_path, developer_product)
     primary_use_case = _primary_use_case(item, profile, source, physical_product_path)
-
     strongest_dimension = max(
-        (
-            ("cross_border", _dimension(profile, "cross_border")),
-            ("technical_frontier", _dimension(profile, "technical_frontier")),
-            ("hardware_enablement", _dimension(profile, "hardware_enablement")),
-            ("physical_product", _dimension(profile, "physical_product")),
-        ),
-        key=lambda row: row[1],
-    )[1]
-    confidence = min(
-        100,
-        round(evidence_quality * 0.65 + min(strongest_dimension / 30 * 100, 100) * 0.35),
+        (_dimension(profile, "cross_border"), _dimension(profile, "technical_frontier"),
+         _dimension(profile, "hardware_enablement"), _dimension(profile, "physical_product")),
+        default=0,
     )
+    confidence = min(100, round(
+        evidence_quality * 0.65 + min(strongest_dimension / 30 * 100, 100) * 0.35
+    ))
 
     return {
         "eligible": bool(eligible),
@@ -533,6 +424,7 @@ def report_eligibility(item: Dict) -> Dict:
         "evidence_quality": evidence_quality,
         "research_only": research_only,
         "applied_validation": applied_validation,
+        "strong_applied_validation": strong_applied_validation,
         "primary_lane": primary_lane,
         "primary_use_case": primary_use_case,
         "eligibility_confidence": confidence,
@@ -540,14 +432,12 @@ def report_eligibility(item: Dict) -> Dict:
 
 
 def attach_eligibility_metrics(item: Dict, result: Dict) -> Dict:
-    """把资格判断写回 metrics，方便日志、DeepSeek 和数据库追踪。"""
     metrics = item.get("metrics")
     if not isinstance(metrics, dict):
         metrics = {}
         item["metrics"] = metrics
 
     history_update_reason = str(metrics.get("history_material_update_reason") or "").strip()
-
     profile = result.get("profile") or {}
     evidence = list(profile.get("evidence") or [])
     if history_update_reason:
@@ -562,6 +452,7 @@ def attach_eligibility_metrics(item: Dict, result: Dict) -> Dict:
     metrics["physical_product_path"] = bool(result.get("physical_product_path"))
     metrics["research_only"] = bool(result.get("research_only"))
     metrics["applied_validation"] = bool(result.get("applied_validation"))
+    metrics["strong_applied_validation"] = bool(result.get("strong_applied_validation"))
     metrics["primary_lane"] = str(result.get("primary_lane") or "其他")
     metrics["primary_use_case"] = str(result.get("primary_use_case") or "其他")
     metrics["eligibility_reason"] = str(result.get("reason") or "")
