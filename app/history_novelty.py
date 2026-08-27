@@ -27,11 +27,14 @@ OPPORTUNITY_FATIGUE_SIMILARITY = 0.76
 OPPORTUNITY_FATIGUE_MIN_DESCRIPTION_CHARS = 72
 
 # 重复抑制不能把真正的重要变化永久封掉。阈值故意偏保守：
-# 只有明显的增长爆发、仓库功能说明实质变化，或官方政策新版本才重新进入雷达。
+# 只有明显的增长爆发、正式 Release、工程资产实质变化、仓库功能说明实质变化，
+# 或官方政策新版本才重新进入雷达。普通 commit 本身不是重复推送理由。
 GITHUB_STAR_GROWTH_RATIO = 2.5
 GITHUB_STAR_GROWTH_DELTA = 150
 GITHUB_FORK_GROWTH_RATIO = 2.5
 GITHUB_FORK_GROWTH_DELTA = 30
+GITHUB_CODE_FILE_GROWTH_RATIO = 1.5
+GITHUB_CODE_FILE_GROWTH_DELTA = 10
 PROJECT_TEXT_UPDATE_SIMILARITY = 0.70
 PROJECT_UPDATE_MIN_HOURS = 12
 POLICY_TEXT_UPDATE_SIMILARITY = 0.82
@@ -119,6 +122,16 @@ def _number(value) -> float:
         return max(float(value or 0), 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _metric_list(data: dict, key: str) -> list:
+    metrics = data.get("metrics") or {}
+    if not isinstance(metrics, dict):
+        return []
+    value = metrics.get(key) or []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item or "").strip()]
 
 
 def _critical_facts(value: str) -> set:
@@ -253,6 +266,64 @@ def _growth_reason(current: dict, previous: dict) -> str:
     return ""
 
 
+def _release_update_reason(current: dict, previous: dict) -> str:
+    """只有可证明的新正式版本才允许同一 GitHub 仓库跨天重新进入日报。"""
+    current_metrics = current.get("metrics") or {}
+    previous_metrics = previous.get("metrics") or {}
+    if not isinstance(current_metrics, dict) or not isinstance(previous_metrics, dict):
+        return ""
+
+    current_tag = str(current_metrics.get("latest_release_tag") or "").strip()
+    previous_tag = str(previous_metrics.get("latest_release_tag") or "").strip()
+    if not current_tag:
+        return ""
+
+    if previous_tag and current_tag != previous_tag:
+        return f"GitHub 发布新正式版本：{previous_tag}→{current_tag}"
+
+    # 部署新功能后的第一轮可能首次采集到一个早已存在的 Release。为了不把历史版本误报成今天的新版本，
+    # 只有发布时间明确晚于“上次 Radar 处理时间”时，首次观察到的 Release 才算实质更新。
+    if not previous_tag:
+        release_at = _metric_datetime(current, "latest_release_published_at")
+        previous_processed = _metric_datetime(previous, "history_processed_at")
+        if release_at is not None and previous_processed is not None and release_at > previous_processed:
+            return f"GitHub 在上次日报后发布正式版本：{current_tag}"
+
+    return ""
+
+
+def _engineering_asset_update_reason(current: dict, previous: dict) -> str:
+    """文件树两次都成功时，识别新增可安装/部署资产或代码规模跃迁。"""
+    current_metrics = current.get("metrics") or {}
+    previous_metrics = previous.get("metrics") or {}
+    if not isinstance(current_metrics, dict) or not isinstance(previous_metrics, dict):
+        return ""
+    if not current_metrics.get("engineering_tree_evidence") or not previous_metrics.get("engineering_tree_evidence"):
+        return ""
+
+    for key, label in (
+        ("deployment_files", "部署资产"),
+        ("package_config_files", "可安装/构建资产"),
+    ):
+        current_values = set(_metric_list(current, key))
+        previous_values = set(_metric_list(previous, key))
+        added = sorted(current_values - previous_values)
+        if added:
+            return f"GitHub 新增{label}：{'/'.join(added[:3])}"
+
+    current_code = int(_number(current_metrics.get("repo_code_file_count")))
+    previous_code = int(_number(previous_metrics.get("repo_code_file_count")))
+    code_delta = current_code - previous_code
+    if (
+        previous_code >= 5
+        and code_delta >= GITHUB_CODE_FILE_GROWTH_DELTA
+        and current_code >= previous_code * GITHUB_CODE_FILE_GROWTH_RATIO
+    ):
+        return f"GitHub 代码资产显著扩展：{previous_code}→{current_code}个代码文件"
+
+    return ""
+
+
 def _project_material_update_reason(current: dict, previous: dict) -> str:
     growth = _growth_reason(current, previous)
     if growth:
@@ -264,6 +335,12 @@ def _project_material_update_reason(current: dict, previous: dict) -> str:
         return ""
     if str(current.get("source") or "").lower() != "github":
         return ""
+    if str(previous.get("source") or "").lower() != "github":
+        return ""
+
+    release_reason = _release_update_reason(current, previous)
+    if release_reason:
+        return release_reason
 
     current_push = _metric_datetime(current, "pushed_at") or _metric_datetime(current, "updated_at")
     previous_push = _metric_datetime(previous, "pushed_at") or _metric_datetime(previous, "updated_at")
@@ -271,6 +348,10 @@ def _project_material_update_reason(current: dict, previous: dict) -> str:
         return ""
     if current_push - previous_push < timedelta(hours=PROJECT_UPDATE_MIN_HOURS):
         return ""
+
+    asset_reason = _engineering_asset_update_reason(current, previous)
+    if asset_reason:
+        return asset_reason
 
     current_description = str(current.get("description") or "")
     previous_description = str(previous.get("description") or "")
