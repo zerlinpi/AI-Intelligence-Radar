@@ -128,22 +128,23 @@ def github_engineering_readiness(item: Dict) -> Dict:
     if homepage:
         score += 3
 
-    # 空壳/营销仓库即使 Star 很高也不能进入产品候选。
-    has_real_asset = readme or (language and size_kb >= 5)
+    # README 只是说明材料，不等于代码。至少要看到一定仓库体量，并配合语言或 README 证据。
+    # 这能排除 README-only、概念页、营销仓库，即使它们有 Star 或写得很完整。
+    has_real_asset = size_kb >= 5 and (language or readme)
     if not has_real_asset:
         return {
             "eligible": False,
             "score": min(score, 100),
-            "reason": "缺少足够代码体量或README工程证据，无法确认可开发性",
+            "reason": "缺少足够代码体量，README或热度本身不能证明可开发性",
             "evidence": evidence,
         }
 
-    # 开发基础设施和硬件候选要求更高，必须看到 README 或更明显的代码资产。
-    if lane in {"开发基础设施", "实体商品/硬件"} and not (readme or size_kb >= 20):
+    # 开发基础设施和硬件候选要求更高：需要明确代码语言，并达到可复用工程资产体量。
+    if lane in {"开发基础设施", "实体商品/硬件"} and not (language and size_kb >= 20):
         return {
             "eligible": False,
             "score": min(score, 100),
-            "reason": "工程/硬件候选缺少足够代码资产，暂不进入产品开发雷达",
+            "reason": "工程/硬件候选缺少足够代码资产或主要开发语言，暂不进入产品开发雷达",
             "evidence": evidence,
         }
 
