@@ -151,6 +151,59 @@ URGENT_WORDS = (
     "no longer",
 )
 
+# “相关”不等于“今天发生了变化”。以下短语用于确认候选确实包含近期政策、
+# 执法、召回、截止日期或规则变更，而不是普通 evergreen 法规说明页。
+POLICY_CHANGE_PHRASES = (
+    "update",
+    "updated",
+    "updates",
+    "announce",
+    "announced",
+    "announces",
+    "amend",
+    "amended",
+    "amendment",
+    "revise",
+    "revised",
+    "revision",
+    "change",
+    "changed",
+    "changes",
+    "effective",
+    "takes effect",
+    "take effect",
+    "effective date",
+    "deadline",
+    "starting",
+    "begins",
+    "will require",
+    "now requires",
+    "new requirement",
+    "new requirements",
+    "new rule",
+    "new rules",
+    "final rule",
+    "proposed rule",
+    "interim final rule",
+    "enforcement",
+    "enforce",
+    "enforcing",
+    "suspend",
+    "suspended",
+    "remove",
+    "removed",
+    "no longer",
+    "recall",
+    "recalls",
+    "safety alert",
+    "warning letter",
+    "launches",
+    "introduced",
+    "introduces",
+    "expanded",
+    "expands",
+)
+
 # 主题相似度判定时忽略这些泛化词，避免“Amazon policy update”本身造成虚假相似。
 TOPIC_STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is",
@@ -209,6 +262,36 @@ def _policy_relevance(title: str, description: str) -> int:
     if title_hits == 0 and body_hits < 2:
         return 0
     return title_hits * 7 + body_hits * 3 + min(urgent_hits * 4, 16)
+
+
+def _phrase_present(text: str, phrase: str) -> bool:
+    """英文单词按词边界匹配，短语直接按规范化文本匹配，降低 change/changes 等误命中。"""
+    normalized = " ".join(str(text or "").lower().split())
+    phrase = str(phrase or "").lower().strip()
+    if not phrase:
+        return False
+    if " " in phrase:
+        return phrase in normalized
+    return bool(re.search(rf"\b{re.escape(phrase)}\b", normalized))
+
+
+def _policy_change_signal(title: str, description: str):
+    """返回近期变化信号分和证据。
+
+    标题里的变化措辞权重更高；正文命中可作为补充。普通“requirements overview”
+    没有更新/生效/执法等变化措辞时返回 0，不进入日报。
+    """
+    title_hits = [
+        phrase for phrase in POLICY_CHANGE_PHRASES
+        if _phrase_present(title, phrase)
+    ]
+    body_hits = [
+        phrase for phrase in POLICY_CHANGE_PHRASES
+        if _phrase_present(description, phrase) and phrase not in title_hits
+    ]
+    evidence = title_hits + body_hits
+    score = len(title_hits) * 3 + min(len(body_hits), 6)
+    return score, evidence[:8]
 
 
 def _topic_tokens(title: str):
@@ -314,6 +397,7 @@ class PolicyCollector(BaseCollector):
         now = datetime.now(timezone.utc)
         candidates = {}
         stale_rejected = 0
+        no_change_rejected = 0
 
         for source in POLICY_QUERIES:
             oldest = now - timedelta(days=source["lookback_days"])
@@ -346,12 +430,22 @@ class PolicyCollector(BaseCollector):
                 if relevance <= 0:
                     continue
 
+                change_score, change_evidence = _policy_change_signal(title, description)
+                if change_score <= 0:
+                    no_change_rejected += 1
+                    continue
+
                 link = str(getattr(entry, "link", "") or "").strip()
                 if not link:
                     continue
 
                 age_hours = max((now - created).total_seconds() / 3600, 0)
-                score = _recency_first_score(created, source["weight"], relevance)
+                # 时间仍是绝对主排序；变化信号仅作为同一小时附近的质量加权。
+                score = _recency_first_score(
+                    created,
+                    source["weight"],
+                    relevance + min(change_score * 4, 24),
+                )
 
                 key = _candidate_key(title, source["authority"], link)
                 existing = candidates.get(key)
@@ -374,6 +468,8 @@ class PolicyCollector(BaseCollector):
                         "policy_kind": source["kind"],
                         "policy_score": score,
                         "policy_relevance_score": relevance,
+                        "policy_change_score": change_score,
+                        "policy_change_evidence": change_evidence,
                         "age_hours": round(age_hours, 1),
                         "lookback_days": source["lookback_days"],
                         "report_days": source.get("report_days", 30),
@@ -384,15 +480,17 @@ class PolicyCollector(BaseCollector):
         results.sort(
             key=lambda item: (
                 item.get("created_at") or "",
+                (item.get("metrics") or {}).get("policy_change_score", 0),
                 (item.get("metrics") or {}).get("policy_relevance_score", 0),
             ),
             reverse=True,
         )
 
         logger.info(
-            "政策采集完成：原始候选=%s 过期淘汰=%s 同主题去重=%s 合格=%s 选中=%s",
+            "政策采集完成：原始候选=%s 过期淘汰=%s 非变化页淘汰=%s 同主题去重=%s 合格=%s 选中=%s",
             len(candidates),
             stale_rejected,
+            no_change_rejected,
             duplicate_count,
             len(results),
             min(len(results), limit),
