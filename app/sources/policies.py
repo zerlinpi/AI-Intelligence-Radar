@@ -394,22 +394,112 @@ def _fetch_feed(query: str):
 class PolicyCollector(BaseCollector):
     name = "policy"
 
+    def __init__(self):
+        self.policy_source_health = {}
+
+    def get_policy_source_health(self):
+        health = self.policy_source_health if isinstance(self.policy_source_health, dict) else {}
+        return {
+            **health,
+            "failed_authorities": list(health.get("failed_authorities") or []),
+            "degraded_authorities": list(health.get("degraded_authorities") or []),
+            "successful_authorities": list(health.get("successful_authorities") or []),
+            "authorities": {
+                key: dict(value)
+                for key, value in (health.get("authorities") or {}).items()
+            },
+        } if health else {}
+
+    def get_last_health(self):
+        health = super().get_last_health()
+        policy_health = self.get_policy_source_health()
+        if not policy_health:
+            return health
+
+        health["policy_sources"] = policy_health
+        failed = policy_health.get("failed_authorities") or []
+        if failed:
+            health["success"] = False
+            health["error"] = "政策机构覆盖失败：" + "、".join(failed)
+        return health
+
+    def _finalize_source_health(self, authority_rows):
+        failed = []
+        degraded = []
+        successful = []
+        normalized = {}
+
+        for authority, row in authority_rows.items():
+            total = max(int(row.get("queries_total") or 0), 0)
+            succeeded = max(int(row.get("queries_success") or 0), 0)
+            errors = [str(value) for value in (row.get("errors") or [])]
+            available = succeeded > 0
+            if available:
+                successful.append(authority)
+            else:
+                failed.append(authority)
+            if 0 < succeeded < total:
+                degraded.append(authority)
+
+            normalized[authority] = {
+                "success": available,
+                "queries_total": total,
+                "queries_success": succeeded,
+                "entries_seen": max(int(row.get("entries_seen") or 0), 0),
+                "errors": errors,
+            }
+
+        self.policy_source_health = {
+            "complete": not failed,
+            "query_complete": not failed and not degraded,
+            "authorities_total": len(normalized),
+            "authorities_success": len(successful),
+            "successful_authorities": successful,
+            "failed_authorities": failed,
+            "degraded_authorities": degraded,
+            "authorities": normalized,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.info(
+            "政策源覆盖：机构=%s/%s 失败=%s 降级=%s",
+            len(successful),
+            len(normalized),
+            failed,
+            degraded,
+        )
+
     def collect(self, limit: int = 8):
         now = datetime.now(timezone.utc)
         candidates = {}
         stale_rejected = 0
         no_change_rejected = 0
+        authority_rows = {}
 
         for source in POLICY_QUERIES:
+            authority = str(source.get("authority") or source.get("source_name") or "unknown")
+            authority_row = authority_rows.setdefault(
+                authority,
+                {
+                    "queries_total": 0,
+                    "queries_success": 0,
+                    "entries_seen": 0,
+                    "errors": [],
+                },
+            )
+            authority_row["queries_total"] += 1
             oldest = now - timedelta(days=source["lookback_days"])
 
             try:
                 feed = _fetch_feed(source["query"])
-            except Exception:
+                authority_row["queries_success"] += 1
+                entries = list(getattr(feed, "entries", []) or [])
+                authority_row["entries_seen"] += len(entries)
+            except Exception as error:
+                authority_row["errors"].append(f"{type(error).__name__}: {error}")
                 logger.exception("政策源读取失败：%s", source["source_name"])
                 continue
 
-            for entry in getattr(feed, "entries", []) or []:
+            for entry in entries:
                 created = _entry_datetime(entry)
                 if created is None or created < oldest or created > now + timedelta(days=1):
                     continue
@@ -476,6 +566,8 @@ class PolicyCollector(BaseCollector):
                         "report_days": source.get("report_days", 30),
                     },
                 }
+
+        self._finalize_source_health(authority_rows)
 
         results, duplicate_count = _dedupe_policy_topics(list(candidates.values()))
         results.sort(
