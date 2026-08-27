@@ -18,9 +18,15 @@ from app.cards.text import clean_text, payload_bytes
 from app.config import FEISHU_MAX_PAYLOAD_BYTES
 
 
-# 不再对业务文案设置字符上限。这里仅给卡片 JSON 本身预留少量安全空间，
-# 超出单卡预算时通过分页/拆元素解决，所有正文必须完整保留。
+# 不对业务正文设置字符上限。这里只给卡片 JSON 自身保留传输安全空间；
+# 超过单卡预算时自动拆页/拆元素，正文必须逐字符守恒。
 _PAYLOAD_RESERVE_BYTES = 768
+
+OPPORTUNITY_BADGES = {
+    "high": "🟢 高机会",
+    "medium": "🟡 中机会",
+    "low": "⚪ 观察",
+}
 
 
 def _text(value) -> str:
@@ -69,8 +75,13 @@ def _button(label: str, url: str, button_type: str = "default"):
     }
 
 
-def _append_button(elements: list, label: str, url: str) -> None:
-    button = _button(label, url, "default")
+def _append_button(
+    elements: list,
+    label: str,
+    url: str,
+    button_type: str = "default",
+) -> None:
+    button = _button(label, url, button_type)
     if button:
         elements.append(button)
 
@@ -315,8 +326,8 @@ def build_summary_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
     metrics = summary.metrics or {}
     judgment = _text(summary.judgment)
     overview = (
-        "合规 **{compliance}** · 高风险 **{high_risk}** · "
-        "新项目 **{projects}** · 重点机会 **{opportunities}**"
+        "🚨 合规 **{compliance}**　·　🔴 高风险 **{high_risk}**　·　"
+        "💡 入选项目 **{projects}**　·　⭐ 重点机会 **{opportunities}**"
     ).format(
         compliance=metrics.get("compliance", 0),
         high_risk=metrics.get("high_risk", 0),
@@ -324,9 +335,10 @@ def build_summary_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
         opportunities=metrics.get("opportunities", 0),
     )
     elements = [
-        _pair("今日判断", judgment, "🧭"),
-        _md(f"📊 **今日概览**\n{overview}"),
+        _pair("今日结论", judgment, "🧭"),
+        _md(f"**今日状态**\n{overview}"),
         _hr(),
+        _md("**执行优先级**"),
     ]
 
     number_labels = ("①", "②", "③")
@@ -347,47 +359,56 @@ def build_summary_card(model: ReportDecisionModel) -> CardEnvelope:
     return build_summary_cards(model)[0]
 
 
-def _policy_header(decision, index: int) -> str:
+def _policy_meta(decision, index: int) -> str:
     risk = RISK_LABELS.get(decision.risk_level, RISK_LABELS["medium"])
-    meta = [part for part in (decision.authority, decision.kind, decision.age_text) if part]
-    title = _text(decision.title)
-    return (
-        f"**{index:02d}｜{decision.source_name}｜{title}**\n"
-        f"{risk} · 影响 **{decision.impact_score:.0f}/100**"
-        + (f" · {' · '.join(meta)}" if meta else "")
-    )
+    parts = [
+        f"**{index:02d}｜{decision.source_name}**",
+        risk,
+        f"影响 **{decision.impact_score:.0f}/100**",
+    ]
+    for value in (decision.age_text, decision.authority, decision.kind):
+        value = _text(value)
+        if value and value not in {decision.source_name}:
+            parts.append(value)
+    return " · ".join(parts)
+
+
+def _append_policy_identity(elements: list, decision, index: int) -> None:
+    # 元信息与完整标题分行，防止长政策标题在移动端与风险/机构信息挤成一行。
+    elements.append(_md(_policy_meta(decision, index)))
+    elements.append(_md(f"**{_text(decision.title)}**"))
 
 
 def _append_standard_policy(elements: list, decision, index: int):
-    elements.append(_md(_policy_header(decision, index)))
+    _append_policy_identity(elements, decision, index)
     if decision.focus == "美国跨境新规":
         first_label, second_label = "新规要点", "进口影响"
     else:
         first_label, second_label = "核心变化", "卖家影响"
 
-    elements.append(_md(f"📌 **{first_label}**\n{_text(decision.requirement)}"))
+    elements.append(_md(f"**{first_label}**\n{_text(decision.requirement)}"))
     if decision.impact:
-        elements.append(_md(f"📍 **{second_label}**\n{_text(decision.impact)}"))
+        elements.append(_md(f"**{second_label}**\n{_text(decision.impact)}"))
 
     action = _text(decision.action)
     if action:
-        elements.append(_pair("下一步", action, "✅"))
+        elements.append(_pair("现在要做", action, "✅"))
     _append_button(elements, "查看官方原文", decision.url)
 
 
 def _append_product_compliance(elements: list, decision, index: int):
-    elements.append(_md(_policy_header(decision, index)))
-    elements.append(_md("📌 **审核要求**\n" + _text(decision.requirement)))
+    _append_policy_identity(elements, decision, index)
+    elements.append(_md("**审核要求**\n" + _text(decision.requirement)))
     elements.extend(
         [
             _pair("影响产品", decision.affected_products, "🎯"),
-            _pair("风险", decision.risk, "⚠️"),
-            _pair("准备资料", decision.preparation, "📋"),
+            _pair("不满足的风险", decision.risk, "⚠️"),
+            _pair("应准备资料", decision.preparation, "📋"),
         ]
     )
     action = _text(decision.action)
     if action:
-        elements.append(_pair("下一步", action, "✅"))
+        elements.append(_pair("现在要做", action, "✅"))
     _append_button(elements, "查看官方原文", decision.url)
 
 
@@ -427,7 +448,8 @@ def build_compliance_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
 
         if elements:
             elements.append(_hr())
-        elements.append(_md(f"**{FOCUS_TITLES.get(focus, focus)}**"))
+        group_title = FOCUS_TITLES.get(focus, focus)
+        elements.append(_md(f"**{group_title} · {len(group)}项**"))
 
         if focus == "产品合规审核":
             authorities = "/".join(
@@ -435,12 +457,15 @@ def build_compliance_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
             ) or "美国市场准入机构"
             highest = max(group, key=lambda d: d.impact_score)
             brief = (
-                f"{len(group)} 条准入变化 · {authorities} · "
-                f"最高 {RISK_LABELS.get(highest.risk_level, RISK_LABELS['medium'])}"
+                f"{authorities} · 最高 "
+                f"{RISK_LABELS.get(highest.risk_level, RISK_LABELS['medium'])} · "
+                f"影响 {highest.impact_score:.0f}/100"
             )
-            elements.append(_pair("审核简报", brief, "🛡️"))
+            elements.append(_pair("本组判断", brief, "🛡️"))
 
-        for decision in group:
+        for group_index, decision in enumerate(group):
+            if group_index:
+                elements.append(_hr())
             if focus == "产品合规审核":
                 _append_product_compliance(elements, decision, display_index)
             else:
@@ -474,64 +499,85 @@ def _project_source_label(project) -> str:
     return project.source_name
 
 
+def _project_button_label(project) -> str:
+    if project.source_name == "arXiv":
+        return "查看 arXiv 论文"
+    if project.source_name == "GitHub":
+        return "打开 GitHub 仓库"
+    if project.source_name == "Hugging Face":
+        return "查看模型/项目"
+    if project.source_name == "Product Hunt":
+        return "查看产品"
+    if project.source_name == "Hacker News":
+        return "查看讨论"
+    return "查看项目"
+
+
 def _direction_label(project, is_arxiv: bool) -> str:
     tags = set(project.tags or [])
     if is_arxiv:
-        return "产品化方向"
+        return "产品化验证"
     if "硬件开发" in tags or "实体商品机会" in tags:
-        return "商品/原型方向"
+        return "原型验证"
+    if project.cross_border or "跨境电商" in tags:
+        return "落地动作"
     if "技术前沿" in tags:
-        return "验证/开发方向"
-    return "可借鉴方向"
+        return "开发验证"
+    return "下一步"
+
+
+def _opportunity_badge(project) -> str:
+    return OPPORTUNITY_BADGES.get(project.opportunity, "🟡 中机会")
+
+
+def _project_score_line(project, is_arxiv: bool) -> str:
+    if is_arxiv:
+        return f"💼 产品化价值 **{project.business_score:.0f}/100**"
+    return (
+        f"🔥 趋势 **{project.trend_score:.0f}/100**　·　"
+        f"💼 价值 **{project.business_score:.0f}/100**"
+    )
 
 
 def _project_elements(project, index: int) -> list:
     title = _text(project.title)
-    opportunity = OPPORTUNITY_LABELS.get(project.opportunity, "中")
     tags = " ".join(f"`{tag}`" for tag in project.tags)
     is_arxiv = project.source_name == "arXiv"
 
-    # 标题独占正文块，避免和编号/元信息挤在同一行造成客户端视觉省略。
+    # 第一行只负责“来源 + 时间 + 机会等级”，完整标题独占下一行。
+    meta = (
+        f"**{index:02d}｜{_project_source_label(project)}** · "
+        f"{project.age_text} · {_opportunity_badge(project)}"
+    )
     elements = [
-        _md(f"**{index:02d}｜{_project_source_label(project)}**"),
+        _md(meta),
         _md(f"**{title}**"),
+        _md(_project_score_line(project, is_arxiv)),
     ]
 
-    if is_arxiv:
-        meta = f"{project.age_text} · 💼 **产品化价值 {project.business_score:.0f}** · {opportunity}"
-    else:
-        meta = (
-            f"{project.age_text} · 🔥 **{project.trend_score:.0f}** · "
-            f"💼 **{project.business_score:.0f}** {opportunity}"
-        )
-    elements.append(_md(meta))
     if tags:
-        elements.append(_md(tags))
+        elements.append(_md(f"🏷️ {tags}"))
 
     description = _text(project.description)
     judgment = _text(project.judgment)
     direction = _text(project.direction)
 
     if description:
-        description_label = "研究内容" if is_arxiv else "做什么"
-        elements.append(_md(f"🧩 **{description_label}**\n{description}"))
+        description_label = "研究内容" if is_arxiv else "它能做什么"
+        elements.append(_md(f"**{description_label}**\n{description}"))
 
     if is_arxiv:
         research_stage = _text(project.growth_signal) or "最新预印本研究 · 尚无产品市场验证"
-        elements.append(_md(f"📚 **研究阶段**\n{research_stage}"))
+        elements.append(_md(f"**研究阶段**\n{research_stage}"))
     elif project.growth_signal:
-        elements.append(_md(f"📈 **增长信号**\n{project.growth_signal}"))
+        elements.append(_md(f"📈 **增长证据**　{project.growth_signal}"))
 
     if judgment:
-        elements.append(_pair("价值判断", judgment, "🧠"))
+        elements.append(_pair("为什么值得看", judgment, "🧠"))
     if direction:
         elements.append(_pair(_direction_label(project, is_arxiv), direction, "🛠️"))
 
-    _append_button(
-        elements,
-        "查看 arXiv 论文" if is_arxiv else "查看项目",
-        project.url,
-    )
+    _append_button(elements, _project_button_label(project), project.url)
     return elements
 
 
@@ -567,7 +613,7 @@ def _product_batch_elements(batch, start_index: int) -> list:
             continue
         if elements:
             elements.append(_hr())
-        elements.append(_md(f"**{title}**"))
+        elements.append(_md(f"**{title} · {len(group)}项**"))
         for group_index, (project_index, project) in enumerate(group):
             if group_index:
                 elements.append(_hr())
@@ -587,7 +633,7 @@ def build_product_cards(
         return _envelopes(
             "products",
             title,
-            [_md("今日暂无达到展示优先级的新产品机会。")],
+            [_md("今日暂无通过最终价值门槛的新产品机会；不使用低价值候选补位。")],
             PRODUCT_HEADER_TEMPLATE,
         )
 
