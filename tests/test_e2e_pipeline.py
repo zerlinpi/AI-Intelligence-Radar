@@ -26,7 +26,7 @@ def test_collect_sources_converts_items(monkeypatch):
     assert items[0].title == "Test AI Project"
 
 
-def test_decision_model_builds_three_feishu_cards():
+def test_decision_model_builds_source_hierarchical_feishu_cards():
     project = RadarItem(
         title="Seller AI Tool",
         source="github",
@@ -107,23 +107,25 @@ def test_decision_model_builds_three_feishu_cards():
     assert [card.card_type for card in cards] == [
         "summary",
         "compliance",
-        "products",
+        "products-github",
     ]
 
     summary = str(cards[0].payload)
     compliance = str(cards[1].payload)
     products = str(cards[2].payload)
 
-    assert "今日结论" in summary
-    assert "今日状态" in summary
-    assert "执行优先级" in summary
+    assert "今日判断" in summary
+    assert "经营汇总" in summary
+    assert "今天只看这 3 件事" in summary
+    assert "GitHub **1**（主）" in summary
     assert "① 必须" in summary
     assert "② 关注" in summary
     assert "③ 研究" in summary
 
-    assert "A｜Amazon 政策与审核" in compliance
-    assert "C｜美国市场产品审核" in compliance
-    assert "本组判断" in compliance
+    assert "Amazon 平台政策与审核" in compliance
+    assert "美国市场产品合规" in compliance
+    assert "本组摘要" in compliance
+    assert "发生了什么" in compliance
     assert "影响产品" in compliance
     assert "儿童产品" in compliance
     assert "不满足的风险" in compliance
@@ -132,6 +134,8 @@ def test_decision_model_builds_three_feishu_cards():
     assert "CPC" in compliance
     assert "现在要做" in compliance
 
+    assert "GitHub 核心项目" in products
+    assert "主来源｜GitHub" in products
     assert "跨境电商直接相关" in products
     assert "Seller AI Tool" in products
     assert "Listing" in products
