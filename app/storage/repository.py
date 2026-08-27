@@ -44,6 +44,11 @@ def _source_created_at(value):
     return created
 
 
+def _processed_at_iso() -> str:
+    """Radar 实际完成本次成功分析/处理的 UTC 时间。"""
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _analysis_is_fallback(value) -> bool:
     analysis = _safe_dict(value)
     meta = _safe_dict(analysis.get("llm_meta"))
@@ -83,7 +88,9 @@ def _is_material_update(data: dict) -> bool:
 
 def _fill_record(record: IntelligenceItem, data: dict):
     analysis = _safe_dict(data.get("analysis"))
-    metrics = _safe_dict(data.get("metrics"))
+    # 复制一份，避免存储层给调用方持有的 metrics 原地追加内部字段。
+    metrics = dict(_safe_dict(data.get("metrics")))
+    metrics["history_processed_at"] = _processed_at_iso()
 
     record.source = data.get("source", "unknown") or "unknown"
     record.title = data.get("title", "") or ""
@@ -98,6 +105,7 @@ def _fill_record(record: IntelligenceItem, data: dict):
     record.metrics = metrics
     record.analysis = analysis
 
+    # created_at 始终保留“来源发布时间”的语义；历史回看窗口使用 metrics.history_processed_at。
     source_created_at = _source_created_at(data.get("created_at"))
     if source_created_at is not None:
         record.created_at = source_created_at
