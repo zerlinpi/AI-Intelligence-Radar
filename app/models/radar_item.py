@@ -25,6 +25,17 @@ def _serialized_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
     if deployment_reason:
         prepend("部署成熟度", deployment_reason)
 
+    deployment_details = metrics.get("deployment_evidence") or []
+    if isinstance(deployment_details, list):
+        details = [
+            " ".join(str(value or "").split()).strip()
+            for value in deployment_details
+            if str(value or "").strip()
+        ]
+        if details:
+            # 合并成一个证据槽，避免 analyzer 的前5条证据预算被工程细节全部占满。
+            prepend("部署证据", "/".join(details[:4]))
+
     license_reason = metrics.get("commercial_readiness_reason")
     if license_reason:
         prepend("商业许可", license_reason)
