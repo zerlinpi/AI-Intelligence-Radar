@@ -5,6 +5,7 @@ import requests
 
 from app.commercial_readiness import attach_commercial_metrics, commercial_readiness
 from app.config import GITHUB_TOKEN
+from app.deployment_readiness import attach_deployment_metrics, deployment_readiness
 from app.sources.base import BaseCollector
 from app.core.logger import get_logger
 from app.relevance import attach_eligibility_metrics, report_eligibility
@@ -100,6 +101,7 @@ def _build_record(item: dict, now: datetime):
     language = str(item.get("language") or "").strip()
     license_spdx = _license_spdx(item)
     homepage = str(item.get("homepage") or "").strip()
+    repo_size_kb = item.get("size", 0) or 0
 
     description_parts = []
     if item.get("description"):
@@ -124,6 +126,7 @@ def _build_record(item: dict, now: datetime):
             "stars": stars,
             "forks": forks,
             "open_issues": open_issues,
+            "repo_size_kb": repo_size_kb,
             "momentum": round(momentum, 2),
             "topics": topics,
             "language": language,
@@ -213,6 +216,7 @@ class GithubCollector(BaseCollector):
         result = []
         rejected = 0
         license_rejected = 0
+        deployment_rejected = 0
         enriched = 0
 
         for record, _raw in preliminary:
@@ -230,6 +234,12 @@ class GithubCollector(BaseCollector):
                 rejected += 1
                 continue
 
+            readiness = deployment_readiness(record)
+            attach_deployment_metrics(record, readiness)
+            if not readiness["eligible"]:
+                deployment_rejected += 1
+                continue
+
             if (record.get("metrics") or {}).get("readme_evidence"):
                 enriched += 1
             result.append(record)
@@ -238,6 +248,7 @@ class GithubCollector(BaseCollector):
             key=lambda x: (
                 float((x.get("metrics") or {}).get("opportunity_score", 0) or 0),
                 float((x.get("metrics") or {}).get("commercial_readiness_score", 0) or 0),
+                float((x.get("metrics") or {}).get("deployment_readiness_score", 0) or 0),
                 float((x.get("metrics") or {}).get("momentum", 0) or 0),
                 x.get("created_at") or "",
             ),
@@ -245,8 +256,14 @@ class GithubCollector(BaseCollector):
         )
 
         logger.info(
-            "GitHub 近期候选=%s README增强=%s 许可淘汰=%s 资格淘汰=%s 合格=%s 最终返回=%s",
-            len(candidates), enriched, license_rejected, rejected, len(result), min(len(result), limit),
+            "GitHub 近期候选=%s README增强=%s 许可淘汰=%s 资格淘汰=%s 部署淘汰=%s 合格=%s 最终返回=%s",
+            len(candidates),
+            enriched,
+            license_rejected,
+            rejected,
+            deployment_rejected,
+            len(result),
+            min(len(result), limit),
         )
         return result[:limit]
 
