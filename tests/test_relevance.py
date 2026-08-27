@@ -113,7 +113,7 @@ def test_arxiv_hardware_benchmark_without_product_form_is_not_eligible():
             ),
         }
     )
-    assert result["technical_frontier"] is True
+    assert result["hardware_enablement"] is True
     assert result["eligible"] is False
     assert result["physical_product_path"] is False
 
