@@ -80,7 +80,7 @@ def test_pure_frontier_arxiv_paper_is_not_pushed_without_business_or_physical_pa
     assert result["eligible"] is False
 
 
-def test_arxiv_hardware_research_is_eligible():
+def test_arxiv_hardware_research_is_eligible_only_with_real_product_path():
     result = report_eligibility(
         {
             "source": "arxiv",
@@ -97,6 +97,25 @@ def test_arxiv_hardware_research_is_eligible():
     assert result["evidence_sufficient"] is True
     assert result["hardware_enablement"] is True
     assert result["physical_product"] is True
+    assert result["physical_product_path"] is True
+    assert "宠物用品" in result["product_categories"] or "消费电子" in result["product_categories"]
+
+
+def test_arxiv_hardware_benchmark_without_product_form_is_not_eligible():
+    result = report_eligibility(
+        {
+            "source": "arxiv",
+            "title": "Embedded Edge Inference Benchmark",
+            "description": (
+                "This paper benchmarks quantized on-device neural inference on embedded processors and "
+                "microcontrollers. It reports latency, memory use and energy efficiency for several models, "
+                "but does not identify a consumer product form, target merchandise category, or cross-border workflow."
+            ),
+        }
+    )
+    assert result["technical_frontier"] is True
+    assert result["eligible"] is False
+    assert result["physical_product_path"] is False
 
 
 def test_short_arxiv_keyword_hit_is_rejected_as_insufficient_evidence():
@@ -122,12 +141,12 @@ def test_generic_huggingface_text_model_is_not_eligible():
     assert result["eligible"] is False
 
 
-def test_huggingface_edge_vision_model_is_eligible():
+def test_huggingface_generic_edge_model_without_product_form_is_not_eligible():
     result = report_eligibility(
         {
             "source": "huggingface",
             "title": "org/edge-camera-detector",
-            "description": "object detection on-device edge ai for camera sensor embedded device",
+            "description": "object detection on-device edge ai benchmark for camera sensor embedded inference",
             "metrics": {
                 "pipeline_tag": "object-detection",
                 "library_name": "tflite",
@@ -135,9 +154,32 @@ def test_huggingface_edge_vision_model_is_eligible():
             },
         }
     )
+    assert result["hardware_enablement"] is True
+    assert result["eligible"] is False
+    assert result["physical_product_path"] is False
+
+
+def test_huggingface_edge_vision_model_for_security_camera_is_eligible():
+    result = report_eligibility(
+        {
+            "source": "huggingface",
+            "title": "org/edge-security-camera-detector",
+            "description": (
+                "object detection on-device edge ai for an embedded smart security camera consumer device "
+                "with camera sensors and low-power local inference"
+            ),
+            "metrics": {
+                "pipeline_tag": "object-detection",
+                "library_name": "tflite",
+                "tags": ["edge-ai", "embedded", "security-camera"],
+            },
+        }
+    )
     assert result["eligible"] is True
     assert result["evidence_sufficient"] is True
     assert result["hardware_enablement"] is True
+    assert result["physical_product_path"] is True
+    assert "安防" in result["product_categories"] or "消费电子" in result["product_categories"]
 
 
 def test_history_material_update_reason_is_preserved_as_deepseek_evidence():
@@ -158,3 +200,4 @@ def test_history_material_update_reason_is_preserved_as_deepseek_evidence():
     assert evidence
     assert evidence[0].startswith("重大更新:")
     assert "80→320" in evidence[0]
+    assert item["metrics"]["physical_product_path"] is result["physical_product_path"]
