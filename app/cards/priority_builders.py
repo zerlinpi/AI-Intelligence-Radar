@@ -208,6 +208,29 @@ def _pages_to_envelopes(
     return envelopes
 
 
+def _github_growth_signal(value: str) -> str:
+    """GitHub成熟仓库的新鲜度按push/release计算，因此累计Star不能再除以信号年龄展示日增速。"""
+    text = _text(value)
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split("·") if part.strip()]
+    if len(parts) >= 2 and any("星/天" in part for part in parts[2:]):
+        return " · ".join(parts[:2])
+    return text
+
+
+def _github_batch_elements(batch, start_index: int) -> list:
+    """复用既有分组器，仅在渲染期间移除不再可靠的GitHub累计Star日增速。"""
+    originals = [(project, project.growth_signal) for project in batch]
+    try:
+        for project, original in originals:
+            project.growth_signal = _github_growth_signal(original)
+        return _product_batch_elements(batch, start_index)
+    finally:
+        for project, original in originals:
+            project.growth_signal = original
+
+
 def _build_github_cards(
     model: ReportDecisionModel,
     github_projects: list,
@@ -237,7 +260,7 @@ def _build_github_cards(
                 )
             )
             elements.append(_hr())
-        elements.extend(_product_batch_elements(batch, offset + 1))
+        elements.extend(_github_batch_elements(batch, offset + 1))
         pages.extend(_paginate_elements(title, elements, PRODUCT_HEADER_TEMPLATE))
 
     return _pages_to_envelopes("products-github", title, pages)
