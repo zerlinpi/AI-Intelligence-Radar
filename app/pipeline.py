@@ -59,6 +59,9 @@ FINAL_BUSINESS_SCORE = {
     "arxiv": 72,
 }
 DEFAULT_FINAL_BUSINESS_SCORE = 68
+FINAL_MIN_PURPOSE_CHARS = 18
+FINAL_MIN_JUDGMENT_CHARS = 18
+FINAL_MIN_ACTION_CHARS = 10
 
 STRATEGIC_TAGS = (
     "跨境电商",
@@ -428,22 +431,106 @@ def _normalized_level(value) -> str:
     return level if level in RISK_ORDER else "medium"
 
 
-def _passes_final_project_gate(item: RadarItem) -> bool:
-    """DeepSeek 第二道 Gate：模型明确判断低价值时禁止进入飞书。"""
+def _first_project_action(analysis: dict) -> str:
+    ideas = analysis.get("startup_ideas") or []
+    if not isinstance(ideas, list):
+        return ""
+    for value in ideas:
+        text = " ".join(str(value or "").split()).strip()
+        if text:
+            return text
+    return ""
+
+
+def _final_project_utility_score(item: RadarItem) -> float:
+    """最终推送排序：产品/业务价值为主，热度只占小部分，可执行性单独加权。"""
     analysis = item.analysis or {}
+    metrics = item.metrics or {}
+    local_selection = min(_number(metrics.get("selection_score")), 100)
+    business = min(_number(analysis.get("business_score")), 100)
+    trend = min(_number(item.trend_score), 100)
+
+    action = _first_project_action(analysis)
+    judgment = " ".join(str(analysis.get("summary") or "").split()).strip()
+    categories = metrics.get("product_categories") or []
+    actionability = 0.0
+    if len(action) >= FINAL_MIN_ACTION_CHARS:
+        actionability += 6.0
+    if len(judgment) >= 40:
+        actionability += 2.0
+    if isinstance(categories, list) and categories:
+        actionability += 2.0
+
+    material_update_bonus = 3.0 if metrics.get("history_material_update") else 0.0
+    score = (
+        local_selection * 0.35
+        + business * 0.45
+        + trend * 0.10
+        + actionability
+        + material_update_bonus
+    )
+    return round(min(score, 100), 2)
+
+
+def _passes_final_project_gate(item: RadarItem) -> bool:
+    """DeepSeek 第二道 Gate：价值、内容完整度和可执行性都合格才进入飞书。"""
+    analysis = item.analysis or {}
+    item.metrics = dict(item.metrics or {})
+
     if _analysis_is_fallback(analysis):
+        item.metrics["final_report_eligible"] = False
+        item.metrics["final_gate_reason"] = "DeepSeek分析降级"
         return False
 
     score = _number(analysis.get("business_score"))
     opportunity = _normalized_level(analysis.get("opportunity"))
     threshold = FINAL_BUSINESS_SCORE.get(item.source, DEFAULT_FINAL_BUSINESS_SCORE)
+    purpose = " ".join(str(analysis.get("purpose") or "").split()).strip()
+    judgment = " ".join(str(analysis.get("summary") or "").split()).strip()
+    action = _first_project_action(analysis)
 
-    passed = opportunity != "low" and score >= threshold
-    item.metrics = dict(item.metrics or {})
+    local_tags = set((item.metrics or {}).get("priority_tags") or [])
+    local_product_path = bool((item.metrics or {}).get("physical_product_path"))
+    if item.source in {"arxiv", "huggingface"}:
+        source_path_valid = "跨境电商" in local_tags or local_product_path
+    else:
+        source_path_valid = True
+
+    content_complete = (
+        len(purpose) >= FINAL_MIN_PURPOSE_CHARS
+        and len(judgment) >= FINAL_MIN_JUDGMENT_CHARS
+        and len(action) >= FINAL_MIN_ACTION_CHARS
+    )
+    passed = (
+        opportunity != "low"
+        and score >= threshold
+        and source_path_valid
+        and content_complete
+    )
+
+    if opportunity == "low":
+        reason = "DeepSeek机会等级低"
+    elif score < threshold:
+        reason = f"商业价值分不足：{score:.0f}<{threshold}"
+    elif not source_path_valid:
+        reason = "论文/模型缺少跨境或明确实体商品落地路径"
+    elif len(purpose) < FINAL_MIN_PURPOSE_CHARS:
+        reason = "项目用途信息不足"
+    elif len(judgment) < FINAL_MIN_JUDGMENT_CHARS:
+        reason = "价值判断信息不足"
+    elif len(action) < FINAL_MIN_ACTION_CHARS:
+        reason = "缺少可执行验证/开发动作"
+    else:
+        reason = "通过最终价值与可执行性门槛"
+
+    utility_score = _final_project_utility_score(item) if passed else 0.0
     item.metrics["final_report_eligible"] = passed
     item.metrics["final_business_score"] = score
     item.metrics["final_opportunity"] = opportunity
     item.metrics["final_business_threshold"] = threshold
+    item.metrics["final_actionable"] = len(action) >= FINAL_MIN_ACTION_CHARS
+    item.metrics["final_gate_reason"] = reason
+    item.metrics["final_utility_score"] = utility_score
     return passed
 
 
@@ -456,19 +543,38 @@ def apply_final_project_gate(projects):
         else:
             rejected.append(item)
 
+    # DeepSeek 之后重新排序：不沿用采集阶段排名，让真正有用、可执行的项目排在最前面。
+    accepted.sort(
+        key=lambda item: (
+            _number((item.metrics or {}).get("final_utility_score")),
+            _number((item.analysis or {}).get("business_score")),
+            _number((item.metrics or {}).get("selection_score")),
+            _number(item.trend_score),
+        ),
+        reverse=True,
+    )
+    accepted = accepted[:MAX_REPORT_ITEMS]
+
     if rejected:
         logger.info(
             "DeepSeek最终裁决：分析=%s 推送=%s 淘汰=%s 淘汰项目=%s",
             len(projects or []),
             len(accepted),
             len(rejected),
-            [item.title for item in rejected[:8]],
+            [
+                f"{item.title}({(item.metrics or {}).get('final_gate_reason', '未通过')})"
+                for item in rejected[:8]
+            ],
         )
     else:
         logger.info(
-            "DeepSeek最终裁决：分析=%s 推送=%s 淘汰=0",
+            "DeepSeek最终裁决：分析=%s 推送=%s 淘汰=0 排名=%s",
             len(projects or []),
             len(accepted),
+            [
+                f"{item.title}:{(item.metrics or {}).get('final_utility_score', 0)}"
+                for item in accepted[:5]
+            ],
         )
     return accepted
 
@@ -547,10 +653,7 @@ def _clean_text(value, fallback: str = "") -> str:
 
 
 def _analysis_action(analysis: dict) -> str:
-    ideas = analysis.get("startup_ideas") or []
-    if isinstance(ideas, list) and ideas:
-        return _clean_text(ideas[0])
-    return ""
+    return _first_project_action(analysis)
 
 
 def _is_cross_border_project(item: RadarItem) -> bool:
