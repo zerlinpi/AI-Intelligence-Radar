@@ -63,6 +63,47 @@ def test_github_title_only_signal_is_rejected_when_evidence_is_insufficient():
     assert "公开信息不足" in result["reason"]
 
 
+def test_github_amazon_dataset_does_not_pass_as_cross_border_product():
+    result = report_eligibility(
+        {
+            "source": "github",
+            "title": "Amazon Reviews Benchmark Dataset",
+            "description": (
+                "A benchmark dataset of Amazon product reviews for evaluating text classification "
+                "and sentiment models. It contains research data but no seller automation, SDK, app, "
+                "workflow integration, listing optimizer or production tool."
+            ),
+        }
+    )
+    assert result["cross_border"] is True
+    assert result["eligible"] is False
+    assert "缺少可直接使用" in result["reason"]
+
+
+def test_github_listing_sdk_gets_cross_border_lane_and_use_case():
+    item = {
+        "source": "github",
+        "title": "Amazon Listing Automation SDK",
+        "description": (
+            "Python SDK and workflow automation for Amazon product listing optimization, keyword research, "
+            "catalog localization and bulk seller operations."
+        ),
+        "metrics": {
+            "topics": ["amazon", "ecommerce", "automation"],
+            "language": "Python",
+            "license_spdx": "MIT",
+            "readme_evidence": True,
+            "readme_chars": 1200,
+        },
+    }
+    result = report_eligibility(item)
+    assert result["eligible"] is True
+    assert result["primary_lane"] == "跨境业务工具"
+    assert result["primary_use_case"] == "Listing/内容"
+    assert result["evidence_quality"] >= 50
+    assert result["eligibility_confidence"] >= 50
+
+
 def test_pure_frontier_arxiv_paper_is_not_pushed_without_business_or_physical_path():
     result = report_eligibility(
         {
@@ -98,6 +139,9 @@ def test_arxiv_hardware_research_is_eligible_only_with_real_product_path():
     assert result["hardware_enablement"] is True
     assert result["physical_product"] is True
     assert result["physical_product_path"] is True
+    assert result["primary_lane"] == "实体商品/硬件"
+    assert result["primary_use_case"].startswith("实体商品·")
+    assert result["applied_validation"] is True
     assert "宠物用品" in result["product_categories"] or "消费电子" in result["product_categories"]
 
 
@@ -116,6 +160,25 @@ def test_arxiv_hardware_benchmark_without_product_form_is_not_eligible():
     assert result["hardware_enablement"] is True
     assert result["eligible"] is False
     assert result["physical_product_path"] is False
+
+
+def test_arxiv_amazon_reviews_benchmark_without_workflow_is_not_cross_border_opportunity():
+    result = report_eligibility(
+        {
+            "source": "arxiv",
+            "title": "Benchmarking Language Models on Amazon Product Reviews",
+            "description": (
+                "We introduce a large Amazon product reviews benchmark and dataset for sentiment classification. "
+                "The study compares model accuracy, calibration and robustness across review categories. "
+                "It does not provide product listing optimization, seller workflow automation, inventory planning, "
+                "advertising operations or another deployable ecommerce workflow."
+            ),
+        }
+    )
+    assert result["cross_border"] is True
+    assert result["research_only"] is True
+    assert result["eligible"] is False
+    assert "工作流" in result["reason"] or "运营" in result["reason"]
 
 
 def test_short_arxiv_keyword_hit_is_rejected_as_insufficient_evidence():
@@ -172,13 +235,17 @@ def test_huggingface_edge_vision_model_for_security_camera_is_eligible():
                 "pipeline_tag": "object-detection",
                 "library_name": "tflite",
                 "tags": ["edge-ai", "embedded", "security-camera"],
+                "model_card_evidence": True,
+                "model_card_chars": 900,
             },
         }
     )
     assert result["eligible"] is True
     assert result["evidence_sufficient"] is True
+    assert result["evidence_quality"] >= 50
     assert result["hardware_enablement"] is True
     assert result["physical_product_path"] is True
+    assert result["primary_lane"] == "实体商品/硬件"
     assert "安防" in result["product_categories"] or "消费电子" in result["product_categories"]
 
 
@@ -201,3 +268,7 @@ def test_history_material_update_reason_is_preserved_as_deepseek_evidence():
     assert evidence[0].startswith("重大更新:")
     assert "80→320" in evidence[0]
     assert item["metrics"]["physical_product_path"] is result["physical_product_path"]
+    assert item["metrics"]["primary_lane"] == result["primary_lane"]
+    assert item["metrics"]["primary_use_case"] == result["primary_use_case"]
+    assert item["metrics"]["evidence_quality"] == result["evidence_quality"]
+    assert item["metrics"]["eligibility_confidence"] == result["eligibility_confidence"]
