@@ -1,0 +1,120 @@
+name: AI 情报雷达日报
+
+on:
+  schedule:
+    # GitHub Actions cron 使用 UTC：00:00 UTC = 08:00 Asia/Shanghai。
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 定时触发和人工触发发生重叠时，保留先开始的生产日报，后一轮等待，
+# 避免两个 Runner 同时消费相同历史状态或重复发送飞书日报。
+concurrency:
+  group: ai-intelligence-radar-daily
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  REPORT_TIMEZONE: "Asia/Shanghai"
+  DATABASE_URL: "sqlite:///./data/radar.db"
+  DATABASE_BACKUP_DIR: "./data/backups"
+  RUN_HISTORY_FILE: "./data/run-history.json"
+  FEISHU_OUTBOX_DIR: "./data/feishu-outbox"
+  FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+  GITHUB_TOKEN: ${{ github.token }}
+  PRODUCT_HUNT_TOKEN: ${{ secrets.PRODUCT_HUNT_TOKEN }}
+  LLM_PROVIDER: "deepseek"
+  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+  LLM_BASE_URL: "https://api.deepseek.com/v1"
+  LLM_MODEL: "deepseek-v4-pro"
+  LLM_TEMPERATURE: "0.2"
+  LLM_MAX_TOKENS: "131072"
+  LLM_TIMEOUT_SECONDS: "900"
+
+jobs:
+  daily-radar:
+    name: 每日 AI 情报分析
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 获取代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: 恢复 Radar 状态
+        id: radar-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: radar-state-${{ runner.os }}-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            radar-state-${{ runner.os }}-v1-
+
+      - name: 准备运行目录
+        run: mkdir -p data data/backups data/feishu-outbox
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 检查依赖完整性
+        run: python -m pip check
+
+      - name: 生产配置预检
+        run: python -m app.cli check
+
+      # 正常日报必须继续走 app.cli -> run_daily_radar -> Decision Model ->
+      # Card Builder -> app.feishu，Actions 不自行构造或发送业务卡片。
+      - name: 运行每日情报分析
+        id: radar-run
+        shell: bash
+        run: |
+          set +e
+          python -m app.cli run 2>&1 | tee data/actions-run.log
+          radar_exit=${PIPESTATUS[0]}
+          echo "exit_code=${radar_exit}" >> "$GITHUB_OUTPUT"
+          exit "${radar_exit}"
+
+      - name: 写入 Actions 状态摘要
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## AI 情报雷达运行状态"
+            echo
+            echo "- 触发方式：${{ github.event_name }}"
+            echo "- Workflow Run：${{ github.run_id }} / attempt ${{ github.run_attempt }}"
+            echo "- 状态缓存精确命中：${{ steps.radar-cache-restore.outputs.cache-hit || 'false' }}"
+            echo "- 日报退出码：${{ steps.radar-run.outputs.exit_code || '未执行到 CLI' }}"
+            echo
+            echo '```text'
+            python -m app.cli status || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 即使日报为 partial/failed，也保留 SQLite、运行历史和飞书 Outbox，
+      # 让下一次 Runner 能继续去重和补发。
+      - name: 保存 Radar 状态缓存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: radar-state-${{ runner.os }}-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: 上传状态与日志备份
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data
+          if-no-files-found: warn
+          retention-days: 30
