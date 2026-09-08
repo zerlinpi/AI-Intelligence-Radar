@@ -1,5 +1,6 @@
 name: AI 情报雷达立即执行
 
+# Retry marker: script import path fixed on this branch.
 on:
   push:
     branches:
