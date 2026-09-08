@@ -1,0 +1,123 @@
+name: AI 情报雷达日报
+
+on:
+  schedule:
+    # GitHub Actions cron 使用 UTC：00:00 UTC = 08:00 Asia/Shanghai。
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: read
+
+# 定时触发和人工触发发生重叠时，保留先开始的发布任务，后一轮等待，
+# 避免同一天重复消费 Feed 或重复发送飞书日报。
+concurrency:
+  group: ai-intelligence-radar-daily
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  REPORT_TIMEZONE: "Asia/Shanghai"
+  DATABASE_URL: "sqlite:///./data/radar.db"
+  DATABASE_BACKUP_DIR: "./data/backups"
+  RUN_HISTORY_FILE: "./data/run-history.json"
+  FEISHU_OUTBOX_DIR: "./data/feishu-outbox"
+  FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+  GITHUB_TOKEN: ${{ github.token }}
+  CHATGPT_FEED_ISSUE: "2"
+
+jobs:
+  daily-radar:
+    name: 发布 ChatGPT AI 情报日报
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 获取代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: 恢复 Radar 状态
+        id: radar-cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: radar-state-${{ runner.os }}-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            radar-state-${{ runner.os }}-v2-
+
+      - name: 准备运行目录
+        run: mkdir -p data data/backups data/feishu-outbox
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 检查依赖完整性
+        run: python -m pip check
+
+      # ChatGPT 在 08:00 前把当天分析写入 GitHub Issue #2。
+      # 本 Workflow 不调用第二个 LLM；只把结构化 Feed 转成仓库现有的
+      # ReportDecisionModel -> Card Builder -> app.feishu，因此飞书视觉和分页逻辑保持原样。
+      - name: 发布当天 ChatGPT 情报分析
+        id: radar-run
+        shell: bash
+        run: |
+          set +e
+          python scripts/send_chatgpt_feed.py 2>&1 | tee data/actions-run.log
+          radar_exit=${PIPESTATUS[0]}
+          echo "exit_code=${radar_exit}" >> "$GITHUB_OUTPUT"
+          exit "${radar_exit}"
+
+      - name: 写入 Actions 状态摘要
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## AI 情报雷达运行状态"
+            echo
+            echo "- 分析来源：ChatGPT Daily Radar Feed（Issue #${CHATGPT_FEED_ISSUE}）"
+            echo "- 触发方式：${{ github.event_name }}"
+            echo "- Workflow Run：${{ github.run_id }} / attempt ${{ github.run_attempt }}"
+            echo "- 状态缓存精确命中：${{ steps.radar-cache-restore.outputs.cache-hit || 'false' }}"
+            echo "- 发布退出码：${{ steps.radar-run.outputs.exit_code || '未执行到发布脚本' }}"
+            echo
+            if [ -f data/chatgpt-feed-status.json ]; then
+              echo '```json'
+              cat data/chatgpt-feed-status.json
+              echo
+              echo '```'
+            else
+              echo "未生成 ChatGPT Feed 状态文件。"
+            fi
+            echo
+            echo "### 飞书 Outbox / Radar 状态"
+            echo '```text'
+            python -m app.cli status || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # 即使当天 Feed 缺失或飞书暂时不可用，也保留 Outbox 与运行状态；
+      # 下一次 Runner 可以继续补发未完成卡片。
+      - name: 保存 Radar 状态缓存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: radar-state-${{ runner.os }}-v2-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: 上传状态与日志备份
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: radar-state-${{ github.run_id }}-${{ github.run_attempt }}
+          path: data
+          if-no-files-found: warn
+          retention-days: 30
