@@ -30,10 +30,10 @@ def test_daily_workflow_preserves_runtime_state_between_runners():
 
 def test_daily_workflow_keeps_feishu_rendering_inside_application():
     text = _workflow_text()
-    assert "FEISHU_WEBHOOK:" in text
-    assert "secrets.FEISHU_WEBHOOK" not in text
+    assert "FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}" in text
     assert "python scripts/send_chatgpt_feed.py" in text
     assert "curl " not in text
+    assert "open-apis/bot/v2/hook/" not in text
     assert '"msg_type"' not in text
     assert '"card"' not in text
 
