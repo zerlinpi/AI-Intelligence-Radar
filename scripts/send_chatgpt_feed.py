@@ -10,6 +10,14 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
+# When executed as `python scripts/send_chatgpt_feed.py`, Python puts the
+# `scripts/` directory on sys.path instead of the repository root. Add the
+# root explicitly so the existing `app.*` package imports work identically
+# in local runs and GitHub Actions.
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 import requests
 
 from app.cards import build_daily_cards
