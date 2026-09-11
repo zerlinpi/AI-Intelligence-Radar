@@ -11,7 +11,12 @@ def _workflow_text() -> str:
 
 def test_daily_workflow_publishes_chatgpt_feed_at_0800_shanghai():
     text = _workflow_text()
-    assert 'cron: "0 0 * * *"' in text
+    assert "\n  schedule:\n" not in text
+    assert "issue_comment:" in text
+    assert "types: [created]" in text
+    assert "等待到上海时间 08:00" in text
+    assert 'ZoneInfo("Asia/Shanghai")' in text
+    assert "hour=8, minute=0, second=0" in text
     assert "workflow_dispatch:" in text
     assert "CHATGPT_FEED_ISSUE: \"2\"" in text
     assert "python scripts/send_chatgpt_feed.py" in text
@@ -52,5 +57,6 @@ def test_daily_workflow_has_production_boundaries():
     assert "issues: read" in text
     assert "pull_request:" not in text
     assert "push:" not in text
-    assert "cancel-in-progress: false" in text
+    assert "types: [created, edited]" not in text
+    assert "cancel-in-progress: true" in text
     assert "if: always()" in text
