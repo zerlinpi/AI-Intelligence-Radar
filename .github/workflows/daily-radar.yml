@@ -1,29 +1,23 @@
 name: AI 情报雷达日报
 
 on:
-  schedule:
-    # GitHub Actions cron 使用 UTC：00:00 UTC = 08:00 Asia/Shanghai。
-    - cron: "0 0 * * *"
-  workflow_dispatch:
-  # ChatGPT Feed 可能因研究耗时晚于 08:00 写入。
-  # Feed 一旦写入/更新 Issue #2，就立即补跑，避免错过当天日报。
+  # 07:45 的 ChatGPT 自动任务只负责把当天 Feed 写入 Issue #2。
+  # 新 Feed 到达后启动本 Workflow，并在发送前等待到上海时间 08:00。
+  # 不再使用 GitHub schedule，避免 cron 排队后在 10:42 等非预期时间重复发送。
   issue_comment:
-    types: [created, edited]
-  # 修改本 Workflow 时也执行一次，既可验证触发链路，也可用于本次补发。
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/daily-radar.yml"
+    types: [created]
+  # 仅保留人工恢复入口；不会自动触发第二次发布。
+  workflow_dispatch:
 
 permissions:
   contents: read
   issues: read
 
-# 定时触发、Feed 触发和人工触发发生重叠时，保留先开始的发布任务，后一轮等待，
-# 避免同一天重复消费 Feed 或重复发送飞书日报。
+# 同一时间只允许一轮日报发布。若 08:00 前意外出现第二条符合条件的 Feed，
+# 最新一轮替换仍在等待的旧轮次，避免两轮在 08:00 连续发送。
 concurrency:
   group: ai-intelligence-radar-daily
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PYTHONUNBUFFERED: "1"
@@ -38,15 +32,15 @@ env:
 
 jobs:
   daily-radar:
-    # issue_comment 只接受 Issue #2 中带 Radar Feed marker 的评论；
-    # schedule/workflow_dispatch/push 保持正常执行。
+    # 自动发布只接受 Issue #2 新建且带 Radar Feed marker 的评论。
+    # workflow_dispatch 仅用于明确的人工故障恢复。
     if: >-
-      github.event_name != 'issue_comment' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event.issue.number == 2 &&
        contains(github.event.comment.body, 'AI-INTELLIGENCE-RADAR-CHATGPT-FEED'))
     name: 发布 ChatGPT AI 情报日报
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: 获取代码
@@ -78,8 +72,27 @@ jobs:
       - name: 检查依赖完整性
         run: python -m pip check
 
-      # ChatGPT 优先在 08:00 前把当天分析写入 GitHub Issue #2；
-      # 若晚于 08:00，issue_comment 会在 Feed 到达时立即补跑。
+      - name: 等待到上海时间 08:00
+        if: github.event_name == 'issue_comment'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import time
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          tz = ZoneInfo("Asia/Shanghai")
+          now = datetime.now(tz)
+          target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+
+          if now < target:
+              delay = (target - now).total_seconds()
+              print(f"Feed 已就绪，等待 {delay:.0f} 秒到 {target.isoformat()} 后发布。")
+              time.sleep(delay)
+          else:
+              print(f"当前已过 08:00（{now.isoformat()}），立即执行补发。")
+          PY
+
       # 本 Workflow 不调用第二个 LLM；只把结构化 Feed 转成仓库现有的
       # ReportDecisionModel -> Card Builder -> app.feishu，因此飞书视觉和分页逻辑保持原样。
       - name: 发布当天 ChatGPT 情报分析
@@ -120,8 +133,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # 即使当天 Feed 缺失或飞书暂时不可用，也保留 Outbox 与运行状态；
-      # 下一次 Runner 可以继续补发未完成卡片。
+      # 即使飞书暂时不可用，也保留 Outbox 与运行状态，供明确的人工恢复使用。
       - name: 保存 Radar 状态缓存
         if: always()
         uses: actions/cache/save@v4
