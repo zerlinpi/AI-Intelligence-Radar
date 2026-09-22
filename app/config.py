@@ -38,6 +38,11 @@ FEISHU_SEND_TIMEOUT_SECONDS = min(
     max(_env_float("FEISHU_SEND_TIMEOUT_SECONDS", 10), 3),
     60,
 )
+# 多卡日报可配置最小发送间隔；GitHub Actions 生产链路会设置为正值以避开飞书业务层频率限制。
+FEISHU_INTER_CARD_DELAY_SECONDS = min(
+    max(_env_float("FEISHU_INTER_CARD_DELAY_SECONDS", 0), 0),
+    5,
+)
 # 发送队列位于 Docker 持久化 data 目录；进程重启后可继续补发尚未成功的卡片。
 FEISHU_OUTBOX_DIR = (
     os.getenv("FEISHU_OUTBOX_DIR", "./data/feishu-outbox")
