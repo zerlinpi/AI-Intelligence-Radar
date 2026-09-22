@@ -228,6 +228,21 @@ def _post_payload(payload: dict, card_type: str) -> bool:
             return False
 
         business_code = data.get("code", data.get("StatusCode", 0))
+        if business_code in (11232, "11232"):
+            logger.warning(
+                "飞书业务限流：卡片=%s code=%s 第%s/%s次，保持 interactive card 并等待重试",
+                card_type,
+                business_code,
+                attempt,
+                FEISHU_MAX_RETRIES,
+            )
+            if attempt < FEISHU_MAX_RETRIES:
+                # 业务层 11232 是短时频率限制。比普通网络抖动多留一档退避，
+                # 避免把正常 interactive card 错误降级成 Markdown 纯文本。
+                _retry_sleep(attempt + 1)
+                continue
+            return False
+
         if business_code not in (0, "0", None):
             logger.error("飞书业务返回异常：卡片=%s 返回=%s", card_type, data)
             return False
