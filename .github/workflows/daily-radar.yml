@@ -26,6 +26,8 @@ env:
   DATABASE_BACKUP_DIR: "./data/backups"
   RUN_HISTORY_FILE: "./data/run-history.json"
   FEISHU_OUTBOX_DIR: "./data/feishu-outbox"
+  # 多张卡之间留出间隔，降低飞书业务层 11232 frequency limited 风险。
+  FEISHU_INTER_CARD_DELAY_SECONDS: "1.2"
   FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
   GITHUB_TOKEN: ${{ github.token }}
   CHATGPT_FEED_ISSUE: "2"
