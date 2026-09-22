@@ -215,3 +215,34 @@ def test_400_does_not_retry(monkeypatch):
 
     assert feishu.send_feishu("测试") is False
     assert calls["count"] == 1
+
+
+def test_business_frequency_limit_retries_interactive_card(monkeypatch):
+    monkeypatch.setattr(feishu, "FEISHU_WEBHOOK", "https://example.com")
+    monkeypatch.setattr(feishu, "FEISHU_MAX_RETRIES", 3)
+    monkeypatch.setattr(feishu, "_retry_sleep", lambda *_: None)
+    sent = []
+    calls = {"count": 0}
+
+    def post(*args, **kwargs):
+        payload = kwargs["json"]
+        sent.append(payload)
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return MockResponse(code=11232)
+        return MockResponse(code=0)
+
+    monkeypatch.setattr(feishu.requests, "post", post)
+
+    card = CardEnvelope(
+        card_type="products-secondary",
+        payload={
+            "msg_type": "interactive",
+            "card": {"elements": []},
+        },
+        fallback_text="不应退化为纯文本",
+    )
+
+    assert feishu.send_feishu_cards([card], durable=False) is True
+    assert calls["count"] == 2
+    assert [payload["msg_type"] for payload in sent] == ["interactive", "interactive"]
