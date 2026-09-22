@@ -8,6 +8,7 @@ import requests
 from app.cards.models import CardEnvelope
 from app.cards.text import payload_bytes
 from app.config import (
+    FEISHU_INTER_CARD_DELAY_SECONDS,
     FEISHU_MAX_PAYLOAD_BYTES,
     FEISHU_MAX_RETRIES,
     FEISHU_SEND_TIMEOUT_SECONDS,
@@ -314,7 +315,7 @@ def _send_outbox_file(path) -> bool:
             logger.exception("飞书发送队列损坏且隔离失败：文件=%s", path)
         return False
 
-    for index, card in pending:
+    for position, (index, card) in enumerate(pending):
         if not _send_envelope(card):
             logger.warning("飞书持久化队列暂停：文件=%s 卡片=%s", path, card.card_type)
             return False
@@ -325,6 +326,8 @@ def _send_outbox_file(path) -> bool:
         except Exception:
             logger.exception("飞书发送成功但队列状态写入失败：文件=%s 卡片=%s", path, card.card_type)
             return False
+        if position < len(pending) - 1 and FEISHU_INTER_CARD_DELAY_SECONDS > 0:
+            time.sleep(FEISHU_INTER_CARD_DELAY_SECONDS)
 
     return True
 
@@ -375,10 +378,12 @@ def send_feishu_cards(cards, run_id: str = "", durable: bool = True) -> bool:
             # outbox 自身异常不能让已经生成的日报完全丢失，退回内存直接发送。
             logger.exception("飞书持久化入队失败，已退回直接发送")
 
-    for card in normalized:
+    for position, card in enumerate(normalized):
         if not _send_envelope(card):
             # 保持卡片顺序；上一张完全失败时不继续发送后续卡片。
             return False
+        if position < len(normalized) - 1 and FEISHU_INTER_CARD_DELAY_SECONDS > 0:
+            time.sleep(FEISHU_INTER_CARD_DELAY_SECONDS)
     return True
 
 
