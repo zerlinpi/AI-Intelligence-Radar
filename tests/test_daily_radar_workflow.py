@@ -9,13 +9,15 @@ def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_daily_radar_has_feed_trigger_and_scheduled_fallback():
+def test_daily_radar_has_feed_trigger_and_scheduled_recovery_windows():
     text = _workflow_text()
 
     assert "types: [created]" in text
     assert "types: [created, edited]" not in text
     assert "\n  schedule:\n" in text
-    assert 'cron: "10 0 * * *"' in text
+    assert 'cron: "15 0 * * *"' in text
+    assert 'cron: "35 0 * * *"' in text
+    assert 'cron: "0 1 * * *"' in text
     assert "\n  push:\n" not in text
     assert "workflow_dispatch:" in text
     assert "cancel-in-progress: false" in text
