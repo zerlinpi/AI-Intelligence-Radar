@@ -246,3 +246,36 @@ def test_business_frequency_limit_retries_interactive_card(monkeypatch):
     assert feishu.send_feishu_cards([card], durable=False) is True
     assert calls["count"] == 2
     assert [payload["msg_type"] for payload in sent] == ["interactive", "interactive"]
+
+
+def test_durable_retry_same_run_does_not_resend_completed_cards(monkeypatch, tmp_path):
+    monkeypatch.setattr(feishu, "FEISHU_WEBHOOK", "https://example.com")
+    monkeypatch.setattr(feishu, "FEISHU_MAX_RETRIES", 1)
+    monkeypatch.setattr(feishu, "FEISHU_INTER_CARD_DELAY_SECONDS", 0)
+    monkeypatch.setattr(outbox, "FEISHU_OUTBOX_DIR", str(tmp_path))
+
+    sent_titles = []
+    phase = {"fail": True}
+
+    def post(*args, **kwargs):
+        payload = kwargs["json"]
+        if payload["msg_type"] == "interactive":
+            title = payload["card"]["header"]["title"]["content"]
+            sent_titles.append(title)
+            if title == "compliance" and phase["fail"]:
+                return MockResponse(status_code=500)
+        elif phase["fail"]:
+            return MockResponse(status_code=500)
+        return MockResponse(0)
+
+    monkeypatch.setattr(feishu.requests, "post", post)
+
+    assert feishu.send_feishu_cards(_cards(), run_id="same-day", durable=True) is False
+    assert (tmp_path / "same-day.json").exists()
+
+    phase["fail"] = False
+    sent_titles.clear()
+
+    assert feishu.send_feishu_cards(_cards(), run_id="same-day", durable=True) is True
+    assert sent_titles == ["compliance", "products"]
+    assert not (tmp_path / "same-day.json").exists()
