@@ -9,21 +9,23 @@ def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_daily_radar_has_one_automatic_trigger_from_new_feed_comment():
+def test_daily_radar_has_feed_trigger_and_scheduled_fallback():
     text = _workflow_text()
 
-    assert "\n  schedule:\n" not in text
     assert "types: [created]" in text
     assert "types: [created, edited]" not in text
+    assert "\n  schedule:\n" in text
+    assert 'cron: "10 0 * * *"' in text
     assert "\n  push:\n" not in text
     assert "workflow_dispatch:" in text
+    assert "cancel-in-progress: false" in text
 
 
 def test_feed_comment_waits_until_0800_shanghai_before_sending():
     text = _workflow_text()
 
     assert "等待到上海时间 08:00" in text
-    assert "ZoneInfo(\"Asia/Shanghai\")" in text
+    assert 'ZoneInfo("Asia/Shanghai")' in text
     assert "hour=8, minute=0, second=0" in text
     assert "time.sleep(delay)" in text
     assert "发布当天 ChatGPT 情报分析" in text
