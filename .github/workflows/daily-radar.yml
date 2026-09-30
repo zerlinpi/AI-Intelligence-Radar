@@ -5,12 +5,15 @@ on:
   # Feed 到达后启动本 Workflow，并在发送前等待到上海时间 08:00。
   issue_comment:
     types: [created]
-  # 08:10（上海时间）做一次兜底检查：
-  # - 正常日报已发送时，脚本通过本地状态或 GitHub delivery receipt 去重；
-  # - 当天 Feed 缺失时，向飞书发送明确故障告警，避免静默失败；
-  # - Feed 已存在但 issue_comment 事件未触发时，补发当天日报。
+  # 多窗口兜底（上海时间 08:15 / 08:35 / 09:00）：
+  # - 给 08:03 ChatGPT Recovery 留出完成研究和写入 Feed 的时间；
+  # - 正常日报已发送时，通过本地状态或 GitHub delivery receipt 幂等跳过；
+  # - Feed 已存在但 issue_comment 漏触发时补发；
+  # - Feed 仍缺失或飞书短时失败时继续恢复，不让单次故障演变为整天静默。
   schedule:
-    - cron: "10 0 * * *"
+    - cron: "15 0 * * *"
+    - cron: "35 0 * * *"
+    - cron: "0 1 * * *"
   # 保留人工恢复入口。
   workflow_dispatch:
 
