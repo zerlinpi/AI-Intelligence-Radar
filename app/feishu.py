@@ -367,13 +367,15 @@ def send_feishu_cards(cards, run_id: str = "", durable: bool = True) -> bool:
 
     if durable:
         try:
-            # 先恢复旧队列；旧日报未完成时只入队新日报，不越过旧消息发送。
-            previous_ok = flush_feishu_outbox()
+            # 先把当前 run 幂等入队，再统一按 mtime 顺序 flush。
+            # 如果同一个 run 上次只发送了一部分，queue_cards 会复用原文件，
+            # flush 只补未发送卡片；不会在补完后重新创建整套日报导致重复发送。
             path = queue_cards(run_id or str(uuid.uuid4()), normalized)
-            if not previous_ok:
-                logger.warning("历史飞书队列尚未恢复，本轮日报已入队等待后续补发：文件=%s", path)
+            flushed = flush_feishu_outbox()
+            if not flushed:
+                logger.warning("飞书队列尚未全部恢复，本轮日报保持入队：文件=%s", path)
                 return False
-            return _send_outbox_file(path)
+            return not path.exists()
         except Exception:
             # outbox 自身异常不能让已经生成的日报完全丢失，退回内存直接发送。
             logger.exception("飞书持久化入队失败，已退回直接发送")
