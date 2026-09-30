@@ -10,10 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
-# When executed as `python scripts/send_chatgpt_feed.py`, Python puts the
-# `scripts/` directory on sys.path instead of the repository root. Add the
-# root explicitly so the existing `app.*` package imports work identically
-# in local runs and GitHub Actions.
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -23,12 +19,16 @@ import requests
 from app.cards import build_daily_cards
 from app.chatgpt_feed import report_model_from_dict
 from app.config import REPORT_TIMEZONE
-from app.feishu import send_feishu_cards
+from app.feishu import send_feishu, send_feishu_cards
 
 
 MARKER = "AI-INTELLIGENCE-RADAR-CHATGPT-FEED"
 _JSON_BLOCK = re.compile(r"```json\s*(\{.*?\})\s*```", re.IGNORECASE | re.DOTALL)
 STATUS_PATH = Path("data/chatgpt-feed-status.json")
+
+
+class MissingFeedError(RuntimeError):
+    pass
 
 
 def extract_report_from_comment(body: str) -> Optional[Dict[str, Any]]:
@@ -63,7 +63,7 @@ def fetch_latest_report(
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
-        params={"per_page": 100, "sort": "created", "direction": "desc"},
+        params={"per_page": 100},
         timeout=20,
     )
     response.raise_for_status()
@@ -84,7 +84,26 @@ def fetch_latest_report(
 
     stale_hint = ", ".join(sorted(set(stale_dates), reverse=True)[:3])
     detail = f"；最近可见日期={stale_hint}" if stale_hint else ""
-    raise RuntimeError(f"未找到 {expected_date} 的 ChatGPT Radar Feed{detail}")
+    raise MissingFeedError(f"未找到 {expected_date} 的 ChatGPT Radar Feed{detail}")
+
+
+def _read_status() -> Dict[str, Any]:
+    if not STATUS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _already_sent(expected_date: str) -> bool:
+    status = _read_status()
+    return (
+        str(status.get("date") or "") == expected_date
+        and status.get("sent") is True
+        and str(status.get("status") or "") == "success"
+    )
 
 
 def _write_status(**data: Any) -> None:
@@ -93,6 +112,18 @@ def _write_status(**data: Any) -> None:
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _send_alert(expected_date: str, message: str) -> bool:
+    text = (
+        f"⚠️ AI 情报雷达 {expected_date}\n"
+        f"{message}\n"
+        "本次不会发送过期日报；请检查 GitHub Actions 与 Issue #2。"
+    )
+    try:
+        return bool(send_feishu(text))
+    except Exception:
+        return False
 
 
 def main() -> int:
@@ -105,6 +136,10 @@ def main() -> int:
         raise RuntimeError("缺少 GITHUB_REPOSITORY")
     if not token:
         raise RuntimeError("缺少 GITHUB_TOKEN")
+
+    if _already_sent(expected_date):
+        print(f"ChatGPT Radar Feed：date={expected_date} 已成功发送，本轮跳过防止重复。")
+        return 0
 
     try:
         payload = fetch_latest_report(
@@ -122,29 +157,58 @@ def main() -> int:
             run_id=f"chatgpt-feed-{expected_date}",
             durable=True,
         )
+        alert_sent = False
+        if not sent:
+            alert_sent = _send_alert(
+                expected_date,
+                "日报卡片未全部发送，可能存在飞书 Webhook、限流或历史 Outbox 阻塞。",
+            )
+
         _write_status(
             date=expected_date,
             issue=issue_number,
             cards=len(cards),
             card_types=card_types,
             sent=bool(sent),
+            alert_sent=bool(alert_sent),
             status="success" if sent else "failed",
         )
         print(
             f"ChatGPT Radar Feed：date={expected_date} issue=#{issue_number} "
-            f"cards={len(cards)} sent={sent}"
+            f"cards={len(cards)} sent={sent} alert_sent={alert_sent}"
         )
         return 0 if sent else 1
-    except Exception as exc:
+    except MissingFeedError as exc:
+        alert_sent = _send_alert(
+            expected_date,
+            "当天 ChatGPT Feed 尚未写入 Issue #2，日报发布链路已触发兜底告警。",
+        )
         _write_status(
             date=expected_date,
             issue=issue_number,
             cards=0,
             sent=False,
+            alert_sent=bool(alert_sent),
+            status="missing_feed",
+            error=str(exc),
+        )
+        print(f"ChatGPT Radar Feed 缺失：{exc}；alert_sent={alert_sent}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        alert_sent = _send_alert(
+            expected_date,
+            "日报发布发生异常，已停止发送并保留 Actions 日志用于排查。",
+        )
+        _write_status(
+            date=expected_date,
+            issue=issue_number,
+            cards=0,
+            sent=False,
+            alert_sent=bool(alert_sent),
             status="failed",
             error=str(exc),
         )
-        print(f"ChatGPT Radar Feed 发送失败：{exc}", file=sys.stderr)
+        print(f"ChatGPT Radar Feed 发送失败：{exc}；alert_sent={alert_sent}", file=sys.stderr)
         return 1
 
 
