@@ -9,12 +9,14 @@ def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_daily_workflow_publishes_chatgpt_feed_with_0800_primary_and_0810_fallback():
+def test_daily_workflow_publishes_chatgpt_feed_with_primary_and_recovery_windows():
     text = _workflow_text()
     assert "issue_comment:" in text
     assert "types: [created]" in text
     assert "schedule:" in text
-    assert 'cron: "10 0 * * *"' in text
+    assert 'cron: "15 0 * * *"' in text
+    assert 'cron: "35 0 * * *"' in text
+    assert 'cron: "0 1 * * *"' in text
     assert "等待到上海时间 08:00" in text
     assert 'ZoneInfo("Asia/Shanghai")' in text
     assert "hour=8, minute=0, second=0" in text
