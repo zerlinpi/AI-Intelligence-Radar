@@ -6,7 +6,7 @@ on:
   issue_comment:
     types: [created]
   # 08:10（上海时间）做一次兜底检查：
-  # - 正常日报已发送时，脚本通过持久化状态直接跳过，避免重复；
+  # - 正常日报已发送时，脚本通过本地状态或 GitHub delivery receipt 去重；
   # - 当天 Feed 缺失时，向飞书发送明确故障告警，避免静默失败；
   # - Feed 已存在但 issue_comment 事件未触发时，补发当天日报。
   schedule:
@@ -16,7 +16,7 @@ on:
 
 permissions:
   contents: read
-  issues: read
+  issues: write
 
 # 同一时间只允许一轮日报发布。兜底任务不主动取消正在发送的主任务，
 # 避免在多卡发送中途被取消；后启动的任务会等待，并由脚本做同日防重复。
@@ -35,19 +35,21 @@ env:
   FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
   GITHUB_TOKEN: ${{ github.token }}
   CHATGPT_FEED_ISSUE: "2"
+  CHATGPT_FEED_AUTHOR: ${{ github.repository_owner }}
 
 jobs:
   daily-radar:
-    # issue_comment 只接受 Issue #2 新建且带 Radar Feed marker 的评论。
-    # schedule / workflow_dispatch 用于兜底与人工恢复。
+    # 自动触发只接受仓库所有者在 Issue #2 新建且带 Radar Feed marker 的评论。
+    # 这样公开仓库中的第三方评论不能触发携带生产 Secret 的工作流。
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       (github.event.issue.number == 2 &&
+       github.event.comment.user.login == github.repository_owner &&
        contains(github.event.comment.body, 'AI-INTELLIGENCE-RADAR-CHATGPT-FEED'))
     name: 发布 ChatGPT AI 情报日报
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - name: 获取代码
@@ -118,6 +120,7 @@ jobs:
             echo "## AI 情报雷达运行状态"
             echo
             echo "- 分析来源：ChatGPT Daily Radar Feed（Issue #${CHATGPT_FEED_ISSUE}）"
+            echo "- 可信 Feed 作者：${CHATGPT_FEED_AUTHOR}"
             echo "- 触发方式：${{ github.event_name }}"
             echo "- Workflow Run：${{ github.run_id }} / attempt ${{ github.run_attempt }}"
             echo "- 状态缓存精确命中：${{ steps.radar-cache-restore.outputs.cache-hit || 'false' }}"

@@ -28,4 +28,13 @@ def test_feed_comment_waits_until_0800_shanghai_before_sending():
     assert 'ZoneInfo("Asia/Shanghai")' in text
     assert "hour=8, minute=0, second=0" in text
     assert "time.sleep(delay)" in text
+    assert "timeout-minutes: 60" in text
     assert "发布当天 ChatGPT 情报分析" in text
+
+
+def test_public_issue_comment_trigger_is_owner_only():
+    text = _workflow_text()
+
+    assert "github.event.issue.number == 2" in text
+    assert "github.event.comment.user.login == github.repository_owner" in text
+    assert "CHATGPT_FEED_AUTHOR: ${{ github.repository_owner }}" in text

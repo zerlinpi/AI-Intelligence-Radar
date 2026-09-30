@@ -20,6 +20,7 @@ def test_daily_workflow_publishes_chatgpt_feed_with_0800_primary_and_0810_fallba
     assert "hour=8, minute=0, second=0" in text
     assert "workflow_dispatch:" in text
     assert 'CHATGPT_FEED_ISSUE: "2"' in text
+    assert "CHATGPT_FEED_AUTHOR: ${{ github.repository_owner }}" in text
     assert "python scripts/send_chatgpt_feed.py" in text
     assert "python -m app.cli run" not in text
 
@@ -55,8 +56,10 @@ def test_daily_workflow_does_not_run_a_second_llm():
 def test_daily_workflow_has_production_boundaries():
     text = _workflow_text()
     assert "contents: read" in text
-    assert "issues: read" in text
+    assert "issues: write" in text
     assert "pull_request:" not in text
     assert "push:" not in text
     assert "cancel-in-progress: false" in text
+    assert "github.event.comment.user.login == github.repository_owner" in text
+    assert "timeout-minutes: 60" in text
     assert "if: always()" in text
