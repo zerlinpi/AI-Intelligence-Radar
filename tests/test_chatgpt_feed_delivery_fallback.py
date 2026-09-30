@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "send_chatgpt_feed.py"
@@ -13,6 +15,24 @@ def _load_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _feed_body(date_text: str) -> str:
+    return (
+        "AI-INTELLIGENCE-RADAR-CHATGPT-FEED\n\n"
+        "~~~json\n"
+        + json.dumps({"date_text": date_text})
+        + "\n~~~"
+    ).replace("~~~", "```")
+
+
+def _receipt_body(date_text: str) -> str:
+    return (
+        "AI-INTELLIGENCE-RADAR-DELIVERED\n\n"
+        "~~~json\n"
+        + json.dumps({"date_text": date_text, "cards": 3})
+        + "\n~~~"
+    ).replace("~~~", "```")
 
 
 def test_same_day_success_is_deduplicated(monkeypatch, tmp_path):
@@ -31,6 +51,7 @@ def test_same_day_success_is_deduplicated(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "STATUS_PATH", status_path)
     monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
     monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-09-30")
 
     called = {"fetch": 0}
@@ -39,7 +60,7 @@ def test_same_day_success_is_deduplicated(monkeypatch, tmp_path):
         called["fetch"] += 1
         raise AssertionError("dedupe must happen before fetching the feed")
 
-    monkeypatch.setattr(module, "fetch_latest_report", fail_if_called)
+    monkeypatch.setattr(module, "fetch_issue_comments", fail_if_called)
 
     assert module.main() == 0
     assert called["fetch"] == 0
@@ -50,13 +71,11 @@ def test_missing_feed_sends_direct_feishu_alert(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "STATUS_PATH", tmp_path / "chatgpt-feed-status.json")
     monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
     monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-09-30")
-
-    def missing(*args, **kwargs):
-        raise module.MissingFeedError("missing")
+    monkeypatch.setattr(module, "fetch_issue_comments", lambda **kwargs: [])
 
     alerts = []
-    monkeypatch.setattr(module, "fetch_latest_report", missing)
     monkeypatch.setattr(module, "send_feishu", lambda text: alerts.append(text) or True)
 
     assert module.main() == 1
@@ -67,3 +86,103 @@ def test_missing_feed_sends_direct_feishu_alert(monkeypatch, tmp_path):
     assert alerts
     assert "2026-09-30" in alerts[0]
     assert "Feed" in alerts[0]
+
+
+def test_untrusted_feed_comment_is_ignored():
+    module = _load_module()
+    comments = [
+        {
+            "id": 10,
+            "user": {"login": "attacker"},
+            "body": _feed_body("2026-09-30"),
+        },
+        {
+            "id": 9,
+            "user": {"login": "zerlinpi"},
+            "body": _feed_body("2026-09-29"),
+        },
+    ]
+
+    with pytest.raises(module.MissingFeedError):
+        module.find_latest_report(comments, "2026-09-30", "zerlinpi")
+
+
+def test_trusted_feed_comment_is_selected():
+    module = _load_module()
+    comments = [
+        {
+            "id": 10,
+            "user": {"login": "attacker"},
+            "body": _feed_body("2026-09-30"),
+        },
+        {
+            "id": 11,
+            "user": {"login": "zerlinpi"},
+            "body": _feed_body("2026-09-30"),
+        },
+    ]
+
+    payload, comment_id = module.find_latest_report(
+        comments,
+        "2026-09-30",
+        "zerlinpi",
+    )
+    assert payload["date_text"] == "2026-09-30"
+    assert comment_id == 11
+
+
+def test_fake_delivery_receipt_does_not_suppress_send():
+    module = _load_module()
+    comments = [
+        {
+            "id": 12,
+            "user": {"login": "attacker"},
+            "body": _receipt_body("2026-09-30"),
+        }
+    ]
+    assert module.has_delivery_receipt(comments, "2026-09-30", "zerlinpi") is False
+
+
+def test_github_actions_delivery_receipt_deduplicates():
+    module = _load_module()
+    comments = [
+        {
+            "id": 13,
+            "user": {"login": "github-actions[bot]"},
+            "body": _receipt_body("2026-09-30"),
+        }
+    ]
+    assert module.has_delivery_receipt(comments, "2026-09-30", "zerlinpi") is True
+
+
+def test_issue_comment_fetch_paginates_past_first_100(monkeypatch):
+    module = _load_module()
+    pages = []
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    first = [{"id": value} for value in range(1, 101)]
+    second = [{"id": 101}]
+
+    def fake_get(*args, **kwargs):
+        page = kwargs["params"]["page"]
+        pages.append(page)
+        return Response(first if page == 1 else second)
+
+    monkeypatch.setattr(module.requests, "get", fake_get)
+
+    comments = module.fetch_issue_comments(
+        repository="zerlinpi/AI-Intelligence-Radar",
+        issue_number=2,
+        token="test-token",
+    )
+    assert len(comments) == 101
+    assert pages == [1, 2]
