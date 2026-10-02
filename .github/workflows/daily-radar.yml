@@ -1,28 +1,18 @@
 name: AI 情报雷达日报
 
 on:
-  # 07:45 的 ChatGPT 自动任务负责把当天 Feed 写入 Issue #2。
-  # Feed 到达后启动本 Workflow，并在发送前等待到上海时间 08:00。
-  issue_comment:
-    types: [created]
-  # 多窗口兜底（上海时间 08:15 / 08:35 / 09:00）：
-  # - 给 08:03 ChatGPT Recovery 留出完成研究和写入 Feed 的时间；
-  # - 正常日报已发送时，通过本地状态或 GitHub delivery receipt 幂等跳过；
-  # - Feed 已存在但 issue_comment 漏触发时补发；
-  # - Feed 仍缺失或飞书短时失败时继续恢复，不让单次故障演变为整天静默。
+  # 单一生产发布入口：UTC 23:00 = 北京时间次日 07:00。
+  # Runner 提前启动并等待到北京时间 08:00:00，再读取当天 Feed 并发送飞书。
   schedule:
-    - cron: "15 0 * * *"
-    - cron: "35 0 * * *"
-    - cron: "0 1 * * *"
-  # 保留人工恢复入口。
+    - cron: "0 23 * * *"
+  # 仅保留人工诊断入口；脚本自身有北京时间发送窗口保护，
+  # 08:10 之后人工触发也不会补发到下午。
   workflow_dispatch:
 
 permissions:
   contents: read
   issues: write
 
-# 同一时间只允许一轮日报发布。兜底任务不主动取消正在发送的主任务，
-# 避免在多卡发送中途被取消；后启动的任务会等待，并由脚本做同日防重复。
 concurrency:
   group: ai-intelligence-radar-daily
   cancel-in-progress: false
@@ -39,20 +29,15 @@ env:
   GITHUB_TOKEN: ${{ github.token }}
   CHATGPT_FEED_ISSUE: "2"
   CHATGPT_FEED_AUTHOR: ${{ github.repository_owner }}
+  RADAR_ENFORCE_SEND_WINDOW: "1"
+  RADAR_SEND_WINDOW_START: "08:00"
+  RADAR_SEND_WINDOW_END: "08:10"
 
 jobs:
   daily-radar:
-    # 自动触发只接受仓库所有者在 Issue #2 新建且带 Radar Feed marker 的评论。
-    # 这样公开仓库中的第三方评论不能触发携带生产 Secret 的工作流。
-    if: >-
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.issue.number == 2 &&
-       github.event.comment.user.login == github.repository_owner &&
-       contains(github.event.comment.body, 'AI-INTELLIGENCE-RADAR-CHATGPT-FEED'))
-    name: 发布 ChatGPT AI 情报日报
+    name: 北京时间 08:00 发布 AI 情报日报
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: 获取代码
@@ -69,9 +54,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data
-          key: radar-state-${{ runner.os }}-v3-${{ github.run_id }}-${{ github.run_attempt }}
+          key: radar-state-${{ runner.os }}-v4-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            radar-state-${{ runner.os }}-v3-
+            radar-state-${{ runner.os }}-v4-
 
       - name: 准备运行目录
         run: mkdir -p data data/backups data/feishu-outbox
@@ -84,8 +69,7 @@ jobs:
       - name: 检查依赖完整性
         run: python -m pip check
 
-      - name: 等待到上海时间 08:00
-        if: github.event_name == 'issue_comment'
+      - name: 等待到北京时间 08:00:00
         shell: bash
         run: |
           python - <<'PY'
@@ -99,10 +83,10 @@ jobs:
 
           if now < target:
               delay = (target - now).total_seconds()
-              print(f"Feed 已就绪，等待 {delay:.0f} 秒到 {target.isoformat()} 后发布。")
+              print(f"当前 {now.isoformat()}，等待 {delay:.0f} 秒到 {target.isoformat()}。")
               time.sleep(delay)
           else:
-              print(f"当前已过 08:00（{now.isoformat()}），立即执行补发。")
+              print(f"当前 {now.isoformat()}，由发送窗口保护决定是否允许发布。")
           PY
 
       - name: 发布当天 ChatGPT 情报分析
@@ -122,6 +106,8 @@ jobs:
           {
             echo "## AI 情报雷达运行状态"
             echo
+            echo "- 目标发布时间：北京时间 08:00:00"
+            echo "- 允许发送窗口：08:00–08:10"
             echo "- 分析来源：ChatGPT Daily Radar Feed（Issue #${CHATGPT_FEED_ISSUE}）"
             echo "- 可信 Feed 作者：${CHATGPT_FEED_AUTHOR}"
             echo "- 触发方式：${{ github.event_name }}"
@@ -149,7 +135,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: data
-          key: radar-state-${{ runner.os }}-v3-${{ github.run_id }}-${{ github.run_attempt }}
+          key: radar-state-${{ runner.os }}-v4-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: 上传状态与日志备份
         if: always()

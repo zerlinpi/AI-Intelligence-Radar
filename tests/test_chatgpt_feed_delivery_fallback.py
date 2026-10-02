@@ -186,3 +186,55 @@ def test_issue_comment_fetch_paginates_past_first_100(monkeypatch):
     )
     assert len(comments) == 101
     assert pages == [1, 2]
+
+
+def test_send_window_accepts_0800_and_rejects_afternoon(monkeypatch):
+    module = _load_module()
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setenv("RADAR_SEND_WINDOW_START", "08:00")
+    monkeypatch.setenv("RADAR_SEND_WINDOW_END", "08:10")
+    tz = ZoneInfo("Asia/Shanghai")
+
+    assert module._send_window_state(datetime(2026, 10, 3, 8, 0, 0, tzinfo=tz)) == "open"
+    assert module._send_window_state(datetime(2026, 10, 3, 8, 9, 59, tzinfo=tz)) == "open"
+    assert module._send_window_state(datetime(2026, 10, 3, 8, 10, 0, tzinfo=tz)) == "late"
+    assert module._send_window_state(datetime(2026, 10, 3, 15, 0, 0, tzinfo=tz)) == "late"
+
+
+def test_late_run_never_calls_github_or_feishu(monkeypatch, tmp_path):
+    module = _load_module()
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    monkeypatch.setattr(module, "STATUS_PATH", tmp_path / "chatgpt-feed-status.json")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-03")
+    monkeypatch.setenv("RADAR_ENFORCE_SEND_WINDOW", "1")
+    monkeypatch.setenv("RADAR_SEND_WINDOW_START", "08:00")
+    monkeypatch.setenv("RADAR_SEND_WINDOW_END", "08:10")
+
+    monkeypatch.setattr(module, "_send_window_state", lambda now=None: "late")
+
+    called = {"github": 0, "feishu": 0}
+
+    def github_should_not_run(**kwargs):
+        called["github"] += 1
+        raise AssertionError("late run must not fetch Feed")
+
+    def feishu_should_not_run(*args, **kwargs):
+        called["feishu"] += 1
+        raise AssertionError("late run must not send Feishu")
+
+    monkeypatch.setattr(module, "fetch_issue_comments", github_should_not_run)
+    monkeypatch.setattr(module, "send_feishu", feishu_should_not_run)
+    monkeypatch.setattr(module, "send_feishu_cards", feishu_should_not_run)
+
+    assert module.main() == 2
+    assert called == {"github": 0, "feishu": 0}
+    status = json.loads(module.STATUS_PATH.read_text(encoding="utf-8"))
+    assert status["status"] == "outside_send_window"
+    assert status["window_state"] == "late"

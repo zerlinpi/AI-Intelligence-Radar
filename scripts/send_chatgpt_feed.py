@@ -51,6 +51,49 @@ def _today() -> str:
     return datetime.now(ZoneInfo(REPORT_TIMEZONE)).date().isoformat()
 
 
+def _parse_clock(value: str, default_hour: int, default_minute: int) -> tuple[int, int]:
+    text = str(value or "").strip()
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return hour, minute
+    except (TypeError, ValueError):
+        pass
+    return default_hour, default_minute
+
+
+def _send_window_state(now: Optional[datetime] = None) -> str:
+    current = now or datetime.now(ZoneInfo(REPORT_TIMEZONE))
+    start_hour, start_minute = _parse_clock(
+        os.getenv("RADAR_SEND_WINDOW_START", "08:00"), 8, 0
+    )
+    end_hour, end_minute = _parse_clock(
+        os.getenv("RADAR_SEND_WINDOW_END", "08:10"), 8, 10
+    )
+    start = current.replace(
+        hour=start_hour, minute=start_minute, second=0, microsecond=0
+    )
+    end = current.replace(
+        hour=end_hour, minute=end_minute, second=0, microsecond=0
+    )
+    if current < start:
+        return "early"
+    if current >= end:
+        return "late"
+    return "open"
+
+
+def _send_window_enforced() -> bool:
+    return str(os.getenv("RADAR_ENFORCE_SEND_WINDOW") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _github_headers(token: str) -> Dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
@@ -264,6 +307,26 @@ def main() -> int:
     if _already_sent(expected_date):
         print(f"ChatGPT Radar Feed：date={expected_date} 已成功发送，本轮跳过防止重复。")
         return 0
+
+    if _send_window_enforced():
+        window_state = _send_window_state()
+        if window_state != "open":
+            _write_status(
+                date=expected_date,
+                issue=issue_number,
+                cards=0,
+                sent=False,
+                alert_sent=False,
+                status="outside_send_window",
+                window_state=window_state,
+                window_start=os.getenv("RADAR_SEND_WINDOW_START", "08:00"),
+                window_end=os.getenv("RADAR_SEND_WINDOW_END", "08:10"),
+            )
+            print(
+                f"ChatGPT Radar Feed：date={expected_date} 当前不在北京时间发送窗口"
+                f"（state={window_state}），拒绝发送飞书。"
+            )
+            return 2
 
     try:
         comments = fetch_issue_comments(

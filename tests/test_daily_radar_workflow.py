@@ -9,34 +9,34 @@ def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_daily_radar_has_feed_trigger_and_scheduled_recovery_windows():
+def test_daily_radar_has_only_one_scheduled_production_release():
     text = _workflow_text()
 
-    assert "types: [created]" in text
-    assert "types: [created, edited]" not in text
+    assert "issue_comment:" not in text
     assert "\n  schedule:\n" in text
-    assert 'cron: "15 0 * * *"' in text
-    assert 'cron: "35 0 * * *"' in text
-    assert 'cron: "0 1 * * *"' in text
+    assert text.count('cron: "0 23 * * *"') == 1
+    assert 'cron: "15 0 * * *"' not in text
+    assert 'cron: "35 0 * * *"' not in text
+    assert 'cron: "0 1 * * *"' not in text
     assert "\n  push:\n" not in text
     assert "workflow_dispatch:" in text
     assert "cancel-in-progress: false" in text
 
 
-def test_feed_comment_waits_until_0800_shanghai_before_sending():
+def test_release_runner_waits_until_0800_shanghai_before_sending():
     text = _workflow_text()
 
-    assert "等待到上海时间 08:00" in text
+    assert "等待到北京时间 08:00:00" in text
     assert 'ZoneInfo("Asia/Shanghai")' in text
     assert "hour=8, minute=0, second=0" in text
     assert "time.sleep(delay)" in text
-    assert "timeout-minutes: 60" in text
+    assert "timeout-minutes: 90" in text
     assert "发布当天 ChatGPT 情报分析" in text
 
 
-def test_public_issue_comment_trigger_is_owner_only():
+def test_late_manual_dispatch_cannot_bypass_send_window():
     text = _workflow_text()
 
-    assert "github.event.issue.number == 2" in text
-    assert "github.event.comment.user.login == github.repository_owner" in text
-    assert "CHATGPT_FEED_AUTHOR: ${{ github.repository_owner }}" in text
+    assert 'RADAR_ENFORCE_SEND_WINDOW: "1"' in text
+    assert 'RADAR_SEND_WINDOW_START: "08:00"' in text
+    assert 'RADAR_SEND_WINDOW_END: "08:10"' in text
