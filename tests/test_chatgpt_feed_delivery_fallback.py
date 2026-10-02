@@ -217,14 +217,7 @@ def test_late_run_never_calls_github_or_feishu(monkeypatch, tmp_path):
     monkeypatch.setenv("RADAR_SEND_WINDOW_START", "08:00")
     monkeypatch.setenv("RADAR_SEND_WINDOW_END", "08:10")
 
-    tz = ZoneInfo("Asia/Shanghai")
-    monkeypatch.setattr(
-        module,
-        "_send_window_state",
-        lambda now=None: module._send_window_state(
-            datetime(2026, 10, 3, 15, 0, 0, tzinfo=tz)
-        ),
-    )
+    monkeypatch.setattr(module, "_send_window_state", lambda now=None: "late")
 
     called = {"github": 0, "feishu": 0}
 
