@@ -328,9 +328,6 @@ def main() -> int:
             )
             return 2
 
-        print(f"ChatGPT Radar Feed：date={expected_date} 已成功发送，本轮跳过防止重复。")
-        return 0
-
     try:
         comments = fetch_issue_comments(
             repository=repository,
