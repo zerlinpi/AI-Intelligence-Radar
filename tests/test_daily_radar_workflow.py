@@ -40,3 +40,12 @@ def test_late_manual_dispatch_cannot_bypass_send_window():
     assert 'RADAR_ENFORCE_SEND_WINDOW: "1"' in text
     assert 'RADAR_SEND_WINDOW_START: "08:00"' in text
     assert 'RADAR_SEND_WINDOW_END: "08:10"' in text
+
+
+def test_release_runner_prepares_local_fallback_before_0800():
+    text = _workflow_text()
+
+    assert "07:35 准备本地兜底" in text
+    assert "python scripts/prepare_local_fallback.py" in text
+    assert "hour=7, minute=35, second=0" in text
+    assert 'RADAR_LOCAL_FALLBACK_PATH: "./data/local-fallback-cards.json"' in text
