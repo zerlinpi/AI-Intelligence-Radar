@@ -238,3 +238,83 @@ def test_late_run_never_calls_github_or_feishu(monkeypatch, tmp_path):
     status = json.loads(module.STATUS_PATH.read_text(encoding="utf-8"))
     assert status["status"] == "outside_send_window"
     assert status["window_state"] == "late"
+
+
+def test_missing_feed_uses_prebuilt_local_fallback(monkeypatch, tmp_path):
+    module = _load_module()
+    status_path = tmp_path / "chatgpt-feed-status.json"
+    fallback_path = tmp_path / "local-fallback-cards.json"
+    fallback_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "date": "2026-10-03",
+                "source": "local_deterministic_fallback",
+                "cards": [
+                    {
+                        "card_type": "summary",
+                        "payload": {
+                            "msg_type": "text",
+                            "content": {"text": "fallback"},
+                        },
+                        "fallback_text": "fallback",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "STATUS_PATH", status_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-03")
+    monkeypatch.setenv("RADAR_LOCAL_FALLBACK_PATH", str(fallback_path))
+    monkeypatch.delenv("RADAR_ENFORCE_SEND_WINDOW", raising=False)
+    monkeypatch.setattr(module, "fetch_issue_comments", lambda **kwargs: [])
+
+    sent = []
+    alerts = []
+    receipts = []
+
+    monkeypatch.setattr(
+        module,
+        "send_feishu_cards",
+        lambda cards, **kwargs: sent.extend(cards) or True,
+    )
+    monkeypatch.setattr(
+        module,
+        "post_delivery_receipt",
+        lambda **kwargs: receipts.append(kwargs) or True,
+    )
+    monkeypatch.setattr(module, "send_feishu", lambda text: alerts.append(text) or True)
+
+    assert module.main() == 0
+    assert len(sent) == 1
+    assert alerts == []
+    assert receipts and receipts[0]["source"] == "local_deterministic_fallback"
+
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["status"] == "success"
+    assert status["source"] == "local_deterministic_fallback"
+    assert status["sent"] is True
+
+
+def test_stale_local_fallback_is_ignored(monkeypatch, tmp_path):
+    module = _load_module()
+    fallback_path = tmp_path / "local-fallback-cards.json"
+    fallback_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "date": "2026-10-02",
+                "source": "local_deterministic_fallback",
+                "cards": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RADAR_LOCAL_FALLBACK_PATH", str(fallback_path))
+
+    assert module._load_local_fallback("2026-10-03") == []
