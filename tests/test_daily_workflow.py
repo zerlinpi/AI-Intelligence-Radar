@@ -23,6 +23,10 @@ def test_daily_workflow_has_single_beijing_0800_release_gate():
     assert 'RADAR_ENFORCE_SEND_WINDOW: "1"' in text
     assert 'RADAR_SEND_WINDOW_START: "08:00"' in text
     assert 'RADAR_SEND_WINDOW_END: "08:10"' in text
+    assert 'RADAR_LOCAL_FALLBACK_PATH: "./data/local-fallback-cards.json"' in text
+    assert "07:35 准备本地兜底" in text
+    assert "python scripts/prepare_local_fallback.py" in text
+    assert "hour=7, minute=35, second=0" in text
     assert "workflow_dispatch:" in text
     assert 'CHATGPT_FEED_ISSUE: "2"' in text
     assert "CHATGPT_FEED_AUTHOR: ${{ github.repository_owner }}" in text
