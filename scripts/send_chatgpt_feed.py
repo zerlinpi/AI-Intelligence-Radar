@@ -17,6 +17,7 @@ if str(ROOT_DIR) not in sys.path:
 import requests
 
 from app.cards import build_daily_cards
+from app.cards.models import CardEnvelope
 from app.chatgpt_feed import report_model_from_dict
 from app.config import REPORT_TIMEZONE
 from app.feishu import send_feishu, send_feishu_cards
@@ -211,6 +212,7 @@ def post_delivery_receipt(
     expected_date: str,
     feed_comment_id: int,
     cards: int,
+    source: str = "chatgpt_feed",
 ) -> bool:
     url = f"https://api.github.com/repos/{repository}/issues/{issue_number}/comments"
     body = (
@@ -221,6 +223,7 @@ def post_delivery_receipt(
                 "date_text": expected_date,
                 "feed_comment_id": int(feed_comment_id),
                 "cards": int(cards),
+                "source": str(source or "chatgpt_feed"),
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -288,6 +291,88 @@ def _send_alert(expected_date: str, message: str, status_name: str) -> bool:
         return bool(send_feishu(text))
     except Exception:
         return False
+
+
+def _load_local_fallback(expected_date: str) -> List[CardEnvelope]:
+    path = Path(
+        os.getenv("RADAR_LOCAL_FALLBACK_PATH")
+        or "data/local-fallback-cards.json"
+    )
+    if not path.exists():
+        return []
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    if not isinstance(data, dict):
+        return []
+    if str(data.get("date") or "").strip() != expected_date:
+        return []
+    if str(data.get("source") or "").strip() != "local_deterministic_fallback":
+        return []
+
+    result: List[CardEnvelope] = []
+    for row in data.get("cards") or []:
+        if not isinstance(row, dict):
+            return []
+        try:
+            result.append(
+                CardEnvelope(
+                    card_type=str(row.get("card_type") or "fallback"),
+                    payload=row.get("payload") if isinstance(row.get("payload"), dict) else {},
+                    fallback_text=str(row.get("fallback_text") or ""),
+                )
+            )
+        except Exception:
+            return []
+    return result
+
+
+def _send_local_fallback(
+    repository: str,
+    issue_number: int,
+    token: str,
+    expected_date: str,
+) -> bool:
+    cards = _load_local_fallback(expected_date)
+    if not cards:
+        return False
+
+    sent = send_feishu_cards(
+        cards,
+        run_id=f"local-fallback-{expected_date}",
+        durable=True,
+    )
+    receipt_sent = False
+    if sent:
+        receipt_sent = post_delivery_receipt(
+            repository=repository,
+            issue_number=issue_number,
+            token=token,
+            expected_date=expected_date,
+            feed_comment_id=0,
+            cards=len(cards),
+            source="local_deterministic_fallback",
+        )
+
+    _write_status(
+        date=expected_date,
+        issue=issue_number,
+        cards=len(cards),
+        card_types=[card.card_type for card in cards],
+        sent=bool(sent),
+        alert_sent=False,
+        receipt_sent=bool(receipt_sent),
+        status="success" if sent else "failed",
+        source="local_deterministic_fallback",
+    )
+    print(
+        f"Radar 本地兜底：date={expected_date} cards={len(cards)} "
+        f"sent={sent} receipt_sent={receipt_sent}"
+    )
+    return bool(sent)
 
 
 def main() -> int:
@@ -400,9 +485,21 @@ def main() -> int:
         )
         return 0 if sent else 1
     except MissingFeedError as exc:
+        if _send_local_fallback(
+            repository=repository,
+            issue_number=issue_number,
+            token=token,
+            expected_date=expected_date,
+        ):
+            print(
+                f"ChatGPT Radar Feed 缺失：{exc}；已在 08:00 使用预生成本地兜底卡片。",
+                file=sys.stderr,
+            )
+            return 0
+
         alert_sent = _send_alert(
             expected_date,
-            "当天可信 ChatGPT Feed 尚未写入 Issue #2，日报发布链路已触发兜底告警。",
+            "当天可信 ChatGPT Feed 缺失，且 07:35 本地兜底未生成或不可用。",
             "missing_feed",
         )
         _write_status(
