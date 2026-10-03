@@ -32,6 +32,7 @@ env:
   RADAR_ENFORCE_SEND_WINDOW: "1"
   RADAR_SEND_WINDOW_START: "08:00"
   RADAR_SEND_WINDOW_END: "08:10"
+  RADAR_LOCAL_FALLBACK_PATH: "./data/local-fallback-cards.json"
 
 jobs:
   daily-radar:
@@ -54,9 +55,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data
-          key: radar-state-${{ runner.os }}-v4-${{ github.run_id }}-${{ github.run_attempt }}
+          key: radar-state-${{ runner.os }}-v5-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            radar-state-${{ runner.os }}-v4-
+            radar-state-${{ runner.os }}-v5-
 
       - name: 准备运行目录
         run: mkdir -p data data/backups data/feishu-outbox
@@ -68,6 +69,32 @@ jobs:
 
       - name: 检查依赖完整性
         run: python -m pip check
+
+      - name: 07:35 准备本地兜底
+        id: fallback-prep
+        shell: bash
+        run: |
+          python - <<'PY'
+          import time
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          tz = ZoneInfo("Asia/Shanghai")
+          now = datetime.now(tz)
+          target = now.replace(hour=7, minute=35, second=0, microsecond=0)
+
+          if now < target:
+              delay = (target - now).total_seconds()
+              print(f"当前 {now.isoformat()}，等待 {delay:.0f} 秒到本地兜底准备时间 {target.isoformat()}。")
+              time.sleep(delay)
+          else:
+              print(f"当前 {now.isoformat()}，立即检查 ChatGPT Feed 并准备必要兜底。")
+          PY
+          set +e
+          python scripts/prepare_local_fallback.py 2>&1 | tee data/fallback-prep.log
+          fallback_exit=${PIPESTATUS[0]}
+          echo "exit_code=${fallback_exit}" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: 等待到北京时间 08:00:00
         shell: bash
@@ -113,6 +140,7 @@ jobs:
             echo "- 触发方式：${{ github.event_name }}"
             echo "- Workflow Run：${{ github.run_id }} / attempt ${{ github.run_attempt }}"
             echo "- 状态缓存精确命中：${{ steps.radar-cache-restore.outputs.cache-hit || 'false' }}"
+            echo "- 07:35 本地兜底准备退出码：${{ steps.fallback-prep.outputs.exit_code || '未执行' }}"
             echo "- 发布退出码：${{ steps.radar-run.outputs.exit_code || '未执行到发布脚本' }}"
             echo
             if [ -f data/chatgpt-feed-status.json ]; then
@@ -135,7 +163,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: data
-          key: radar-state-${{ runner.os }}-v4-${{ github.run_id }}-${{ github.run_attempt }}
+          key: radar-state-${{ runner.os }}-v5-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: 上传状态与日志备份
         if: always()
