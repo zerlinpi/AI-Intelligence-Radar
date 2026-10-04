@@ -416,7 +416,11 @@ def main() -> int:
         or os.getenv("RADAR_GITHUB_REPOSITORY")
         or ""
     ).strip()
-    token = str(os.getenv("GITHUB_TOKEN") or "").strip()
+    token = str(
+        os.getenv("RADAR_GITHUB_TOKEN")
+        or os.getenv("GITHUB_TOKEN")
+        or ""
+    ).strip()
     trusted_author = str(os.getenv("CHATGPT_FEED_AUTHOR") or "").strip()
     if not trusted_author and "/" in repository:
         trusted_author = repository.split("/", 1)[0].strip()
