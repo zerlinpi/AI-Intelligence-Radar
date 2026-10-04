@@ -240,7 +240,7 @@ def post_delivery_receipt(
         )
         + "\n```"
     )
-    delays = (0, 5, 10, 20, 40, 60)
+    delays = (0, 5, 10, 20, 40)
     for attempt, delay in enumerate(delays, start=1):
         if delay:
             time.sleep(delay)
@@ -249,7 +249,7 @@ def post_delivery_receipt(
                 url,
                 headers=_github_headers(token),
                 json={"body": body},
-                timeout=20,
+                timeout=10,
             )
             response.raise_for_status()
             return True
