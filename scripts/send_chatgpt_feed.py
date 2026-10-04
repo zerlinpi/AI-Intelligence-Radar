@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -239,17 +240,26 @@ def post_delivery_receipt(
         )
         + "\n```"
     )
-    try:
-        response = requests.post(
-            url,
-            headers=_github_headers(token),
-            json={"body": body},
-            timeout=20,
-        )
-        response.raise_for_status()
-        return True
-    except requests.RequestException:
-        return False
+    delays = (0, 5, 10, 20, 40, 60)
+    for attempt, delay in enumerate(delays, start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            response = requests.post(
+                url,
+                headers=_github_headers(token),
+                json={"body": body},
+                timeout=20,
+            )
+            response.raise_for_status()
+            return True
+        except requests.RequestException as exc:
+            print(
+                f"GitHub delivery receipt 写入失败：attempt={attempt}/{len(delays)} "
+                f"error={exc}",
+                file=sys.stderr,
+            )
+    return False
 
 
 def _read_status() -> Dict[str, Any]:
@@ -532,9 +542,23 @@ def main() -> int:
         print(f"ChatGPT Radar Feed 缺失：{exc}；alert_sent={alert_sent}", file=sys.stderr)
         return 1
     except Exception as exc:
+        # GitHub API 在 08:00 短暂不可达时，不应让飞书日报跟着失效。
+        # 07:35 已经无条件准备当天本地兜底；优先使用它完成发送。
+        if _send_local_fallback(
+            repository=repository,
+            issue_number=issue_number,
+            token=token,
+            expected_date=expected_date,
+        ):
+            print(
+                f"ChatGPT Radar Feed 读取异常：{exc}；已使用预生成本地兜底卡片。",
+                file=sys.stderr,
+            )
+            return 0
+
         alert_sent = _send_alert(
             expected_date,
-            "日报发布发生异常，已停止发送并保留 Actions 日志用于排查。",
+            "日报发布发生异常，且预生成本地兜底不可用；已保留运行日志用于排查。",
             "failed",
         )
         _write_status(
