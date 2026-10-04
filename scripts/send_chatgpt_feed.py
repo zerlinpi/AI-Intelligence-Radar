@@ -95,6 +95,15 @@ def _send_window_enforced() -> bool:
     }
 
 
+def _late_recovery_allowed() -> bool:
+    return str(os.getenv("RADAR_ALLOW_LATE_RECOVERY") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _github_headers(token: str) -> Dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
@@ -393,27 +402,10 @@ def main() -> int:
         print(f"ChatGPT Radar Feed：date={expected_date} 已成功发送，本轮跳过防止重复。")
         return 0
 
-    if _send_window_enforced():
-        window_state = _send_window_state()
-        if window_state != "open":
-            _write_status(
-                date=expected_date,
-                issue=issue_number,
-                cards=0,
-                sent=False,
-                alert_sent=False,
-                status="outside_send_window",
-                window_state=window_state,
-                window_start=os.getenv("RADAR_SEND_WINDOW_START", "08:00"),
-                window_end=os.getenv("RADAR_SEND_WINDOW_END", "08:10"),
-            )
-            print(
-                f"ChatGPT Radar Feed：date={expected_date} 当前不在北京时间发送窗口"
-                f"（state={window_state}），拒绝发送飞书。"
-            )
-            return 2
-
     try:
+        # 先查 GitHub receipt，再判断发送窗口。
+        # 多个早期唤醒任务中，第一轮发送成功后，后续排队任务即使 08:10 后才启动
+        # 也应被视为“已完成”而不是误报失败。
         comments = fetch_issue_comments(
             repository=repository,
             issue_number=issue_number,
@@ -434,6 +426,32 @@ def main() -> int:
                 "本轮跳过防止重复。"
             )
             return 0
+
+        if _send_window_enforced():
+            window_state = _send_window_state()
+            allow_late = _late_recovery_allowed() and window_state == "late"
+            if window_state != "open" and not allow_late:
+                _write_status(
+                    date=expected_date,
+                    issue=issue_number,
+                    cards=0,
+                    sent=False,
+                    alert_sent=False,
+                    status="outside_send_window",
+                    window_state=window_state,
+                    window_start=os.getenv("RADAR_SEND_WINDOW_START", "08:00"),
+                    window_end=os.getenv("RADAR_SEND_WINDOW_END", "08:10"),
+                )
+                print(
+                    f"ChatGPT Radar Feed：date={expected_date} 当前不在北京时间发送窗口"
+                    f"（state={window_state}），拒绝发送飞书。"
+                )
+                return 2
+            if allow_late:
+                print(
+                    f"ChatGPT Radar Feed：date={expected_date} 已启用人工故障恢复，"
+                    "允许本次 08:10 后补发。"
+                )
 
         payload, feed_comment_id = find_latest_report(
             comments=comments,
