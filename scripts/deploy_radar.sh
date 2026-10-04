@@ -10,17 +10,30 @@ if [ ! -f .env ]; then
 fi
 
 if [ -n "$(git status --porcelain)" ]; then
-  echo "[ERROR] 工作区存在未提交修改，拒绝覆盖部署。" >&2
+  echo "[ERROR] 工作区存在未提交修改，拒绝部署。" >&2
   git status --short >&2
   exit 1
 fi
 
-echo "[1/7] 更新 main..."
-git fetch origin main
-git checkout main
-git pull --ff-only origin main
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$BRANCH" != "main" ]; then
+  echo "[ERROR] 当前分支不是 main：$BRANCH" >&2
+  exit 1
+fi
 
-APP_COMMIT_SHA="$(git rev-parse HEAD)"
+echo "[1/7] 验证 main 已更新..."
+git fetch origin main
+LOCAL_SHA="$(git rev-parse HEAD)"
+REMOTE_SHA="$(git rev-parse origin/main)"
+if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+  echo "[ERROR] 本地 main 不是最新 origin/main。" >&2
+  echo "local=$LOCAL_SHA" >&2
+  echo "remote=$REMOTE_SHA" >&2
+  echo "请先执行：git pull --ff-only origin main" >&2
+  exit 1
+fi
+
+APP_COMMIT_SHA="$LOCAL_SHA"
 export APP_COMMIT_SHA
 echo "目标版本: $APP_COMMIT_SHA"
 
