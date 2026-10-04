@@ -136,3 +136,41 @@ def test_home_uses_chinese_public_fields():
 
     assert result["名称"] == "AI 情报雷达"
     assert result["状态"] == "运行中"
+
+
+
+def test_runtime_status_exposes_scheduler_plan(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    class Scheduler:
+        running = True
+
+        def get_job(self, job_id):
+            if job_id == "prepare_local_fallback":
+                return SimpleNamespace(
+                    next_run_time=datetime(
+                        2026, 10, 5, 7, 35, tzinfo=ZoneInfo("Asia/Shanghai")
+                    )
+                )
+            if job_id == "publish_daily_radar":
+                return SimpleNamespace(
+                    next_run_time=datetime(
+                        2026, 10, 5, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai")
+                    )
+                )
+            return None
+
+    monkeypatch.setattr(main, "scheduler", Scheduler())
+    monkeypatch.setattr(main, "latest_run", lambda: None)
+    monkeypatch.setattr(main, "list_pending", lambda: [])
+    monkeypatch.setattr(main, "list_backups", lambda: [])
+    monkeypatch.setattr(main, "COLLECTORS", [])
+    monkeypatch.setattr(main, "POLICY_COLLECTOR", SimpleNamespace(get_last_health=lambda: {}))
+
+    result = main.runtime_status()
+
+    assert result["调度计划"]["07:35 本地兜底"]["已注册"] is True
+    assert "2026-10-05T07:35:00+08:00" == result["调度计划"]["07:35 本地兜底"]["下次执行"]
+    assert result["调度计划"]["08:00 主发布"]["已注册"] is True
+    assert "2026-10-05T08:00:00+08:00" == result["调度计划"]["08:00 主发布"]["下次执行"]

@@ -79,6 +79,32 @@ def readiness_check():
     )
 
 
+def _scheduler_plan_status():
+    getter = getattr(scheduler, "get_job", None)
+    if not callable(getter):
+        return {}
+
+    result = {}
+    for job_id, label in (
+        ("prepare_local_fallback", "07:35 本地兜底"),
+        ("publish_daily_radar", "08:00 主发布"),
+    ):
+        try:
+            job = getter(job_id)
+        except Exception:
+            job = None
+        if job is None:
+            result[label] = {"已注册": False, "下次执行": ""}
+            continue
+
+        next_run = getattr(job, "next_run_time", None)
+        result[label] = {
+            "已注册": True,
+            "下次执行": next_run.isoformat() if next_run else "",
+        }
+    return result
+
+
 def _collector_health_status():
     """汇总当前服务进程中各采集器最近一次执行状态，不暴露请求参数或密钥。"""
     rows = {}
@@ -128,6 +154,7 @@ def runtime_status():
 
     return {
         "调度器运行中": bool(scheduler.running),
+        "调度计划": _scheduler_plan_status(),
         "最近执行": latest_run(),
         "采集器状态": _collector_health_status(),
         "飞书待补发队列": pending_count,
