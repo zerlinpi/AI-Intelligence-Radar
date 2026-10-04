@@ -177,7 +177,8 @@ def test_runtime_status_exposes_scheduler_plan(monkeypatch):
 
 
 
-def test_runtime_apis_expose_deployed_commit(monkeypatch):
+def test_runtime_apis_expose_deployed_commit(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "BUILD_REVISION_FILE", tmp_path / ".missing-revision")
     monkeypatch.setenv("APP_COMMIT_SHA", "abc123def456")
     monkeypatch.setattr(main, "scheduler", SimpleNamespace(running=True))
     monkeypatch.setattr(main, "run_preflight", lambda: _preflight(True))
@@ -193,6 +194,16 @@ def test_runtime_apis_expose_deployed_commit(monkeypatch):
     assert main.runtime_status()["版本"] == "abc123def456"
 
 
-def test_runtime_version_defaults_to_unknown(monkeypatch):
+def test_runtime_version_defaults_to_unknown(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "BUILD_REVISION_FILE", tmp_path / ".missing-revision")
     monkeypatch.delenv("APP_COMMIT_SHA", raising=False)
     assert main._app_version() == "unknown"
+
+
+def test_baked_revision_wins_over_environment(monkeypatch, tmp_path):
+    revision = tmp_path / ".build-revision"
+    revision.write_text("baked-sha-123\n", encoding="utf-8")
+    monkeypatch.setattr(main, "BUILD_REVISION_FILE", revision)
+    monkeypatch.setenv("APP_COMMIT_SHA", "stale-env-sha")
+
+    assert main._app_version() == "baked-sha-123"
