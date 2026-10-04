@@ -619,3 +619,138 @@ def test_primary_role_can_send_fallback_when_github_is_unavailable(monkeypatch, 
 
     assert module.main() == 0
     assert len(sent) == 1
+
+
+
+def test_actions_dr_uses_fallback_after_coordination_if_feed_parse_fails(monkeypatch, tmp_path):
+    module = _load_module()
+    status_path = tmp_path / "chatgpt-feed-status.json"
+    fallback_path = tmp_path / "local-fallback-cards.json"
+    fallback_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "date": "2026-10-04",
+                "source": "local_deterministic_fallback",
+                "cards": [
+                    {
+                        "card_type": "summary",
+                        "payload": {"msg_type": "text", "content": {"text": "fallback"}},
+                        "fallback_text": "fallback",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "STATUS_PATH", status_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
+    monkeypatch.setenv("RADAR_LOCAL_FALLBACK_PATH", str(fallback_path))
+    monkeypatch.setenv("RADAR_PUBLISH_ROLE", "actions_dr")
+    monkeypatch.delenv("RADAR_ENFORCE_SEND_WINDOW", raising=False)
+
+    comments = [
+        {
+            "id": 30,
+            "user": {"login": "zerlinpi"},
+            "body": _feed_body("2026-10-04"),
+        }
+    ]
+    monkeypatch.setattr(module, "fetch_issue_comments", lambda **kwargs: comments)
+    monkeypatch.setattr(
+        module,
+        "report_model_from_dict",
+        lambda payload: (_ for _ in ()).throw(ValueError("invalid feed schema")),
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        module,
+        "send_feishu_cards",
+        lambda cards, **kwargs: sent.extend(cards) or True,
+    )
+    monkeypatch.setattr(module, "post_delivery_receipt", lambda **kwargs: True)
+
+    assert module.main() == 0
+    assert len(sent) == 1
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["source"] == "local_deterministic_fallback"
+    assert status["sent"] is True
+
+
+def test_send_exception_never_switches_to_second_fallback(monkeypatch, tmp_path):
+    module = _load_module()
+    status_path = tmp_path / "chatgpt-feed-status.json"
+    fallback_path = tmp_path / "local-fallback-cards.json"
+    fallback_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "date": "2026-10-04",
+                "source": "local_deterministic_fallback",
+                "cards": [
+                    {
+                        "card_type": "summary",
+                        "payload": {"msg_type": "text", "content": {"text": "fallback"}},
+                        "fallback_text": "fallback",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "STATUS_PATH", status_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
+    monkeypatch.setenv("RADAR_LOCAL_FALLBACK_PATH", str(fallback_path))
+    monkeypatch.setenv("RADAR_PUBLISH_ROLE", "actions_dr")
+    monkeypatch.delenv("RADAR_ENFORCE_SEND_WINDOW", raising=False)
+
+    comments = [
+        {
+            "id": 31,
+            "user": {"login": "zerlinpi"},
+            "body": _feed_body("2026-10-04"),
+        }
+    ]
+    monkeypatch.setattr(module, "fetch_issue_comments", lambda **kwargs: comments)
+    monkeypatch.setattr(module, "report_model_from_dict", lambda payload: object())
+    monkeypatch.setattr(
+        module,
+        "build_daily_cards",
+        lambda model: [
+            module.CardEnvelope(
+                card_type="summary",
+                payload={"msg_type": "text", "content": {"text": "feed"}},
+                fallback_text="feed",
+            )
+        ],
+    )
+
+    calls = {"feed_send": 0, "fallback_load": 0}
+
+    def fail_send(cards, **kwargs):
+        calls["feed_send"] += 1
+        raise RuntimeError("delivery connection dropped")
+
+    original_load = module._load_local_fallback
+
+    def track_fallback(date_text):
+        calls["fallback_load"] += 1
+        return original_load(date_text)
+
+    monkeypatch.setattr(module, "send_feishu_cards", fail_send)
+    monkeypatch.setattr(module, "_load_local_fallback", track_fallback)
+
+    assert module.main() == 1
+    assert calls["feed_send"] == 1
+    assert calls["fallback_load"] == 0
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["status"] == "delivery_uncertain"
