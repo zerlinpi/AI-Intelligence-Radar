@@ -190,7 +190,7 @@ def test_runtime_apis_expose_deployed_commit(monkeypatch, tmp_path):
 
     assert main.home()["版本"] == "abc123def456"
     assert main.health_check()["版本"] == "abc123def456"
-    assert b'"版本":"abc123def456"' in main.readiness_check().body
+    assert '"版本":"abc123def456"'.encode("utf-8") in main.readiness_check().body
     assert main.runtime_status()["版本"] == "abc123def456"
 
 
