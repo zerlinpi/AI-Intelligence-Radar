@@ -3,13 +3,13 @@
 常驻服务是北京时间 08:00 的主发布时钟：
 - 07:35 预生成当天确定性本地兜底；
 - 08:00 优先发送 ChatGPT Feed，Feed/GitHub 读取异常时发送本地兜底；
-- GitHub Actions 仅作为延迟约 4 分钟的灾备发布器。
+- GitHub Actions 仅作为延迟约 6 分钟的灾备发布器。
 """
 
 import json
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -61,6 +61,49 @@ PUBLISH_LOCK_FILE = os.getenv(
     "RADAR_PUBLISH_LOCK_FILE",
     "./data/radar-publish.lock",
 )
+LOCAL_FALLBACK_PATH = os.getenv(
+    "RADAR_LOCAL_FALLBACK_PATH",
+    "./data/local-fallback-cards.json",
+)
+
+
+def _local_now() -> datetime:
+    return datetime.now(ZoneInfo(_scheduler_timezone()))
+
+
+def _local_date_text(now: datetime | None = None) -> str:
+    current = now or _local_now()
+    return current.date().isoformat()
+
+
+def _fallback_ready_for_today(now: datetime | None = None) -> bool:
+    path = Path(LOCAL_FALLBACK_PATH)
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return (
+        str(payload.get("date") or "").strip() == _local_date_text(now)
+        and bool(payload.get("cards"))
+    )
+
+
+def _startup_recovery_mode(now: datetime | None = None) -> str:
+    current = now or _local_now()
+    minute_of_day = current.hour * 60 + current.minute
+    prep_at = PREP_HOUR * 60 + PREP_MINUTE
+    publish_at = RUN_HOUR * 60 + RUN_MINUTE
+    publish_end = publish_at + 10
+
+    if prep_at <= minute_of_day < publish_at:
+        return "prepare"
+    if publish_at <= minute_of_day < publish_end:
+        return "publish"
+    return ""
 
 
 def _record_scheduler_publish(exit_code: int) -> None:
@@ -126,6 +169,10 @@ def publish_radar_job():
             os.environ["RADAR_SEND_WINDOW_START"] = "08:00"
             os.environ["RADAR_SEND_WINDOW_END"] = "08:10"
 
+            if not _fallback_ready_for_today():
+                logger.warning("08:00 发布前未找到当天本地兜底，立即补生成")
+                prepare_fallback_job()
+
             logger.info("08:00 日报主发布开始")
             exit_code = int(publish_daily_feed() or 0)
             _record_scheduler_publish(exit_code)
@@ -172,6 +219,29 @@ def start_scheduler():
     )
 
     scheduler.start()
+
+    recovery_mode = _startup_recovery_mode()
+    if recovery_mode:
+        run_date = _local_now() + timedelta(seconds=1)
+        recovery_func = (
+            prepare_fallback_job
+            if recovery_mode == "prepare"
+            else publish_radar_job
+        )
+        scheduler.add_job(
+            recovery_func,
+            "date",
+            run_date=run_date,
+            id="startup_recovery",
+            replace_existing=True,
+            max_instances=1,
+        )
+        logger.warning(
+            "检测到服务在日报窗口内启动：mode=%s，将于 %s 执行启动恢复",
+            recovery_mode,
+            run_date.isoformat(),
+        )
+
     logger.info(
         "调度器已启动：%02d:%02d 预生成兜底，%02d:%02d 发布日报，时区=%s",
         PREP_HOUR,
