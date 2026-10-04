@@ -279,3 +279,104 @@ def test_durable_retry_same_run_does_not_resend_completed_cards(monkeypatch, tmp
     assert feishu.send_feishu_cards(_cards(), run_id="same-day", durable=True) is True
     assert sent_titles == ["compliance", "products"]
     assert not (tmp_path / "same-day.json").exists()
+
+
+
+def test_prior_day_outbox_is_archived_not_sent(monkeypatch, tmp_path):
+    from datetime import date
+    import json
+
+    monkeypatch.setattr(feishu, "FEISHU_WEBHOOK", "https://example.com")
+    monkeypatch.setattr(outbox, "FEISHU_OUTBOX_DIR", str(tmp_path))
+    monkeypatch.setattr(feishu, "_local_today", lambda: date(2026, 10, 5))
+
+    stale = tmp_path / "local-fallback-2026-10-04.json"
+    stale.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "run_id": "local-fallback-2026-10-04",
+                "created_at": "2026-10-04T00:05:00+00:00",
+                "updated_at": "2026-10-04T00:05:00+00:00",
+                "cards": [
+                    {
+                        "card_type": "summary",
+                        "payload": {
+                            "msg_type": "interactive",
+                            "card": {
+                                "header": {"title": {"content": "old-summary"}},
+                                "elements": [],
+                            },
+                        },
+                        "fallback_text": "old fallback",
+                        "sent": False,
+                        "sent_at": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    posts = []
+    monkeypatch.setattr(
+        feishu.requests,
+        "post",
+        lambda *args, **kwargs: posts.append(kwargs["json"]) or MockResponse(0),
+    )
+
+    assert feishu.flush_feishu_outbox() is True
+    assert posts == []
+    assert not stale.exists()
+    assert (tmp_path / "stale" / stale.name).exists()
+
+
+def test_same_day_outbox_still_resumes(monkeypatch, tmp_path):
+    from datetime import date
+    import json
+
+    monkeypatch.setattr(feishu, "FEISHU_WEBHOOK", "https://example.com")
+    monkeypatch.setattr(feishu, "FEISHU_INTER_CARD_DELAY_SECONDS", 0)
+    monkeypatch.setattr(outbox, "FEISHU_OUTBOX_DIR", str(tmp_path))
+    monkeypatch.setattr(feishu, "_local_today", lambda: date(2026, 10, 5))
+
+    current = tmp_path / "local-fallback-2026-10-05.json"
+    current.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "run_id": "local-fallback-2026-10-05",
+                "created_at": "2026-10-05T00:01:00+00:00",
+                "updated_at": "2026-10-05T00:01:00+00:00",
+                "cards": [
+                    {
+                        "card_type": "summary",
+                        "payload": {
+                            "msg_type": "interactive",
+                            "card": {
+                                "header": {"title": {"content": "today-summary"}},
+                                "elements": [],
+                            },
+                        },
+                        "fallback_text": "today fallback",
+                        "sent": False,
+                        "sent_at": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    titles = []
+
+    def post(*args, **kwargs):
+        payload = kwargs["json"]
+        titles.append(payload["card"]["header"]["title"]["content"])
+        return MockResponse(0)
+
+    monkeypatch.setattr(feishu.requests, "post", post)
+
+    assert feishu.flush_feishu_outbox() is True
+    assert titles == ["today-summary"]
+    assert not current.exists()
