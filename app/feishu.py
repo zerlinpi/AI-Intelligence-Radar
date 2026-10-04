@@ -1,7 +1,9 @@
+from datetime import datetime
 import random
 import re
 import time
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 
@@ -13,10 +15,13 @@ from app.config import (
     FEISHU_MAX_RETRIES,
     FEISHU_SEND_TIMEOUT_SECONDS,
     FEISHU_WEBHOOK,
+    REPORT_TIMEZONE,
 )
 from app.core.logger import get_logger
 from app.core.outbox import (
+    archive_stale,
     list_pending,
+    load_record,
     mark_sent,
     pending_cards,
     quarantine,
@@ -303,6 +308,33 @@ def _send_envelope(card: CardEnvelope) -> bool:
     )
 
 
+def _local_today():
+    try:
+        zone = ZoneInfo(REPORT_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo("Asia/Shanghai")
+    return datetime.now(zone).date()
+
+
+def _is_stale_outbox(path) -> bool:
+    """日报队列只允许在创建当天自动发送；无法解析时间时交给正常损坏队列逻辑。"""
+    try:
+        record = load_record(path)
+        created_at = str(record.get("created_at") or "").strip()
+        if not created_at:
+            return False
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            return False
+        try:
+            zone = ZoneInfo(REPORT_TIMEZONE)
+        except ZoneInfoNotFoundError:
+            zone = ZoneInfo("Asia/Shanghai")
+        return created.astimezone(zone).date() < _local_today()
+    except Exception:
+        return False
+
+
 def _send_outbox_file(path) -> bool:
     """按原顺序补发一个持久化 run；失败后保留未发送部分。"""
     try:
@@ -345,8 +377,17 @@ def flush_feishu_outbox() -> bool:
         return False
 
     for path in paths:
+        if _is_stale_outbox(path):
+            try:
+                target = archive_stale(path)
+                logger.warning("历史飞书日报已过期，不再自动补发：文件=%s", target)
+            except Exception:
+                logger.exception("历史飞书日报归档失败：文件=%s", path)
+                return False
+            continue
+
         if not _send_outbox_file(path):
-            # 旧日报未恢复时不继续发送更晚的队列，保证消息顺序。
+            # 当天较早队列未恢复时不继续发送更晚的队列，保证消息顺序。
             return False
     return True
 
