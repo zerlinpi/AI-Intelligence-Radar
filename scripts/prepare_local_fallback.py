@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -118,10 +119,25 @@ def prepare(output_path: Path | None = None) -> dict:
         "generated_at": datetime.now(ZoneInfo(REPORT_TIMEZONE)).isoformat(),
         "cards": [asdict(card) for card in cards],
     }
-    target.write_text(
-        json.dumps(record, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
+    payload = json.dumps(
+        record,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=str(target.parent),
     )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, target)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
     result = {
         "status": "prepared",
         "date": date_text,
