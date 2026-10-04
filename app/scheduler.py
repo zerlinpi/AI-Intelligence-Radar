@@ -18,6 +18,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.config import REPORT_TIMEZONE
 from app.core.logger import get_logger
 from app.core.run_history import record_run_safe
+from app.core.run_lock import named_execution_lock
 from scripts.prepare_local_fallback import prepare as prepare_local_fallback
 from scripts.send_chatgpt_feed import main as publish_daily_feed
 
@@ -56,6 +57,10 @@ RUN_MINUTE = _read_schedule_value("RADAR_RUN_MINUTE", 0, 0, 59)
 
 _prep_lock = threading.Lock()
 _publish_lock = threading.Lock()
+PUBLISH_LOCK_FILE = os.getenv(
+    "RADAR_PUBLISH_LOCK_FILE",
+    "./data/radar-publish.lock",
+)
 
 
 def _record_scheduler_publish(exit_code: int) -> None:
@@ -111,17 +116,23 @@ def publish_radar_job():
         return
 
     try:
-        os.environ["RADAR_ENFORCE_SEND_WINDOW"] = "1"
-        os.environ["RADAR_SEND_WINDOW_START"] = "08:00"
-        os.environ["RADAR_SEND_WINDOW_END"] = "08:10"
+        with named_execution_lock(PUBLISH_LOCK_FILE) as acquired:
+            if not acquired:
+                logger.warning("08:00 日报发布已跳过：另一进程/实例持有发布锁")
+                return
 
-        logger.info("08:00 日报主发布开始")
-        exit_code = int(publish_daily_feed() or 0)
-        _record_scheduler_publish(exit_code)
-        if exit_code == 0:
-            logger.info("08:00 日报主发布完成")
-        else:
-            logger.error("08:00 日报主发布失败：exit=%s；等待 GitHub Actions 灾备", exit_code)
+            os.environ["RADAR_PUBLISH_ROLE"] = "primary"
+            os.environ["RADAR_ENFORCE_SEND_WINDOW"] = "1"
+            os.environ["RADAR_SEND_WINDOW_START"] = "08:00"
+            os.environ["RADAR_SEND_WINDOW_END"] = "08:10"
+
+            logger.info("08:00 日报主发布开始")
+            exit_code = int(publish_daily_feed() or 0)
+            _record_scheduler_publish(exit_code)
+            if exit_code == 0:
+                logger.info("08:00 日报主发布完成")
+            else:
+                logger.error("08:00 日报主发布失败：exit=%s；等待 GitHub Actions 灾备", exit_code)
     except Exception:
         logger.exception("08:00 日报主发布异常；等待 GitHub Actions 灾备")
     finally:
