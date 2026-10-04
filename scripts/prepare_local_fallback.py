@@ -114,9 +114,9 @@ def prepare(output_path: Path | None = None) -> dict:
             "今日公开数据采集覆盖不足，未获得可验证的新合规或产品信号。"
             "本次不做事实推断，请以官方来源恢复后的下一轮结果为准。"
         )
-        model.summary.actions[0].text = "必须：检查公开数据源与网络可用性，不基于空数据做经营判断。"
-        model.summary.actions[1].text = "关注：恢复 Amazon、CBP、CPSC、FDA、FCC 与技术源采集覆盖。"
-        model.summary.actions[2].text = "研究：待来源恢复后重新验证当天新增项目与政策信号。"
+        model.summary.actions[0].text = "检查公开数据源与网络可用性，不基于空数据做经营判断。"
+        model.summary.actions[1].text = "恢复 Amazon、CBP、CPSC、FDA、FCC 与技术源采集覆盖。"
+        model.summary.actions[2].text = "待来源恢复后重新验证当天新增项目与政策信号。"
     cards = build_daily_cards(model)
 
     record = {
