@@ -3,7 +3,7 @@
 常驻服务是北京时间 08:00 的主发布时钟：
 - 07:35 预生成当天确定性本地兜底；
 - 08:00 优先发送 ChatGPT Feed，Feed/GitHub 读取异常时发送本地兜底；
-- GitHub Actions 仅作为延迟约 4 分钟的灾备发布器。
+- GitHub Actions 仅作为延迟约 6 分钟的灾备发布器。
 """
 
 import json
