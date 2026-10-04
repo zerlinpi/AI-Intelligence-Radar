@@ -93,3 +93,29 @@ def test_prepare_atomically_replaces_stale_fallback(monkeypatch, tmp_path):
     record = json.loads(target.read_text(encoding="utf-8"))
     assert record["date"] == "2026-10-03"
     assert not list(tmp_path.glob(".fallback.json.*.tmp"))
+
+
+
+def test_prepare_zero_data_still_creates_status_card(monkeypatch, tmp_path):
+    module = _load_module()
+    target = tmp_path / "fallback.json"
+
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
+    monkeypatch.setattr(module, "collect_sources", lambda: [])
+    monkeypatch.setattr(module, "collect_policies", lambda: [])
+    monkeypatch.setattr(module, "select_project_candidates", lambda items: [])
+    monkeypatch.setattr(module, "select_policy_candidates", lambda items: [])
+
+    result = module.prepare(target)
+
+    assert result["status"] == "prepared"
+    assert result["projects"] == 0
+    assert result["policies"] == 0
+    assert result["cards"] >= 1
+
+    record = json.loads(target.read_text(encoding="utf-8"))
+    assert record["date"] == "2026-10-04"
+    assert record["cards"]
+    serialized = json.dumps(record["cards"], ensure_ascii=False)
+    assert "采集覆盖不足" in serialized
+    assert "不基于空数据做经营判断" in serialized
