@@ -338,6 +338,18 @@ API 默认只绑定：
 docker exec ai-intelligence-radar python -m app.cli check
 ```
 
+更新到新的 08:00 主发布架构后，必须重建并重启常驻容器：
+
+```bash
+cd /opt/AI-Intelligence-Radar
+git pull
+docker compose build --no-cache radar
+docker compose up -d --force-recreate radar
+docker logs --tail 100 ai-intelligence-radar
+```
+
+启动日志应出现“07:35 预生成兜底，08:00 发布日报”的调度器配置。若常驻容器未更新，GitHub Actions 仍会在 08:04 提供灾备，但无法获得常驻主时钟的准点能力。
+
 ### 健康检查
 
 ```bash
@@ -361,14 +373,53 @@ docker exec ai-intelligence-radar python -m app.cli 2>&1 | tee /root/radar-test.
 
 ---
 
-# 定时任务
+# 定时任务与 08:00 发布可靠性
 
-默认：
+生产发布采用“常驻服务主时钟 + GitHub Actions 灾备”：
 
 ```text
-每天 08:00
-REPORT_TIMEZONE=Asia/Shanghai
+06:30 / 07:20
+ChatGPT Feed / Recovery
+        ↓
+07:35
+常驻 APScheduler 无条件预生成当天本地兜底
+        ↓
+08:00:00 Asia/Shanghai
+常驻 APScheduler 主发布
+        ├─ 优先读取当天 ChatGPT Feed
+        ├─ Feed 缺失 → 本地确定性兜底
+        └─ GitHub API 临时故障 → 本地确定性兜底
+        ↓
+写入 GitHub delivery receipt
+        ↓
+08:04
+GitHub Actions 灾备检查
+        ├─ 已有 receipt → 成功退出，不重复发送
+        └─ 无 receipt → 在 08:00–08:10 窗口内灾备发送
 ```
+
+自动任务在北京时间 08:10 后不会发送旧日报或旧告警。历史日期告警同样被拒绝；晚间恢复只能通过 Actions 的显式 `force_send=true` 人工触发。
+
+常驻发布器需要：
+
+```env
+REPORT_TIMEZONE=Asia/Shanghai
+RADAR_GITHUB_REPOSITORY=zerlinpi/AI-Intelligence-Radar
+RADAR_GITHUB_TOKEN=
+CHATGPT_FEED_ISSUE=2
+CHATGPT_FEED_AUTHOR=zerlinpi
+
+RADAR_FALLBACK_PREP_HOUR=7
+RADAR_FALLBACK_PREP_MINUTE=35
+RADAR_RUN_HOUR=8
+RADAR_RUN_MINUTE=0
+
+RADAR_ENFORCE_SEND_WINDOW=1
+RADAR_SEND_WINDOW_START=08:00
+RADAR_SEND_WINDOW_END=08:10
+```
+
+`RADAR_GITHUB_TOKEN` 建议使用仅限本仓库、具有 Issues Read/Write 权限的 fine-grained token。它用于读取 Issue #2 Feed 和写入 delivery receipt，从而让常驻服务与 GitHub Actions 跨系统去重。
 
 ---
 

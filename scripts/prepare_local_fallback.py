@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -22,13 +23,6 @@ from app.pipeline import (
     select_policy_candidates,
     select_project_candidates,
 )
-from scripts.send_chatgpt_feed import (
-    MissingFeedError,
-    fetch_issue_comments,
-    find_latest_report,
-)
-
-
 DEFAULT_OUTPUT = Path("data/local-fallback-cards.json")
 
 
@@ -65,7 +59,7 @@ def _project_analysis(item) -> dict:
         "llm_meta": {
             "success": False,
             "fallback": True,
-            "reason": "07:35 ChatGPT Feed 缺失，使用确定性本地兜底",
+            "reason": "07:35 预生成确定性本地兜底",
         },
     }
 
@@ -89,54 +83,21 @@ def _policy_analysis(item) -> dict:
         "llm_meta": {
             "success": False,
             "fallback": True,
-            "reason": "07:35 ChatGPT Feed 缺失，使用确定性本地兜底",
+            "reason": "07:35 预生成确定性本地兜底",
         },
     }
 
 
-def _has_chatgpt_feed(repository: str, issue_number: int, token: str, author: str, date_text: str) -> bool:
-    comments = fetch_issue_comments(
-        repository=repository,
-        issue_number=issue_number,
-        token=token,
-    )
-    try:
-        find_latest_report(
-            comments=comments,
-            expected_date=date_text,
-            trusted_author=author,
-        )
-        return True
-    except MissingFeedError:
-        return False
-
-
 def prepare(output_path: Path | None = None) -> dict:
-    repository = str(os.getenv("GITHUB_REPOSITORY") or "").strip()
-    token = str(os.getenv("GITHUB_TOKEN") or "").strip()
-    author = str(os.getenv("CHATGPT_FEED_AUTHOR") or "").strip()
-    issue_number = int(os.getenv("CHATGPT_FEED_ISSUE", "2"))
     date_text = str(os.getenv("CHATGPT_FEED_DATE") or _today()).strip()
     target = output_path or Path(
         os.getenv("RADAR_LOCAL_FALLBACK_PATH") or str(DEFAULT_OUTPUT)
     )
 
-    if not repository or not token or not author:
-        raise RuntimeError("本地兜底准备缺少 GitHub 运行环境")
-
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    if _has_chatgpt_feed(repository, issue_number, token, author, date_text):
-        target.unlink(missing_ok=True)
-        result = {
-            "status": "skipped",
-            "reason": "chatgpt_feed_present",
-            "date": date_text,
-            "cards": 0,
-        }
-        print(json.dumps(result, ensure_ascii=False))
-        return result
-
+    # 无论 ChatGPT Feed 是否已经存在，都预生成一份当天确定性兜底。
+    # 这样 08:00 即使 GitHub API 临时不可达，发布器仍有可发送内容。
     projects = select_project_candidates(collect_sources())[:5]
     policies = select_policy_candidates(collect_policies())[:3]
 
@@ -158,10 +119,25 @@ def prepare(output_path: Path | None = None) -> dict:
         "generated_at": datetime.now(ZoneInfo(REPORT_TIMEZONE)).isoformat(),
         "cards": [asdict(card) for card in cards],
     }
-    target.write_text(
-        json.dumps(record, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
+    payload = json.dumps(
+        record,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=str(target.parent),
     )
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, target)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
     result = {
         "status": "prepared",
         "date": date_text,

@@ -9,16 +9,15 @@ def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_daily_workflow_wakes_early_and_keeps_single_0800_release_gate():
+def test_actions_is_0802_disaster_recovery_runner():
     text = _workflow_text()
     assert "issue_comment:" not in text
     assert "schedule:" in text
     assert 'cron: "15 18 * * *"' in text
     assert 'cron: "30 18 * * *"' in text
-    assert 'cron: "0 23 * * *"' not in text
-    assert "等待到北京时间 08:00:00" in text
+    assert "等待到北京时间 08:04 灾备检查" in text
     assert 'ZoneInfo("Asia/Shanghai")' in text
-    assert "hour=8, minute=0, second=0" in text
+    assert "hour=8, minute=4, second=0" in text
     assert 'RADAR_ENFORCE_SEND_WINDOW: "1"' in text
     assert 'RADAR_SEND_WINDOW_START: "08:00"' in text
     assert 'RADAR_SEND_WINDOW_END: "08:10"' in text
@@ -32,7 +31,7 @@ def test_daily_workflow_wakes_early_and_keeps_single_0800_release_gate():
     assert 'CHATGPT_FEED_ISSUE: "2"' in text
     assert "CHATGPT_FEED_AUTHOR: ${{ github.repository_owner }}" in text
     assert "python scripts/send_chatgpt_feed.py" in text
-    assert "python -m app.cli run" not in text
+    assert "常驻 APScheduler" in text
 
 
 def test_daily_workflow_preserves_runtime_state_between_runners():

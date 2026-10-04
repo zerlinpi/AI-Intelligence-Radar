@@ -16,19 +16,18 @@ def test_daily_radar_uses_early_wakeup_redundancy():
     assert "\n  schedule:\n" in text
     assert text.count('cron: "15 18 * * *"') == 1
     assert text.count('cron: "30 18 * * *"') == 1
-    assert 'cron: "0 23 * * *"' not in text
     assert "\n  push:\n" not in text
     assert "workflow_dispatch:" in text
     assert "force_send:" in text
     assert "cancel-in-progress: false" in text
 
 
-def test_release_runner_waits_until_0800_shanghai_before_sending():
+def test_actions_waits_until_0802_for_disaster_recovery():
     text = _workflow_text()
 
-    assert "等待到北京时间 08:00:00" in text
+    assert "等待到北京时间 08:04 灾备检查" in text
     assert 'ZoneInfo("Asia/Shanghai")' in text
-    assert "hour=8, minute=0, second=0" in text
+    assert "hour=8, minute=4, second=0" in text
     assert "time.sleep(delay)" in text
     assert "timeout-minutes: 360" in text
     assert "发布当天 ChatGPT 情报分析" in text

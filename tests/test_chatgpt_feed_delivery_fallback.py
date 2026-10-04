@@ -74,6 +74,8 @@ def test_missing_feed_sends_direct_feishu_alert(monkeypatch, tmp_path):
     monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
     monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-09-30")
     monkeypatch.setattr(module, "fetch_issue_comments", lambda **kwargs: [])
+    monkeypatch.setattr(module, "_today", lambda: "2026-09-30")
+    monkeypatch.setattr(module, "_send_window_state", lambda now=None: "open")
 
     alerts = []
     monkeypatch.setattr(module, "send_feishu", lambda text: alerts.append(text) or True)
@@ -389,3 +391,129 @@ def test_stale_local_fallback_is_ignored(monkeypatch, tmp_path):
     monkeypatch.setenv("RADAR_LOCAL_FALLBACK_PATH", str(fallback_path))
 
     assert module._load_local_fallback("2026-10-03") == []
+
+
+
+def test_stale_date_alert_never_reaches_feishu(monkeypatch, tmp_path):
+    module = _load_module()
+    monkeypatch.setattr(module, "STATUS_PATH", tmp_path / "chatgpt-feed-status.json")
+    monkeypatch.setattr(module, "_today", lambda: "2026-10-04")
+    monkeypatch.setenv("RADAR_ENFORCE_SEND_WINDOW", "1")
+    monkeypatch.setattr(module, "_send_window_state", lambda now=None: "open")
+
+    alerts = []
+    monkeypatch.setattr(module, "send_feishu", lambda text: alerts.append(text) or True)
+
+    assert module._send_alert(
+        "2026-10-02",
+        "历史故障",
+        "missing_feed",
+    ) is False
+    assert alerts == []
+
+
+def test_afternoon_alert_never_reaches_feishu(monkeypatch, tmp_path):
+    module = _load_module()
+    monkeypatch.setattr(module, "STATUS_PATH", tmp_path / "chatgpt-feed-status.json")
+    monkeypatch.setattr(module, "_today", lambda: "2026-10-04")
+    monkeypatch.setenv("RADAR_ENFORCE_SEND_WINDOW", "1")
+    monkeypatch.setattr(module, "_send_window_state", lambda now=None: "late")
+
+    alerts = []
+    monkeypatch.setattr(module, "send_feishu", lambda text: alerts.append(text) or True)
+
+    assert module._send_alert(
+        "2026-10-04",
+        "下午延迟故障",
+        "missing_feed",
+    ) is False
+    assert alerts == []
+
+
+def test_github_api_failure_uses_prebuilt_fallback(monkeypatch, tmp_path):
+    module = _load_module()
+    status_path = tmp_path / "chatgpt-feed-status.json"
+    fallback_path = tmp_path / "local-fallback-cards.json"
+    fallback_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "date": "2026-10-04",
+                "source": "local_deterministic_fallback",
+                "cards": [
+                    {
+                        "card_type": "summary",
+                        "payload": {
+                            "msg_type": "text",
+                            "content": {"text": "offline fallback"},
+                        },
+                        "fallback_text": "offline fallback",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "STATUS_PATH", status_path)
+    monkeypatch.setenv("RADAR_GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("RADAR_GITHUB_TOKEN", "test-token")
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
+    monkeypatch.setenv("RADAR_LOCAL_FALLBACK_PATH", str(fallback_path))
+    monkeypatch.delenv("RADAR_ENFORCE_SEND_WINDOW", raising=False)
+
+    def github_down(**kwargs):
+        raise RuntimeError("GitHub unavailable")
+
+    monkeypatch.setattr(module, "fetch_issue_comments", github_down)
+
+    sent = []
+    monkeypatch.setattr(
+        module,
+        "send_feishu_cards",
+        lambda cards, **kwargs: sent.extend(cards) or True,
+    )
+    monkeypatch.setattr(module, "post_delivery_receipt", lambda **kwargs: False)
+
+    assert module.main() == 0
+    assert len(sent) == 1
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["status"] == "success"
+    assert status["source"] == "local_deterministic_fallback"
+
+
+def test_dedicated_github_token_and_repo_are_supported(monkeypatch, tmp_path):
+    module = _load_module()
+    monkeypatch.setattr(module, "STATUS_PATH", tmp_path / "chatgpt-feed-status.json")
+    monkeypatch.setenv("RADAR_GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("RADAR_GITHUB_TOKEN", "dedicated-token")
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("CHATGPT_FEED_AUTHOR", raising=False)
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
+    monkeypatch.delenv("RADAR_ENFORCE_SEND_WINDOW", raising=False)
+
+    seen = {}
+
+    def fetch_comments(repository, issue_number, token):
+        seen["repository"] = repository
+        seen["issue_number"] = issue_number
+        seen["token"] = token
+        return [
+            {
+                "id": 17,
+                "user": {"login": "github-actions[bot]"},
+                "body": _receipt_body("2026-10-04"),
+            }
+        ]
+
+    monkeypatch.setattr(module, "fetch_issue_comments", fetch_comments)
+
+    assert module.main() == 0
+    assert seen == {
+        "repository": "zerlinpi/AI-Intelligence-Radar",
+        "issue_number": 2,
+        "token": "dedicated-token",
+    }
