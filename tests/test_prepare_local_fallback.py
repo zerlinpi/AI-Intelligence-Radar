@@ -18,39 +18,7 @@ def _load_module():
     return module
 
 
-def _env(monkeypatch):
-    monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
-    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
-    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
-    monkeypatch.setenv("CHATGPT_FEED_ISSUE", "2")
-    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-03")
-
-
-def test_prepare_skips_when_chatgpt_feed_exists(monkeypatch, tmp_path):
-    module = _load_module()
-    _env(monkeypatch)
-    target = tmp_path / "fallback.json"
-    target.write_text("stale", encoding="utf-8")
-
-    monkeypatch.setattr(module, "_has_chatgpt_feed", lambda *args, **kwargs: True)
-
-    def should_not_collect():
-        raise AssertionError("collectors must not run when ChatGPT Feed already exists")
-
-    monkeypatch.setattr(module, "collect_sources", should_not_collect)
-    monkeypatch.setattr(module, "collect_policies", should_not_collect)
-
-    result = module.prepare(target)
-
-    assert result["status"] == "skipped"
-    assert not target.exists()
-
-
-def test_prepare_builds_cards_when_feed_is_missing(monkeypatch, tmp_path):
-    module = _load_module()
-    _env(monkeypatch)
-    target = tmp_path / "fallback.json"
-
+def _items():
     project = RadarItem(
         title="Agent Tool",
         source="github",
@@ -80,8 +48,18 @@ def test_prepare_builds_cards_when_feed_is_missing(monkeypatch, tmp_path):
             "policy_score": 85,
         },
     )
+    return project, policy
 
-    monkeypatch.setattr(module, "_has_chatgpt_feed", lambda *args, **kwargs: False)
+
+def test_prepare_always_builds_fallback_without_github_dependency(monkeypatch, tmp_path):
+    module = _load_module()
+    target = tmp_path / "fallback.json"
+    project, policy = _items()
+
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-03")
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("CHATGPT_FEED_AUTHOR", raising=False)
     monkeypatch.setattr(module, "collect_sources", lambda: [])
     monkeypatch.setattr(module, "collect_policies", lambda: [])
     monkeypatch.setattr(module, "select_project_candidates", lambda items: [project])
@@ -96,3 +74,22 @@ def test_prepare_builds_cards_when_feed_is_missing(monkeypatch, tmp_path):
     assert record["source"] == "local_deterministic_fallback"
     assert record["cards"]
     assert all("card_type" in card for card in record["cards"])
+
+
+def test_prepare_atomically_replaces_stale_fallback(monkeypatch, tmp_path):
+    module = _load_module()
+    target = tmp_path / "fallback.json"
+    target.write_text('{"date":"2026-10-02"}', encoding="utf-8")
+    project, policy = _items()
+
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-03")
+    monkeypatch.setattr(module, "collect_sources", lambda: [])
+    monkeypatch.setattr(module, "collect_policies", lambda: [])
+    monkeypatch.setattr(module, "select_project_candidates", lambda items: [project])
+    monkeypatch.setattr(module, "select_policy_candidates", lambda items: [policy])
+
+    module.prepare(target)
+
+    record = json.loads(target.read_text(encoding="utf-8"))
+    assert record["date"] == "2026-10-03"
+    assert not list(tmp_path.glob(".fallback.json.*.tmp"))
