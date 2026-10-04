@@ -142,13 +142,22 @@ def mark_sent(path: Path, index: int) -> bool:
     return complete
 
 
-def quarantine(path: Path) -> Path:
-    """损坏队列不反复阻塞每次日报，移入 bad 子目录等待人工检查。"""
+def _move_to_subdir(path: Path, subdir: str) -> Path:
     source = Path(path)
-    bad_dir = _outbox_dir() / "bad"
-    bad_dir.mkdir(parents=True, exist_ok=True)
-    target = bad_dir / source.name
+    target_dir = _outbox_dir() / str(subdir or "archive")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / source.name
     if target.exists():
-        target = bad_dir / f"{source.stem}-{int(datetime.now().timestamp())}.json"
+        target = target_dir / f"{source.stem}-{int(datetime.now().timestamp())}.json"
     os.replace(source, target)
     return target
+
+
+def quarantine(path: Path) -> Path:
+    """损坏队列不反复阻塞每次日报，移入 bad 子目录等待人工检查。"""
+    return _move_to_subdir(Path(path), "bad")
+
+
+def archive_stale(path: Path) -> Path:
+    """跨日未送达日报不再自动补发，保留到 stale 目录供排查。"""
+    return _move_to_subdir(Path(path), "stale")
