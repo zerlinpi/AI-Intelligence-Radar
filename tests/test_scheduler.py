@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from app import scheduler as radar_scheduler
@@ -73,6 +74,7 @@ def test_publish_job_enforces_0800_window(monkeypatch):
 
     assert calls == ["publish"]
     assert recorded == [0]
+    assert radar_scheduler.os.environ["RADAR_PUBLISH_ROLE"] == "primary"
     assert radar_scheduler.os.environ["RADAR_ENFORCE_SEND_WINDOW"] == "1"
     assert radar_scheduler.os.environ["RADAR_SEND_WINDOW_START"] == "08:00"
     assert radar_scheduler.os.environ["RADAR_SEND_WINDOW_END"] == "08:10"
@@ -90,3 +92,40 @@ def test_publish_job_does_not_raise_when_publisher_fails(monkeypatch):
     radar_scheduler.publish_radar_job()
 
     assert recorded == [1]
+
+
+
+def test_publish_job_skips_when_cross_process_lock_is_held(monkeypatch):
+    calls = []
+
+    @contextmanager
+    def held_lock(path):
+        yield False
+
+    monkeypatch.setattr(radar_scheduler, "named_execution_lock", held_lock)
+    monkeypatch.setattr(
+        radar_scheduler,
+        "publish_daily_feed",
+        lambda: calls.append("publish") or 0,
+    )
+
+    radar_scheduler.publish_radar_job()
+
+    assert calls == []
+
+
+def test_publish_job_uses_configured_publish_lock(monkeypatch):
+    seen = []
+
+    @contextmanager
+    def free_lock(path):
+        seen.append(path)
+        yield True
+
+    monkeypatch.setattr(radar_scheduler, "named_execution_lock", free_lock)
+    monkeypatch.setattr(radar_scheduler, "publish_daily_feed", lambda: 0)
+    monkeypatch.setattr(radar_scheduler, "_record_scheduler_publish", lambda exit_code: None)
+
+    radar_scheduler.publish_radar_job()
+
+    assert seen == [radar_scheduler.PUBLISH_LOCK_FILE]
