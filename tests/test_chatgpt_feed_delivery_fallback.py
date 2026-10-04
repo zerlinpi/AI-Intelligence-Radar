@@ -517,3 +517,105 @@ def test_dedicated_github_token_and_repo_are_supported(monkeypatch, tmp_path):
         "issue_number": 2,
         "token": "dedicated-token",
     }
+
+
+
+def test_actions_dr_does_not_blind_send_when_github_is_unavailable(monkeypatch, tmp_path):
+    module = _load_module()
+    status_path = tmp_path / "chatgpt-feed-status.json"
+    fallback_path = tmp_path / "local-fallback-cards.json"
+    fallback_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "date": "2026-10-04",
+                "source": "local_deterministic_fallback",
+                "cards": [
+                    {
+                        "card_type": "summary",
+                        "payload": {"msg_type": "text", "content": {"text": "fallback"}},
+                        "fallback_text": "fallback",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "STATUS_PATH", status_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
+    monkeypatch.setenv("RADAR_LOCAL_FALLBACK_PATH", str(fallback_path))
+    monkeypatch.setenv("RADAR_PUBLISH_ROLE", "actions_dr")
+    monkeypatch.delenv("RADAR_ENFORCE_SEND_WINDOW", raising=False)
+
+    monkeypatch.setattr(
+        module,
+        "fetch_issue_comments",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("GitHub unavailable")),
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        module,
+        "send_feishu_cards",
+        lambda cards, **kwargs: sent.extend(cards) or True,
+    )
+
+    assert module.main() == 1
+    assert sent == []
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["status"] == "coordination_unavailable"
+    assert status["source"] == "actions_disaster_recovery"
+
+
+def test_primary_role_can_send_fallback_when_github_is_unavailable(monkeypatch, tmp_path):
+    module = _load_module()
+    status_path = tmp_path / "chatgpt-feed-status.json"
+    fallback_path = tmp_path / "local-fallback-cards.json"
+    fallback_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "date": "2026-10-04",
+                "source": "local_deterministic_fallback",
+                "cards": [
+                    {
+                        "card_type": "summary",
+                        "payload": {"msg_type": "text", "content": {"text": "fallback"}},
+                        "fallback_text": "fallback",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "STATUS_PATH", status_path)
+    monkeypatch.setenv("RADAR_GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("RADAR_GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
+    monkeypatch.setenv("RADAR_LOCAL_FALLBACK_PATH", str(fallback_path))
+    monkeypatch.setenv("RADAR_PUBLISH_ROLE", "primary")
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("RADAR_ENFORCE_SEND_WINDOW", raising=False)
+
+    monkeypatch.setattr(
+        module,
+        "fetch_issue_comments",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("GitHub unavailable")),
+    )
+
+    sent = []
+    monkeypatch.setattr(
+        module,
+        "send_feishu_cards",
+        lambda cards, **kwargs: sent.extend(cards) or True,
+    )
+    monkeypatch.setattr(module, "post_delivery_receipt", lambda **kwargs: False)
+
+    assert module.main() == 0
+    assert len(sent) == 1
