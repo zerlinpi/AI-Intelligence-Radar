@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -32,7 +33,17 @@ SOURCE_NAMES = {
     "producthunt": "Product Hunt",
 }
 
+BUILD_REVISION_FILE = Path("/app/.build-revision")
+
+
 def _app_version() -> str:
+    try:
+        value = BUILD_REVISION_FILE.read_text(encoding="utf-8").strip()
+        if value:
+            return value[:64]
+    except OSError:
+        pass
+
     value = str(os.getenv("APP_COMMIT_SHA") or "").strip()
     return value[:64] if value else "unknown"
 
