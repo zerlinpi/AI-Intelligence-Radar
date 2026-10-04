@@ -348,7 +348,7 @@ docker compose up -d --force-recreate radar
 docker logs --tail 100 ai-intelligence-radar
 ```
 
-启动日志应出现“07:35 预生成兜底，08:00 发布日报”的调度器配置。若常驻容器未更新，GitHub Actions 仍会在 08:02 提供灾备，但无法获得常驻主时钟的准点能力。
+启动日志应出现“07:35 预生成兜底，08:00 发布日报”的调度器配置。若常驻容器未更新，GitHub Actions 仍会在 08:04 提供灾备，但无法获得常驻主时钟的准点能力。
 
 ### 健康检查
 
@@ -392,7 +392,7 @@ ChatGPT Feed / Recovery
         ↓
 写入 GitHub delivery receipt
         ↓
-08:02
+08:04
 GitHub Actions 灾备检查
         ├─ 已有 receipt → 成功退出，不重复发送
         └─ 无 receipt → 在 08:00–08:10 窗口内灾备发送
