@@ -63,10 +63,13 @@ jobs:
       - name: 编译全部 Python 文件
         run: python -m compileall -q app scripts tests
 
+      - name: 校验部署脚本语法
+        run: sh -n scripts/deploy_radar.sh
+
       - name: 校验 Docker Compose
         run: |
           cp .env.example .env
-          docker compose config >/dev/null
+          APP_COMMIT_SHA=ci-test-sha docker compose config >/dev/null
           rm -f .env
 
       - name: 生产预检 Smoke Test
