@@ -111,9 +111,9 @@ def publish_radar_job():
         return
 
     try:
-        os.environ.setdefault("RADAR_ENFORCE_SEND_WINDOW", "1")
-        os.environ.setdefault("RADAR_SEND_WINDOW_START", "08:00")
-        os.environ.setdefault("RADAR_SEND_WINDOW_END", "08:10")
+        os.environ["RADAR_ENFORCE_SEND_WINDOW"] = "1"
+        os.environ["RADAR_SEND_WINDOW_START"] = "08:00"
+        os.environ["RADAR_SEND_WINDOW_END"] = "08:10"
 
         logger.info("08:00 日报主发布开始")
         exit_code = int(publish_daily_feed() or 0)
