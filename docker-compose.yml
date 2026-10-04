@@ -1,6 +1,9 @@
 services:
   radar:
-    build: .
+    build:
+      context: .
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:-unknown}
     container_name: ai-intelligence-radar
     init: true
     ports:
