@@ -174,3 +174,25 @@ def test_runtime_status_exposes_scheduler_plan(monkeypatch):
     assert "2026-10-05T07:35:00+08:00" == result["调度计划"]["07:35 本地兜底"]["下次执行"]
     assert result["调度计划"]["08:00 主发布"]["已注册"] is True
     assert "2026-10-05T08:00:00+08:00" == result["调度计划"]["08:00 主发布"]["下次执行"]
+
+
+
+def test_runtime_apis_expose_deployed_commit(monkeypatch):
+    monkeypatch.setenv("APP_COMMIT_SHA", "abc123def456")
+    monkeypatch.setattr(main, "scheduler", SimpleNamespace(running=True))
+    monkeypatch.setattr(main, "run_preflight", lambda: _preflight(True))
+    monkeypatch.setattr(main, "latest_run", lambda: None)
+    monkeypatch.setattr(main, "list_pending", lambda: [])
+    monkeypatch.setattr(main, "list_backups", lambda: [])
+    monkeypatch.setattr(main, "COLLECTORS", [])
+    monkeypatch.setattr(main, "POLICY_COLLECTOR", SimpleNamespace(get_last_health=lambda: {}))
+
+    assert main.home()["版本"] == "abc123def456"
+    assert main.health_check()["版本"] == "abc123def456"
+    assert b'"版本":"abc123def456"' in main.readiness_check().body
+    assert main.runtime_status()["版本"] == "abc123def456"
+
+
+def test_runtime_version_defaults_to_unknown(monkeypatch):
+    monkeypatch.delenv("APP_COMMIT_SHA", raising=False)
+    assert main._app_version() == "unknown"
