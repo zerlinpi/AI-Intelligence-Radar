@@ -105,6 +105,10 @@ def _late_recovery_allowed() -> bool:
     }
 
 
+def _publish_role() -> str:
+    return str(os.getenv("RADAR_PUBLISH_ROLE") or "primary").strip().lower()
+
+
 def _github_headers(token: str) -> Dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
@@ -568,7 +572,26 @@ def main() -> int:
         print(f"ChatGPT Radar Feed 缺失：{exc}；alert_sent={alert_sent}", file=sys.stderr)
         return 1
     except Exception as exc:
-        # GitHub API 在 08:00 短暂不可达时，不应让飞书日报跟着失效。
+        # 灾备 Actions 无法读取 GitHub 时，无法确认 08:00 主服务是否已经发送。
+        # 此时禁止盲发，避免“主服务已发但 receipt 暂时写失败”导致重复日报。
+        if _publish_role() == "actions_dr":
+            _write_status(
+                date=expected_date,
+                issue=issue_number,
+                cards=0,
+                sent=False,
+                alert_sent=False,
+                status="coordination_unavailable",
+                error=str(exc),
+                source="actions_disaster_recovery",
+            )
+            print(
+                f"Radar 灾备协调失败：{exc}；无法确认 delivery receipt，本轮禁止盲发。",
+                file=sys.stderr,
+            )
+            return 1
+
+        # 08:00 主服务在 GitHub API 短暂不可达时仍必须按时发飞书。
         # 07:35 已经无条件准备当天本地兜底；优先使用它完成发送。
         if _send_local_fallback(
             repository=repository,

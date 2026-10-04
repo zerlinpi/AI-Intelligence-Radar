@@ -15,9 +15,10 @@ def test_actions_is_0802_disaster_recovery_runner():
     assert "schedule:" in text
     assert 'cron: "15 18 * * *"' in text
     assert 'cron: "30 18 * * *"' in text
-    assert "等待到北京时间 08:04 灾备检查" in text
+    assert "等待到北京时间 08:06 灾备检查" in text
     assert 'ZoneInfo("Asia/Shanghai")' in text
-    assert "hour=8, minute=4, second=0" in text
+    assert "hour=8, minute=6, second=0" in text
+    assert 'RADAR_PUBLISH_ROLE: "actions_dr"' in text
     assert 'RADAR_ENFORCE_SEND_WINDOW: "1"' in text
     assert 'RADAR_SEND_WINDOW_START: "08:00"' in text
     assert 'RADAR_SEND_WINDOW_END: "08:10"' in text
