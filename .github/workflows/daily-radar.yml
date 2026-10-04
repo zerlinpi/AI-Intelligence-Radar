@@ -48,7 +48,7 @@ jobs:
   daily-radar:
     name: 北京时间 08:04 灾备检查 AI 情报日报
     runs-on: ubuntu-latest
-    # 最早 02:15 启动时需要在 Runner 内等待到 08:00。
+    # 最早 02:15 启动时需要在 Runner 内等待到 08:04 灾备检查。
     # GitHub hosted runner 单 job 上限 6 小时，因此这里使用最大安全窗口。
     timeout-minutes: 360
 
