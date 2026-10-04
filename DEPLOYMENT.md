@@ -1,195 +1,167 @@
 # AI 情报雷达部署说明
 
-## 环境要求
+## 生产目标
 
-- Docker + Docker Compose
-- 飞书自定义机器人 Webhook
-- DeepSeek 或其他兼容 OpenAI 接口格式的模型密钥
-- 默认 SQLite 持久化到 `./data`
-
-生产服务只绑定：
+生产链路采用：
 
 ```text
-127.0.0.1:8000
+07:35 Asia/Shanghai
+常驻 APScheduler 预生成当天本地兜底
+        ↓
+08:00
+常驻服务主发布
+        ↓
+08:06
+GitHub Actions 灾备检查
 ```
 
-## 核心环境变量
+GitHub Actions 不是 08:00 主时钟；服务器上的常驻容器必须保持运行并使用最新 `main`。
+
+## 必需环境变量
 
 ```env
-GITHUB_TOKEN=
-PRODUCT_HUNT_TOKEN=
+FEISHU_WEBHOOK=
+
+RADAR_GITHUB_REPOSITORY=zerlinpi/AI-Intelligence-Radar
+RADAR_GITHUB_TOKEN=
+CHATGPT_FEED_ISSUE=2
+CHATGPT_FEED_AUTHOR=zerlinpi
+
+REPORT_TIMEZONE=Asia/Shanghai
+RADAR_FALLBACK_PREP_HOUR=7
+RADAR_FALLBACK_PREP_MINUTE=35
+RADAR_RUN_HOUR=8
+RADAR_RUN_MINUTE=0
+RADAR_ENFORCE_SEND_WINDOW=1
+RADAR_SEND_WINDOW_START=08:00
+RADAR_SEND_WINDOW_END=08:10
+RADAR_LOCAL_FALLBACK_PATH=./data/local-fallback-cards.json
+RADAR_PUBLISH_LOCK_FILE=./data/radar-publish.lock
 
 LLM_PROVIDER=deepseek
 LLM_API_KEY=
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-v4-pro
-LLM_MAX_TOKENS=131072
-LLM_TIMEOUT_SECONDS=900
-
-FEISHU_WEBHOOK=
-FEISHU_MAX_PAYLOAD_BYTES=18432
-FEISHU_PROJECTS_PER_CARD=5
-FEISHU_MAX_RETRIES=3
-FEISHU_SEND_TIMEOUT_SECONDS=10
-FEISHU_OUTBOX_DIR=./data/feishu-outbox
 
 DATABASE_URL=sqlite:///./data/radar.db
-DATABASE_BACKUP_DIR=./data/backups
-DATABASE_BACKUP_RETENTION=7
-DATA_MIN_FREE_MB=256
-
-RUN_HISTORY_FILE=./data/run-history.json
-RUN_HISTORY_LIMIT=100
-
-REPORT_TIMEZONE=Asia/Shanghai
-RADAR_RUN_HOUR=8
-RADAR_RUN_MINUTE=0
+FEISHU_OUTBOX_DIR=./data/feishu-outbox
 ```
 
-`GITHUB_TOKEN` 和 `PRODUCT_HUNT_TOKEN` 为可选数据源配置；其他生产核心项由 `python -m app.cli check` 验证。
+`RADAR_GITHUB_TOKEN` 是 08:00 主发布器的生产必需项，用于读取 Issue #2 Feed 和写 delivery receipt。建议使用仅限本仓库、Issues Read/Write 的 fine-grained token。
 
----
+`GITHUB_TOKEN` 仍可用于项目采集，但不能把“采集 token 可选”误解成“08:00 发布协调 token 可选”。
 
-## 首次部署 / 更新
+## 推荐更新方式
+
+不要只执行 `git pull`。使用仓库自带的验证部署脚本：
 
 ```bash
 cd /opt/AI-Intelligence-Radar
-git pull
+git fetch origin main
+git checkout main
+git pull --ff-only origin main
+sh scripts/deploy_radar.sh
+```
+
+脚本会：
+
+1. 拒绝有未提交修改的工作区。
+2. 要求当前分支为 `main`。
+3. `git fetch origin main` 并验证当前 HEAD 已等于 `origin/main`；脚本运行中不会自行修改代码。
+4. 将当前 Git SHA 写入 Docker 镜像。
+5. 重建并重启仅 `radar` 服务。
+6. 等待 `/health`。
+7. 要求 `/ready` 返回 200。
+8. 检查运行容器版本与 Git HEAD 完全一致。
+9. 验证 `07:35 本地兜底` 和 `08:00 主发布` 两个任务都已注册。
+
+## 手动更新方式
+
+如需手动操作：
+
+```bash
+cd /opt/AI-Intelligence-Radar
+git fetch origin main
+git checkout main
+git pull --ff-only origin main
+export APP_COMMIT_SHA="$(git rev-parse HEAD)"
 docker compose build --no-cache radar
 docker compose up -d --force-recreate radar
 ```
 
-只操作 Compose service `radar`。不要使用全局 Docker 清理命令，也不要重启无关服务。
-
-Docker Compose 已配置：
-
-- `restart: unless-stopped`
-- `init: true`
-- `/health` liveness healthcheck
-- Docker stdout 日志 `10 MB × 5` 轮转
-- `./data:/app/data` 持久化数据库、备份、Outbox 和运行历史
-
----
-
-## 部署后验证
-
-### 1. 配置与本地生产依赖
-
-```bash
-docker exec ai-intelligence-radar python -m app.cli check
-```
-
-### 2. 容器存活
+随后必须验证：
 
 ```bash
 curl http://127.0.0.1:8000/health
-```
-
-### 3. 生产就绪
-
-```bash
 curl -i http://127.0.0.1:8000/ready
+curl http://127.0.0.1:8000/status
 ```
 
-期望：
+`/health`、`/ready` 和 `/status` 都会返回当前容器的 `版本` Git SHA。
+
+## 正常生产状态
+
+`/ready` 应返回：
 
 ```text
 HTTP/1.1 200 OK
 ```
 
-### 4. 运行状态
+`/status` 至少应满足：
 
-```bash
-docker exec ai-intelligence-radar python -m app.cli status
-```
+- `版本` 等于服务器当前 `git rev-parse HEAD`
+- `调度器运行中 = true`
+- `07:35 本地兜底.已注册 = true`
+- `08:00 主发布.已注册 = true`
+- 两个任务均有下一次执行时间
+- 飞书 Outbox 不持续增长
 
-或：
+## 容器重启恢复
 
-```bash
-curl http://127.0.0.1:8000/status
-```
+- 07:35–08:00 之间启动：自动补生成当天 fallback。
+- 08:00–08:10 之间启动：自动进入幂等发布恢复。
+- 08:10 后：自动流程禁止补发旧日报或旧告警。
+- 发布前若当天 fallback 缺失或损坏，会现场补生成。
 
----
+## 飞书可靠性
 
-## 手动执行一次完整日报
-
-```bash
-set -o pipefail
-docker exec ai-intelligence-radar python -m app.cli run 2>&1 | tee /root/radar-manual.log
-echo "退出码=${PIPESTATUS[0]}"
-```
-
-完整流程：
+发送采用持久化 Outbox：
 
 ```text
-统一预检
-→ 采集 / 清洗 / 去重
-→ 本地评分
-→ DeepSeek V4 Pro max-thinking 批量分析
-→ SQLite 在线备份
-→ SQLite 保存成功分析
-→ Decision Model / Card Builder
-→ 飞书持久化 Outbox
-→ 多卡/分页发送
+卡片生成
+→ data/feishu-outbox
+→ 顺序发送
+→ 每张成功后落盘
+→ 全部完成后删除队列
 ```
 
-飞书正文不设置业务字符硬上限；超过单卡 Payload 预算会自动分页。
+网络 timeout、HTTP 429/5xx 会重试；已开始发送后若交付状态不确定，不会切换另一套 fallback 重发。
 
----
-
-## 飞书补发
-
-只恢复 Outbox，不重新运行采集和 DeepSeek：
+手动只恢复 Outbox：
 
 ```bash
 docker exec ai-intelligence-radar python -m app.cli flush
 ```
 
-查看待补发数量：
-
-```bash
-docker exec ai-intelligence-radar python -m app.cli status
-```
-
----
-
-## SQLite 备份
-
-每轮进入数据库写入前自动创建一致性备份：
-
-```text
-./data/backups/radar-*.db
-```
-
-默认保留最近 7 份。创建新备份前会先清理超过保留策略的旧备份，降低磁盘满风险。
-
-生产预检还会根据当前数据库大小动态提高最低剩余空间要求：
-
-```text
-max(DATA_MIN_FREE_MB, database_size × 2 + 64 MB)
-```
-
-数据库恢复步骤见 `RUNBOOK.md`。
-
----
-
 ## API
 
-- `GET /health`：进程存活检查。
-- `GET /ready`：生产可执行性检查。
-- `GET /status`：最近执行、Outbox 与备份轻量状态。
-- `POST /run`：手动执行一次完整日报；不要暴露到公网。
+- `GET /health`：进程、调度器、部署版本。
+- `GET /ready`：生产依赖与发布协调是否完整。
+- `GET /status`：版本、调度计划、最近运行、采集器、Outbox、数据库备份。
+- `POST /run`：手动执行完整分析流程；不要暴露到公网。
 
-CLI / API / Scheduler 共用同一套 `run_daily_radar()` execution lock 和 production preflight，避免入口规则不一致。
+服务默认只绑定：
 
----
+```text
+127.0.0.1:8000
+```
 
 ## 禁止事项
 
-不要执行：
+不要执行会影响服务器其他业务容器的全局 Docker 清理：
 
 ```text
 docker system prune -a
 ```
 
-不要因为 Radar 故障停止或删除服务器上的 Nextcloud、MariaDB、Redis 等其他业务容器。
+只操作 Compose service `radar`。

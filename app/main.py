@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -31,6 +33,21 @@ SOURCE_NAMES = {
     "producthunt": "Product Hunt",
 }
 
+BUILD_REVISION_FILE = Path("/app/.build-revision")
+
+
+def _app_version() -> str:
+    try:
+        value = BUILD_REVISION_FILE.read_text(encoding="utf-8").strip()
+        if value:
+            return value[:64]
+    except OSError:
+        pass
+
+    value = str(os.getenv("APP_COMMIT_SHA") or "").strip()
+    return value[:64] if value else "unknown"
+
+
 METRIC_NAMES = {
     "stars": "星标",
     "forks": "分支",
@@ -50,6 +67,7 @@ def home():
     return {
         "名称": "AI 情报雷达",
         "状态": "运行中",
+        "版本": _app_version(),
     }
 
 
@@ -59,6 +77,7 @@ def health_check():
     return {
         "正常": True,
         "调度器运行中": bool(scheduler.running),
+        "版本": _app_version(),
     }
 
 
@@ -75,6 +94,7 @@ def readiness_check():
             "调度器运行中": scheduler_ready,
             "预检通过": preflight.ok,
             "失败项": preflight.failures,
+            "版本": _app_version(),
         },
     )
 
@@ -153,6 +173,7 @@ def runtime_status():
         backup_count = -1
 
     return {
+        "版本": _app_version(),
         "调度器运行中": bool(scheduler.running),
         "调度计划": _scheduler_plan_status(),
         "最近执行": latest_run(),
