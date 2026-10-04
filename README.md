@@ -348,7 +348,7 @@ docker compose up -d --force-recreate radar
 docker logs --tail 100 ai-intelligence-radar
 ```
 
-启动日志应出现“07:35 预生成兜底，08:00 发布日报”的调度器配置。若常驻容器未更新，GitHub Actions 仍会在 08:04 提供灾备，但无法获得常驻主时钟的准点能力。
+启动日志应出现“07:35 预生成兜底，08:00 发布日报”的调度器配置。若常驻容器未更新，GitHub Actions 仍会在 08:06 提供灾备，但无法获得常驻主时钟的准点能力。
 
 ### 健康检查
 
@@ -383,19 +383,21 @@ ChatGPT Feed / Recovery
         ↓
 07:35
 常驻 APScheduler 无条件预生成当天本地兜底
+        └─ 所有来源为空时也生成“采集覆盖不足”状态卡，不允许整天静默
         ↓
 08:00:00 Asia/Shanghai
-常驻 APScheduler 主发布
+常驻 APScheduler 主发布（data 共享跨进程锁）
         ├─ 优先读取当天 ChatGPT Feed
         ├─ Feed 缺失 → 本地确定性兜底
         └─ GitHub API 临时故障 → 本地确定性兜底
         ↓
 写入 GitHub delivery receipt
         ↓
-08:04
+08:06
 GitHub Actions 灾备检查
         ├─ 已有 receipt → 成功退出，不重复发送
-        └─ 无 receipt → 在 08:00–08:10 窗口内灾备发送
+        ├─ GitHub 协调不可用 → 禁止盲发，避免主服务已发后的重复日报
+        └─ GitHub 可确认无 receipt → 在 08:00–08:10 窗口内灾备发送
 ```
 
 自动任务在北京时间 08:10 后不会发送旧日报或旧告警。历史日期告警同样被拒绝；晚间恢复只能通过 Actions 的显式 `force_send=true` 人工触发。
@@ -417,6 +419,7 @@ RADAR_RUN_MINUTE=0
 RADAR_ENFORCE_SEND_WINDOW=1
 RADAR_SEND_WINDOW_START=08:00
 RADAR_SEND_WINDOW_END=08:10
+RADAR_PUBLISH_LOCK_FILE=./data/radar-publish.lock
 ```
 
 `RADAR_GITHUB_TOKEN` 建议使用仅限本仓库、具有 Issues Read/Write 权限的 fine-grained token。它用于读取 Issue #2 Feed 和写入 delivery receipt，从而让常驻服务与 GitHub Actions 跨系统去重。
