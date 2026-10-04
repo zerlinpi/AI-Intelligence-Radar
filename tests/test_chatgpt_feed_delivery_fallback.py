@@ -203,42 +203,113 @@ def test_send_window_accepts_0800_and_rejects_afternoon(monkeypatch):
     assert module._send_window_state(datetime(2026, 10, 3, 15, 0, 0, tzinfo=tz)) == "late"
 
 
-def test_late_run_never_calls_github_or_feishu(monkeypatch, tmp_path):
+def test_late_unsent_run_checks_receipt_then_refuses_feishu(monkeypatch, tmp_path):
     module = _load_module()
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
 
     monkeypatch.setattr(module, "STATUS_PATH", tmp_path / "chatgpt-feed-status.json")
     monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
-    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-03")
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
     monkeypatch.setenv("RADAR_ENFORCE_SEND_WINDOW", "1")
     monkeypatch.setenv("RADAR_SEND_WINDOW_START", "08:00")
     monkeypatch.setenv("RADAR_SEND_WINDOW_END", "08:10")
-
+    monkeypatch.delenv("RADAR_ALLOW_LATE_RECOVERY", raising=False)
     monkeypatch.setattr(module, "_send_window_state", lambda now=None: "late")
 
     called = {"github": 0, "feishu": 0}
 
-    def github_should_not_run(**kwargs):
+    def fetch_comments(**kwargs):
         called["github"] += 1
-        raise AssertionError("late run must not fetch Feed")
+        return []
 
     def feishu_should_not_run(*args, **kwargs):
         called["feishu"] += 1
-        raise AssertionError("late run must not send Feishu")
+        raise AssertionError("late unsent run must not send Feishu")
 
-    monkeypatch.setattr(module, "fetch_issue_comments", github_should_not_run)
+    monkeypatch.setattr(module, "fetch_issue_comments", fetch_comments)
     monkeypatch.setattr(module, "send_feishu", feishu_should_not_run)
     monkeypatch.setattr(module, "send_feishu_cards", feishu_should_not_run)
 
     assert module.main() == 2
-    assert called == {"github": 0, "feishu": 0}
+    assert called == {"github": 1, "feishu": 0}
     status = json.loads(module.STATUS_PATH.read_text(encoding="utf-8"))
     assert status["status"] == "outside_send_window"
     assert status["window_state"] == "late"
 
+
+def test_late_queued_run_with_receipt_exits_success(monkeypatch, tmp_path):
+    module = _load_module()
+
+    monkeypatch.setattr(module, "STATUS_PATH", tmp_path / "chatgpt-feed-status.json")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
+    monkeypatch.setenv("RADAR_ENFORCE_SEND_WINDOW", "1")
+    monkeypatch.setattr(module, "_send_window_state", lambda now=None: "late")
+    monkeypatch.setattr(
+        module,
+        "fetch_issue_comments",
+        lambda **kwargs: [
+            {
+                "id": 15,
+                "user": {"login": "github-actions[bot]"},
+                "body": _receipt_body("2026-10-04"),
+            }
+        ],
+    )
+
+    def feishu_should_not_run(*args, **kwargs):
+        raise AssertionError("receipt-deduplicated run must not send Feishu")
+
+    monkeypatch.setattr(module, "send_feishu", feishu_should_not_run)
+    monkeypatch.setattr(module, "send_feishu_cards", feishu_should_not_run)
+
+    assert module.main() == 0
+    status = json.loads(module.STATUS_PATH.read_text(encoding="utf-8"))
+    assert status["status"] == "success"
+    assert status["deduplicated_by"] == "github_delivery_receipt"
+
+
+def test_explicit_manual_recovery_can_send_after_window(monkeypatch, tmp_path):
+    module = _load_module()
+
+    monkeypatch.setattr(module, "STATUS_PATH", tmp_path / "chatgpt-feed-status.json")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "zerlinpi/AI-Intelligence-Radar")
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("CHATGPT_FEED_AUTHOR", "zerlinpi")
+    monkeypatch.setenv("CHATGPT_FEED_DATE", "2026-10-04")
+    monkeypatch.setenv("RADAR_ENFORCE_SEND_WINDOW", "1")
+    monkeypatch.setenv("RADAR_ALLOW_LATE_RECOVERY", "1")
+    monkeypatch.setattr(module, "_send_window_state", lambda now=None: "late")
+    monkeypatch.setattr(module, "fetch_issue_comments", lambda **kwargs: [])
+    monkeypatch.setattr(
+        module,
+        "find_latest_report",
+        lambda **kwargs: ({"date_text": "2026-10-04"}, 21),
+    )
+    monkeypatch.setattr(module, "report_model_from_dict", lambda payload: object())
+    card = module.CardEnvelope(
+        card_type="summary",
+        payload={"msg_type": "text", "content": {"text": "recovery"}},
+        fallback_text="recovery",
+    )
+    monkeypatch.setattr(module, "build_daily_cards", lambda model: [card])
+
+    sent = []
+    monkeypatch.setattr(
+        module,
+        "send_feishu_cards",
+        lambda cards, **kwargs: sent.extend(cards) or True,
+    )
+    monkeypatch.setattr(module, "post_delivery_receipt", lambda **kwargs: True)
+
+    assert module.main() == 0
+    assert len(sent) == 1
+    status = json.loads(module.STATUS_PATH.read_text(encoding="utf-8"))
+    assert status["status"] == "success"
+    assert status["sent"] is True
 
 def test_missing_feed_uses_prebuilt_local_fallback(monkeypatch, tmp_path):
     module = _load_module()

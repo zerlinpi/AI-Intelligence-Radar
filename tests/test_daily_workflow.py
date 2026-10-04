@@ -9,25 +9,26 @@ def _workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_daily_workflow_has_single_beijing_0800_release_gate():
+def test_daily_workflow_wakes_early_and_keeps_single_0800_release_gate():
     text = _workflow_text()
     assert "issue_comment:" not in text
     assert "schedule:" in text
-    assert 'cron: "0 23 * * *"' in text
-    assert 'cron: "15 0 * * *"' not in text
-    assert 'cron: "35 0 * * *"' not in text
-    assert 'cron: "0 1 * * *"' not in text
+    assert 'cron: "15 18 * * *"' in text
+    assert 'cron: "30 18 * * *"' in text
+    assert 'cron: "0 23 * * *"' not in text
     assert "等待到北京时间 08:00:00" in text
     assert 'ZoneInfo("Asia/Shanghai")' in text
     assert "hour=8, minute=0, second=0" in text
     assert 'RADAR_ENFORCE_SEND_WINDOW: "1"' in text
     assert 'RADAR_SEND_WINDOW_START: "08:00"' in text
     assert 'RADAR_SEND_WINDOW_END: "08:10"' in text
+    assert "RADAR_ALLOW_LATE_RECOVERY:" in text
     assert 'RADAR_LOCAL_FALLBACK_PATH: "./data/local-fallback-cards.json"' in text
     assert "07:35 准备本地兜底" in text
     assert "python scripts/prepare_local_fallback.py" in text
     assert "hour=7, minute=35, second=0" in text
     assert "workflow_dispatch:" in text
+    assert "force_send:" in text
     assert 'CHATGPT_FEED_ISSUE: "2"' in text
     assert "CHATGPT_FEED_AUTHOR: ${{ github.repository_owner }}" in text
     assert "python scripts/send_chatgpt_feed.py" in text
@@ -67,7 +68,7 @@ def test_daily_workflow_has_production_boundaries():
     assert "contents: read" in text
     assert "issues: write" in text
     assert "pull_request:" not in text
-    assert "push:" not in text
+    assert "\n  push:\n" not in text
     assert "cancel-in-progress: false" in text
-    assert "timeout-minutes: 90" in text
+    assert "timeout-minutes: 360" in text
     assert "if: always()" in text
