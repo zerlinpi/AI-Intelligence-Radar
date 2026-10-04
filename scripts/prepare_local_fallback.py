@@ -22,13 +22,6 @@ from app.pipeline import (
     select_policy_candidates,
     select_project_candidates,
 )
-from scripts.send_chatgpt_feed import (
-    MissingFeedError,
-    fetch_issue_comments,
-    find_latest_report,
-)
-
-
 DEFAULT_OUTPUT = Path("data/local-fallback-cards.json")
 
 
@@ -65,7 +58,7 @@ def _project_analysis(item) -> dict:
         "llm_meta": {
             "success": False,
             "fallback": True,
-            "reason": "07:35 ChatGPT Feed 缺失，使用确定性本地兜底",
+            "reason": "07:35 预生成确定性本地兜底",
         },
     }
 
@@ -89,54 +82,21 @@ def _policy_analysis(item) -> dict:
         "llm_meta": {
             "success": False,
             "fallback": True,
-            "reason": "07:35 ChatGPT Feed 缺失，使用确定性本地兜底",
+            "reason": "07:35 预生成确定性本地兜底",
         },
     }
 
 
-def _has_chatgpt_feed(repository: str, issue_number: int, token: str, author: str, date_text: str) -> bool:
-    comments = fetch_issue_comments(
-        repository=repository,
-        issue_number=issue_number,
-        token=token,
-    )
-    try:
-        find_latest_report(
-            comments=comments,
-            expected_date=date_text,
-            trusted_author=author,
-        )
-        return True
-    except MissingFeedError:
-        return False
-
-
 def prepare(output_path: Path | None = None) -> dict:
-    repository = str(os.getenv("GITHUB_REPOSITORY") or "").strip()
-    token = str(os.getenv("GITHUB_TOKEN") or "").strip()
-    author = str(os.getenv("CHATGPT_FEED_AUTHOR") or "").strip()
-    issue_number = int(os.getenv("CHATGPT_FEED_ISSUE", "2"))
     date_text = str(os.getenv("CHATGPT_FEED_DATE") or _today()).strip()
     target = output_path or Path(
         os.getenv("RADAR_LOCAL_FALLBACK_PATH") or str(DEFAULT_OUTPUT)
     )
 
-    if not repository or not token or not author:
-        raise RuntimeError("本地兜底准备缺少 GitHub 运行环境")
-
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    if _has_chatgpt_feed(repository, issue_number, token, author, date_text):
-        target.unlink(missing_ok=True)
-        result = {
-            "status": "skipped",
-            "reason": "chatgpt_feed_present",
-            "date": date_text,
-            "cards": 0,
-        }
-        print(json.dumps(result, ensure_ascii=False))
-        return result
-
+    # 无论 ChatGPT Feed 是否已经存在，都预生成一份当天确定性兜底。
+    # 这样 08:00 即使 GitHub API 临时不可达，发布器仍有可发送内容。
     projects = select_project_candidates(collect_sources())[:5]
     policies = select_policy_candidates(collect_policies())[:3]
 
