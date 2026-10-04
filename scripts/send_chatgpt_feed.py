@@ -442,6 +442,9 @@ def main() -> int:
         print(f"ChatGPT Radar Feed：date={expected_date} 已成功发送，本轮跳过防止重复。")
         return 0
 
+    coordination_confirmed = False
+    send_started = False
+
     try:
         # 先查 GitHub receipt，再判断发送窗口。
         # 多个早期唤醒任务中，第一轮发送成功后，后续排队任务即使 08:10 后才启动
@@ -466,6 +469,8 @@ def main() -> int:
                 "本轮跳过防止重复。"
             )
             return 0
+
+        coordination_confirmed = True
 
         if _send_window_enforced():
             window_state = _send_window_state()
@@ -502,6 +507,7 @@ def main() -> int:
         cards = build_daily_cards(model)
         card_types = [card.card_type for card in cards]
 
+        send_started = True
         sent = send_feishu_cards(
             cards,
             run_id=f"chatgpt-feed-{expected_date}",
@@ -572,9 +578,28 @@ def main() -> int:
         print(f"ChatGPT Radar Feed 缺失：{exc}；alert_sent={alert_sent}", file=sys.stderr)
         return 1
     except Exception as exc:
-        # 灾备 Actions 无法读取 GitHub 时，无法确认 08:00 主服务是否已经发送。
-        # 此时禁止盲发，避免“主服务已发但 receipt 暂时写失败”导致重复日报。
-        if _publish_role() == "actions_dr":
+        # 一旦进入飞书发送调用，交付状态可能已经部分成功；此时绝不能切换另一套
+        # fallback 再发送，否则可能产生重复卡片。
+        if send_started:
+            _write_status(
+                date=expected_date,
+                issue=issue_number,
+                cards=0,
+                sent=False,
+                alert_sent=False,
+                status="delivery_uncertain",
+                error=str(exc),
+                source=_publish_role(),
+            )
+            print(
+                f"Radar 发送状态不确定：{exc}；发送已开始，本轮禁止再次切换 fallback。",
+                file=sys.stderr,
+            )
+            return 1
+
+        # 灾备 Actions 只有在已经成功读取 GitHub、明确确认当天没有 receipt 后，
+        # 才允许使用本地 fallback。若连协调状态都无法确认，则禁止盲发。
+        if _publish_role() == "actions_dr" and not coordination_confirmed:
             _write_status(
                 date=expected_date,
                 issue=issue_number,
@@ -591,8 +616,8 @@ def main() -> int:
             )
             return 1
 
-        # 08:00 主服务在 GitHub API 短暂不可达时仍必须按时发飞书。
-        # 07:35 已经无条件准备当天本地兜底；优先使用它完成发送。
+        # 主服务在 GitHub API 故障时，或灾备在已确认无 receipt 后遇到 Feed
+        # 解析/建卡异常时，都可以安全切换到 07:35 预生成的本地 fallback。
         if _send_local_fallback(
             repository=repository,
             issue_number=issue_number,
@@ -600,7 +625,7 @@ def main() -> int:
             expected_date=expected_date,
         ):
             print(
-                f"ChatGPT Radar Feed 读取异常：{exc}；已使用预生成本地兜底卡片。",
+                f"ChatGPT Radar Feed 处理异常：{exc}；已使用预生成本地兜底卡片。",
                 file=sys.stderr,
             )
             return 0
