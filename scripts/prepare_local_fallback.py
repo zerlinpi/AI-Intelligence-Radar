@@ -106,10 +106,17 @@ def prepare(output_path: Path | None = None) -> dict:
     for item in policies:
         item.analysis = _policy_analysis(item)
 
-    if not projects and not policies:
-        raise RuntimeError("本地兜底未采集到可发送项目或合规情报")
-
+    # 即使所有采集源同时为空/失败，也生成“覆盖不足”的当天状态卡。
+    # 这样飞书可以明确区分“今天没有可靠新信号”和“发布链路彻底失效”。
     model = build_decision_model(projects, policies)
+    if not projects and not policies:
+        model.summary.judgment = (
+            "今日公开数据采集覆盖不足，未获得可验证的新合规或产品信号。"
+            "本次不做事实推断，请以官方来源恢复后的下一轮结果为准。"
+        )
+        model.summary.actions[0].text = "必须：检查公开数据源与网络可用性，不基于空数据做经营判断。"
+        model.summary.actions[1].text = "关注：恢复 Amazon、CBP、CPSC、FDA、FCC 与技术源采集覆盖。"
+        model.summary.actions[2].text = "研究：待来源恢复后重新验证当天新增项目与政策信号。"
     cards = build_daily_cards(model)
 
     record = {
