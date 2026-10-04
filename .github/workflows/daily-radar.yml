@@ -3,7 +3,7 @@ name: AI 情报雷达日报
 on:
   # 常驻 APScheduler 是北京时间 08:00:00 主发布器。
   # GitHub Actions 仅做灾备：用两个很早的唤醒机会（北京时间 02:15 / 02:30），
-  # 一旦 Runner 提前拿到资源，就等待到 08:04 再检查 delivery receipt。
+  # 一旦 Runner 提前拿到资源，就等待到 08:06 再检查 delivery receipt。
   # 主服务已成功时直接退出；仅主服务未成功时由 Actions 补发。
   schedule:
     - cron: "15 18 * * *"
@@ -38,6 +38,7 @@ env:
   GITHUB_TOKEN: ${{ github.token }}
   CHATGPT_FEED_ISSUE: "2"
   CHATGPT_FEED_AUTHOR: ${{ github.repository_owner }}
+  RADAR_PUBLISH_ROLE: "actions_dr"
   RADAR_ENFORCE_SEND_WINDOW: "1"
   RADAR_SEND_WINDOW_START: "08:00"
   RADAR_SEND_WINDOW_END: "08:10"
@@ -46,9 +47,9 @@ env:
 
 jobs:
   daily-radar:
-    name: 北京时间 08:04 灾备检查 AI 情报日报
+    name: 北京时间 08:06 灾备检查 AI 情报日报
     runs-on: ubuntu-latest
-    # 最早 02:15 启动时需要在 Runner 内等待到 08:04 灾备检查。
+    # 最早 02:15 启动时需要在 Runner 内等待到 08:06 灾备检查。
     # GitHub hosted runner 单 job 上限 6 小时，因此这里使用最大安全窗口。
     timeout-minutes: 360
 
@@ -108,7 +109,7 @@ jobs:
           echo "exit_code=${fallback_exit}" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: 等待到北京时间 08:04 灾备检查
+      - name: 等待到北京时间 08:06 灾备检查
         shell: bash
         run: |
           python - <<'PY'
@@ -118,7 +119,7 @@ jobs:
 
           tz = ZoneInfo("Asia/Shanghai")
           now = datetime.now(tz)
-          target = now.replace(hour=8, minute=4, second=0, microsecond=0)
+          target = now.replace(hour=8, minute=6, second=0, microsecond=0)
 
           if now < target:
               delay = (target - now).total_seconds()
@@ -146,7 +147,7 @@ jobs:
             echo "## AI 情报雷达运行状态"
             echo
             echo "- 主发布时间：北京时间 08:00:00（常驻 APScheduler）"
-            echo "- Actions 灾备检查：北京时间 08:04"
+            echo "- Actions 灾备检查：北京时间 08:06"
             echo "- 正常允许发送窗口：08:00–08:10"
             echo "- 人工强制恢复：${RADAR_ALLOW_LATE_RECOVERY}"
             echo "- 分析来源：ChatGPT Daily Radar Feed（Issue #${CHATGPT_FEED_ISSUE}）"
