@@ -229,6 +229,32 @@ def run_preflight() -> PreflightResult:
         timezone_detail = f"未知时区：{REPORT_TIMEZONE}"
     checks.append(PreflightCheck("日报时区", timezone_ok, timezone_detail))
 
+    primary_publisher_required = str(
+        os.getenv("TESTING") or ""
+    ).strip().lower() not in {"1", "true", "yes", "on"}
+    publisher_repo = str(
+        os.getenv("RADAR_GITHUB_REPOSITORY")
+        or os.getenv("GITHUB_REPOSITORY")
+        or ""
+    ).strip()
+    publisher_token = str(
+        os.getenv("RADAR_GITHUB_TOKEN")
+        or os.getenv("GITHUB_TOKEN")
+        or ""
+    ).strip()
+    checks.append(
+        PreflightCheck(
+            "08:00 GitHub 发布协调",
+            bool(publisher_repo and publisher_token),
+            (
+                "已配置"
+                if publisher_repo and publisher_token
+                else "需要 RADAR_GITHUB_REPOSITORY + RADAR_GITHUB_TOKEN（或 GITHUB_TOKEN）"
+            ),
+            required=primary_publisher_required,
+        )
+    )
+
     checks.extend(
         [
             PreflightCheck(
