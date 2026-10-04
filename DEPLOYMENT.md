@@ -57,19 +57,23 @@ FEISHU_OUTBOX_DIR=./data/feishu-outbox
 
 ```bash
 cd /opt/AI-Intelligence-Radar
-./scripts/deploy_radar.sh
+git fetch origin main
+git checkout main
+git pull --ff-only origin main
+sh scripts/deploy_radar.sh
 ```
 
 脚本会：
 
-1. 拒绝覆盖有未提交修改的工作区。
-2. `git pull --ff-only origin main`。
-3. 将当前 Git SHA 写入 Docker 镜像。
-4. 重建并重启仅 `radar` 服务。
-5. 等待 `/health`。
-6. 要求 `/ready` 返回 200。
-7. 检查运行容器版本与 Git HEAD 完全一致。
-8. 验证 `07:35 本地兜底` 和 `08:00 主发布` 两个任务都已注册。
+1. 拒绝有未提交修改的工作区。
+2. 要求当前分支为 `main`。
+3. `git fetch origin main` 并验证当前 HEAD 已等于 `origin/main`；脚本运行中不会自行修改代码。
+4. 将当前 Git SHA 写入 Docker 镜像。
+5. 重建并重启仅 `radar` 服务。
+6. 等待 `/health`。
+7. 要求 `/ready` 返回 200。
+8. 检查运行容器版本与 Git HEAD 完全一致。
+9. 验证 `07:35 本地兜底` 和 `08:00 主发布` 两个任务都已注册。
 
 ## 手动更新方式
 
