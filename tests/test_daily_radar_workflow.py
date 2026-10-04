@@ -25,9 +25,9 @@ def test_daily_radar_uses_early_wakeup_redundancy():
 def test_actions_waits_until_0802_for_disaster_recovery():
     text = _workflow_text()
 
-    assert "等待到北京时间 08:04 灾备检查" in text
+    assert "等待到北京时间 08:06 灾备检查" in text
     assert 'ZoneInfo("Asia/Shanghai")' in text
-    assert "hour=8, minute=4, second=0" in text
+    assert "hour=8, minute=6, second=0" in text
     assert "time.sleep(delay)" in text
     assert "timeout-minutes: 360" in text
     assert "发布当天 ChatGPT 情报分析" in text
@@ -36,6 +36,7 @@ def test_actions_waits_until_0802_for_disaster_recovery():
 def test_late_manual_dispatch_requires_explicit_force_send():
     text = _workflow_text()
 
+    assert 'RADAR_PUBLISH_ROLE: "actions_dr"' in text
     assert 'RADAR_ENFORCE_SEND_WINDOW: "1"' in text
     assert 'RADAR_SEND_WINDOW_START: "08:00"' in text
     assert 'RADAR_SEND_WINDOW_END: "08:10"' in text
