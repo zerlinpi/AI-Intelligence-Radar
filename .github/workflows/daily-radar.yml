@@ -1,13 +1,22 @@
 name: AI 情报雷达日报
 
 on:
-  # 单一生产发布入口：UTC 23:00 = 北京时间次日 07:00。
-  # Runner 提前启动并等待到北京时间 08:00:00，再读取当天 Feed 并发送飞书。
+  # GitHub schedule 可能出现小时级延迟，不能把 07:00 cron 当成准点时钟。
+  # 这里用两个很早的唤醒机会（北京时间 02:15 / 02:30），
+  # 一旦 Runner 提前拿到资源，就在进程内等待到 08:00:00 再发送。
+  # 正常情况下第一轮会一直持有生产 concurrency；第二轮只作为事件丢失/异常兜底。
   schedule:
-    - cron: "0 23 * * *"
-  # 仅保留人工诊断入口；脚本自身有北京时间发送窗口保护，
-  # 08:10 之后人工触发也不会补发到下午。
+    - cron: "15 18 * * *"
+    - cron: "30 18 * * *"
+  # 人工恢复默认仍受 08:00–08:10 窗口保护。
+  # 只有明确勾选 force_send 才允许当天错过窗口后补发。
   workflow_dispatch:
+    inputs:
+      force_send:
+        description: "仅故障恢复使用：允许当前日期在 08:10 后补发"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -32,13 +41,16 @@ env:
   RADAR_ENFORCE_SEND_WINDOW: "1"
   RADAR_SEND_WINDOW_START: "08:00"
   RADAR_SEND_WINDOW_END: "08:10"
+  RADAR_ALLOW_LATE_RECOVERY: ${{ github.event_name == 'workflow_dispatch' && inputs.force_send && '1' || '0' }}
   RADAR_LOCAL_FALLBACK_PATH: "./data/local-fallback-cards.json"
 
 jobs:
   daily-radar:
     name: 北京时间 08:00 发布 AI 情报日报
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # 最早 02:15 启动时需要在 Runner 内等待到 08:00。
+    # GitHub hosted runner 单 job 上限 6 小时，因此这里使用最大安全窗口。
+    timeout-minutes: 360
 
     steps:
       - name: 获取代码
@@ -134,7 +146,8 @@ jobs:
             echo "## AI 情报雷达运行状态"
             echo
             echo "- 目标发布时间：北京时间 08:00:00"
-            echo "- 允许发送窗口：08:00–08:10"
+            echo "- 正常允许发送窗口：08:00–08:10"
+            echo "- 人工强制恢复：${RADAR_ALLOW_LATE_RECOVERY}"
             echo "- 分析来源：ChatGPT Daily Radar Feed（Issue #${CHATGPT_FEED_ISSUE}）"
             echo "- 可信 Feed 作者：${CHATGPT_FEED_AUTHOR}"
             echo "- 触发方式：${{ github.event_name }}"
