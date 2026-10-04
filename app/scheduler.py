@@ -97,7 +97,7 @@ def _startup_recovery_mode(now: datetime | None = None) -> str:
     minute_of_day = current.hour * 60 + current.minute
     prep_at = PREP_HOUR * 60 + PREP_MINUTE
     publish_at = RUN_HOUR * 60 + RUN_MINUTE
-    publish_end = 8 * 60 + 10
+    publish_end = publish_at + 10
 
     if prep_at <= minute_of_day < publish_at:
         return "prepare"
