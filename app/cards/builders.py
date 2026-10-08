@@ -16,7 +16,10 @@ from app.cards.styles import (
 )
 from app.cards.text import clean_text, payload_bytes
 from app.config import FEISHU_MAX_PAYLOAD_BYTES
-from app.report_copy import project_display_description
+from app.report_copy import (
+    project_display_description, safe_policy_display_text,
+    safe_project_insight, is_raw_source_copy,
+)
 
 
 # 不对业务正文设置字符上限。这里只给卡片 JSON 自身保留传输安全空间；
@@ -325,7 +328,7 @@ def _envelopes(
 def build_summary_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
     summary = model.summary
     metrics = summary.metrics or {}
-    judgment = _text(summary.judgment)
+    judgment = safe_project_insight(summary.judgment)
     overview = (
         "🚨 合规 **{compliance}**　·　🔴 高风险 **{high_risk}**　·　"
         "💡 入选项目 **{projects}**　·　⭐ 重点机会 **{opportunities}**"
@@ -345,7 +348,7 @@ def build_summary_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
     number_labels = ("①", "②", "③")
     for index, action in enumerate(summary.actions[:MAX_ACTIONS]):
         label = f"{number_labels[index]} {action.label}"
-        elements.append(_pair(label, action.text))
+        elements.append(_pair(label, safe_project_insight(action.text)))
 
     return _envelopes(
         "summary",
@@ -387,11 +390,11 @@ def _append_standard_policy(elements: list, decision, index: int):
     else:
         first_label, second_label = "核心变化", "卖家影响"
 
-    elements.append(_md(f"**{first_label}**\n{_text(decision.requirement)}"))
+    elements.append(_md(f"**{first_label}**\n{safe_policy_display_text(decision.requirement)}"))
     if decision.impact:
-        elements.append(_md(f"**{second_label}**\n{_text(decision.impact)}"))
+        elements.append(_md(f"**{second_label}**\n{safe_policy_display_text(decision.impact)}"))
 
-    action = _text(decision.action)
+    action = safe_policy_display_text(decision.action)
     if action:
         elements.append(_pair("现在要做", action, "✅"))
     _append_button(elements, "查看官方原文", decision.url)
@@ -399,15 +402,15 @@ def _append_standard_policy(elements: list, decision, index: int):
 
 def _append_product_compliance(elements: list, decision, index: int):
     _append_policy_identity(elements, decision, index)
-    elements.append(_md("**审核要求**\n" + _text(decision.requirement)))
+    elements.append(_md("**审核要求**\n" + safe_policy_display_text(decision.requirement)))
     elements.extend(
         [
-            _pair("影响产品", decision.affected_products, "🎯"),
-            _pair("不满足的风险", decision.risk, "⚠️"),
-            _pair("应准备资料", decision.preparation, "📋"),
+            _pair("影响产品", safe_policy_display_text(decision.affected_products), "🎯"),
+            _pair("不满足的风险", safe_policy_display_text(decision.risk), "⚠️"),
+            _pair("应准备资料", safe_policy_display_text(decision.preparation), "📋"),
         ]
     )
-    action = _text(decision.action)
+    action = safe_policy_display_text(decision.action)
     if action:
         elements.append(_pair("现在要做", action, "✅"))
     _append_button(elements, "查看官方原文", decision.url)
@@ -564,18 +567,18 @@ def _project_elements(project, index: int) -> list:
         tags=project.tags,
         source_name=project.source_name,
     )
-    judgment = _text(project.judgment)
-    direction = _text(project.direction)
+    judgment = safe_project_insight(project.judgment)
+    direction = safe_project_insight(project.direction)
 
     if description:
         description_label = "研究内容" if is_arxiv else "它能做什么"
         elements.append(_md(f"**{description_label}**\n{description}"))
 
     if is_arxiv:
-        research_stage = _text(project.growth_signal) or "最新预印本研究 · 尚无产品市场验证"
+        research_stage = (_text(project.growth_signal) if not is_raw_source_copy(project.growth_signal) else "") or "最新预印本研究 · 尚无产品市场验证"
         elements.append(_md(f"**研究阶段**\n{research_stage}"))
     elif project.growth_signal:
-        elements.append(_md(f"📈 **增长证据**　{project.growth_signal}"))
+        elements.append(_md(f"📈 **增长证据**　{_text(project.growth_signal) if not is_raw_source_copy(project.growth_signal) else '原始增长信息未核验'}"))
 
     if judgment:
         elements.append(_pair("为什么值得看", judgment, "🧠"))

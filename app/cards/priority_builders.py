@@ -24,6 +24,7 @@ from app.cards.builders import (
     _text,
 )
 from app.cards.models import CardEnvelope, ReportDecisionModel
+from app.report_copy import safe_policy_display_text, safe_project_insight
 from app.cards.styles import (
     MAX_ACTIONS,
     PRODUCT_HEADER_TEMPLATE,
@@ -64,7 +65,7 @@ def build_summary_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
     )
 
     elements = [
-        _pair("今日判断", _text(summary.judgment), "🧭"),
+        _pair("今日判断", safe_project_insight(summary.judgment), "🧭"),
         _md(f"**经营汇总**\n{compliance_line}\n{project_line}"),
         _hr(),
         _md("**今天只看这 3 件事**"),
@@ -72,7 +73,7 @@ def build_summary_cards(model: ReportDecisionModel) -> List[CardEnvelope]:
 
     number_labels = ("①", "②", "③")
     for index, action in enumerate(summary.actions[:MAX_ACTIONS]):
-        elements.append(_pair(f"{number_labels[index]} {action.label}", action.text))
+        elements.append(_pair(f"{number_labels[index]} {action.label}", safe_project_insight(action.text)))
 
     return _envelopes(
         "summary",
@@ -100,35 +101,35 @@ def _group_brief(group) -> str:
 
 def _append_amazon_policy(elements: list, decision, index: int) -> None:
     _append_policy_identity(elements, decision, index)
-    elements.append(_md(f"**发生了什么**\n{_text(decision.requirement)}"))
+    elements.append(_md(f"**发生了什么**\n{safe_policy_display_text(decision.requirement)}"))
     if decision.impact:
-        elements.append(_pair("对卖家的影响", decision.impact, "📦"))
+        elements.append(_pair("对卖家的影响", safe_policy_display_text(decision.impact), "📦"))
     if decision.action:
-        elements.append(_pair("现在要做", decision.action, "✅"))
+        elements.append(_pair("现在要做", safe_policy_display_text(decision.action), "✅"))
     _append_button(elements, "查看官方原文", decision.url)
 
 
 def _append_import_rule(elements: list, decision, index: int) -> None:
     _append_policy_identity(elements, decision, index)
-    elements.append(_md(f"**发生了什么**\n{_text(decision.requirement)}"))
+    elements.append(_md(f"**发生了什么**\n{safe_policy_display_text(decision.requirement)}"))
     if decision.impact:
-        elements.append(_pair("对进口/清关的影响", decision.impact, "🚚"))
+        elements.append(_pair("对进口/清关的影响", safe_policy_display_text(decision.impact), "🚚"))
     if decision.action:
-        elements.append(_pair("现在要做", decision.action, "✅"))
+        elements.append(_pair("现在要做", safe_policy_display_text(decision.action), "✅"))
     _append_button(elements, "查看官方原文", decision.url)
 
 
 def _append_product_compliance(elements: list, decision, index: int) -> None:
     _append_policy_identity(elements, decision, index)
-    elements.append(_md(f"**监管 / 审核要求**\n{_text(decision.requirement)}"))
+    elements.append(_md(f"**监管 / 审核要求**\n{safe_policy_display_text(decision.requirement)}"))
     if decision.affected_products:
-        elements.append(_pair("影响产品", decision.affected_products, "🎯"))
+        elements.append(_pair("影响产品", safe_policy_display_text(decision.affected_products), "🎯"))
     if decision.risk:
-        elements.append(_pair("不满足的风险", decision.risk, "⚠️"))
+        elements.append(_pair("不满足的风险", safe_policy_display_text(decision.risk), "⚠️"))
     if decision.preparation:
-        elements.append(_pair("应准备资料", decision.preparation, "📋"))
+        elements.append(_pair("应准备资料", safe_policy_display_text(decision.preparation), "📋"))
     if decision.action:
-        elements.append(_pair("现在要做", decision.action, "✅"))
+        elements.append(_pair("现在要做", safe_policy_display_text(decision.action), "✅"))
     _append_button(elements, "查看官方原文", decision.url)
 
 
@@ -255,7 +256,7 @@ def _build_github_cards(
             elements.append(
                 _md(
                     "**主来源｜GitHub**\n"
-                    "以下项目均已通过相关性、工程证据、DeepSeek 最终价值 Gate；"
+                    "以下项目依据公开来源及本地工程证据筛选；AI 深度分析不可用时按未核验状态展示；"
                     "优先用于判断可复用软件能力、硬件原型和跨境业务工具。"
                 )
             )
