@@ -9,6 +9,7 @@ import requests
 
 from app.cards.models import CardEnvelope
 from app.cards.text import payload_bytes
+from app.report_copy import is_raw_source_copy, safe_outbound_payload
 from app.config import (
     FEISHU_INTER_CARD_DELAY_SECONDS,
     FEISHU_MAX_PAYLOAD_BYTES,
@@ -270,6 +271,27 @@ def _post_payload(payload: dict, card_type: str) -> bool:
 def _send_envelope(card: CardEnvelope) -> bool:
     """严格校验卡片；无效或超预算时直接使用纯文本降级。"""
     payload = card.payload if isinstance(card.payload, dict) else {}
+    payload, sanitized = safe_outbound_payload(payload)
+    fallback_text = card.fallback_text
+    if sanitized or is_raw_source_copy(fallback_text):
+        # Rebuild fallback from the cleaned card; otherwise a failed card send
+        # would re-introduce the original README via the text fallback path.
+        if payload.get("msg_type") == "interactive":
+            from app.cards.builders import _element_text
+            content = payload.get("card") or {}
+            header = (content.get("header") or {}).get("title") or {}
+            lines = [str(header.get("content") or "美国跨境经营雷达")]
+            lines.extend(
+                text for text in (
+                    _element_text(element)
+                    for element in content.get("elements") or []
+                ) if text
+            )
+            fallback_text = "\n".join(lines)
+        elif payload.get("msg_type") == "text":
+            fallback_text = str((payload.get("content") or {}).get("text") or "")
+        else:
+            fallback_text = "日报卡片内容未通过原始文档防泄漏检查；请查看系统日志。"
     try:
         size = payload_bytes(payload)
         valid = payload.get("msg_type") in {"interactive", "text"}
@@ -281,7 +303,7 @@ def _send_envelope(card: CardEnvelope) -> bool:
     if not valid:
         logger.warning("飞书卡片结构无效，改发纯文本：类型=%s", card.card_type)
         return _post_payload(
-            _plain_text_payload(card.fallback_text),
+            _plain_text_payload(fallback_text),
             f"{card.card_type}:text",
         )
 
@@ -293,7 +315,7 @@ def _send_envelope(card: CardEnvelope) -> bool:
             FEISHU_MAX_PAYLOAD_BYTES,
         )
         return _post_payload(
-            _plain_text_payload(card.fallback_text),
+            _plain_text_payload(fallback_text),
             f"{card.card_type}:text",
         )
 
@@ -303,7 +325,7 @@ def _send_envelope(card: CardEnvelope) -> bool:
 
     logger.warning("飞书卡片发送失败，尝试纯文本降级：类型=%s", card.card_type)
     return _post_payload(
-        _plain_text_payload(card.fallback_text),
+        _plain_text_payload(fallback_text),
         f"{card.card_type}:text",
     )
 
