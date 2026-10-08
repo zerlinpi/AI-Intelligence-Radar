@@ -402,7 +402,7 @@ def _append_standard_policy(elements: list, decision, index: int):
 
 def _append_product_compliance(elements: list, decision, index: int):
     _append_policy_identity(elements, decision, index)
-    elements.append(_md("**审核要求**\n" + _text(decision.requirement)))
+    elements.append(_md("**审核要求**\n" + safe_policy_display_text(decision.requirement)))
     elements.extend(
         [
             _pair("影响产品", safe_policy_display_text(decision.affected_products), "🎯"),
@@ -410,7 +410,7 @@ def _append_product_compliance(elements: list, decision, index: int):
             _pair("应准备资料", safe_policy_display_text(decision.preparation), "📋"),
         ]
     )
-    action = _text(decision.action)
+    action = safe_policy_display_text(decision.action)
     if action:
         elements.append(_pair("现在要做", action, "✅"))
     _append_button(elements, "查看官方原文", decision.url)
