@@ -16,6 +16,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from app.cards import build_daily_cards
 from app.config import REPORT_TIMEZONE
+from app.report_copy import project_display_description
 from app.pipeline import (
     build_decision_model,
     collect_policies,
@@ -42,9 +43,13 @@ def _score_level(value: float) -> str:
 def _project_analysis(item) -> dict:
     metrics = item.metrics or {}
     selection_score = float(metrics.get("selection_score") or item.trend_score or 0)
-    description = " ".join(str(item.description or "").split()).strip()
     title = str(item.title or "未命名项目").strip()
     tags = [str(x) for x in metrics.get("priority_tags") or []]
+    description = project_display_description(
+        item.description,
+        tags=tags,
+        source_name="GitHub" if item.source == "github" else item.source,
+    )
     if tags:
         direction = f"先验证 {title} 在“{tags[0]}”场景中的真实可执行性与集成成本。"
     else:

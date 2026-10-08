@@ -16,6 +16,7 @@ from app.cards.styles import (
 )
 from app.cards.text import clean_text, payload_bytes
 from app.config import FEISHU_MAX_PAYLOAD_BYTES
+from app.report_copy import project_display_description
 
 
 # 不对业务正文设置字符上限。这里只给卡片 JSON 自身保留传输安全空间；
@@ -558,7 +559,11 @@ def _project_elements(project, index: int) -> list:
     if tags:
         elements.append(_md(f"🏷️ {tags}"))
 
-    description = _text(project.description)
+    description = project_display_description(
+        project.description,
+        tags=project.tags,
+        source_name=project.source_name,
+    )
     judgment = _text(project.judgment)
     direction = _text(project.direction)
 
