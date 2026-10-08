@@ -23,7 +23,7 @@ from app.feishu import send_feishu_cards
 from app.history_novelty import filter_recently_reported
 from app.models.radar_item import RadarItem
 from app.relevance import attach_eligibility_metrics, report_eligibility
-from app.report_copy import project_display_description
+from app.report_copy import project_display_description, safe_policy_display_text, safe_project_insight
 from app.scoring import (
     age_hours,
     calculate_priority_score,
@@ -756,30 +756,30 @@ def _to_compliance_decision(item: RadarItem) -> ComplianceDecision:
         url=item.url,
         risk_level=_normalized_level(analysis.get("opportunity")),
         impact_score=_number(analysis.get("business_score", 50)),
-        requirement=_clean_text(analysis.get("purpose"), item.description),
-        impact=impact,
+        requirement=safe_policy_display_text(_clean_text(analysis.get("purpose"), item.description)),
+        impact=safe_policy_display_text(impact),
         affected_products=(
-            _clean_text(
+            safe_policy_display_text(_clean_text(
                 analysis.get("affected_products"),
                 "需依据官方原文确认具体适用产品与豁免范围。",
-            )
+            ))
             if focus == "产品合规审核"
             else ""
         ),
         risk=(
-            _clean_text(analysis.get("risk"), impact)
+            safe_policy_display_text(_clean_text(analysis.get("risk"), impact))
             if focus == "产品合规审核"
             else ""
         ),
         preparation=(
-            _clean_text(
+            safe_policy_display_text(_clean_text(
                 analysis.get("preparation"),
                 action or "按官方要求整理对应测试、证书、注册或申报资料。",
-            )
+            ))
             if focus == "产品合规审核"
             else ""
         ),
-        action=action,
+        action=safe_policy_display_text(action) if action else "",
     )
 
 
@@ -803,8 +803,8 @@ def _to_product_decision(item: RadarItem) -> ProductDecision:
             source_name=SOURCE_NAMES.get(item.source, item.source),
         ),
         growth_signal=_format_metrics(item),
-        judgment=_clean_text(analysis.get("summary"), "暂无 AI 分析摘要。"),
-        direction=_analysis_action(analysis),
+        judgment=safe_project_insight(_clean_text(analysis.get("summary"), "暂无 AI 分析摘要。")),
+        direction=safe_project_insight(_analysis_action(analysis)),
         cross_border=_is_cross_border_project(item),
     )
 
