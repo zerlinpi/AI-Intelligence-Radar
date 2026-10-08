@@ -16,7 +16,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from app.cards import build_daily_cards
 from app.config import REPORT_TIMEZONE
-from app.report_copy import project_display_description
+from app.report_copy import project_display_description, safe_policy_display_text
 from app.pipeline import (
     build_decision_model,
     collect_policies,
@@ -73,7 +73,7 @@ def _policy_analysis(item) -> dict:
     metrics = item.metrics or {}
     policy_score = float(metrics.get("policy_score") or 50)
     title = str(item.title or "美国合规更新").strip()
-    description = " ".join(str(item.description or "").split()).strip()
+    description = safe_policy_display_text(item.description)
     action = f"查看 {title} 官方原文，确认适用产品、时间节点与现有资料缺口。"
 
     return {
