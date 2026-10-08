@@ -74,3 +74,57 @@ def test_live_report_policy_fields_are_safe_even_without_llm():
     assert "Official safety guidance" not in serialized
     assert "Now read the official document" not in serialized
     assert "政策中文内容尚未完成核验" in serialized
+
+
+def test_feishu_sender_filters_cached_card_and_its_text_fallback(monkeypatch):
+    from app import feishu
+    from app.cards.models import CardEnvelope
+
+    old = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {"title": {"tag": "plain_text", "content": "GitHub 核心项目"}},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**项目名**\nFlickersoft/serval"}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**它能做什么**\n" + HF_CARD}},
+            ],
+        },
+    }
+    captured = []
+
+    def fake_post(payload, card_type):
+        captured.append((payload, card_type))
+        return len(captured) == 2
+
+    monkeypatch.setattr(feishu, "_post_payload", fake_post)
+    card = CardEnvelope(
+        card_type="products-github",
+        payload=old,
+        fallback_text="GitHub 核心项目\n" + HF_CARD,
+    )
+    assert feishu._send_envelope(card)
+    assert len(captured) == 2
+    assert captured[0][0]["msg_type"] == "interactive"
+    assert captured[1][0]["msg_type"] == "text"
+    assert "MODEL_CARD:" not in str(captured)
+    assert "A model readme" not in str(captured)
+    assert "中文摘要尚未完成核验" in str(captured)
+    assert "MODEL_CARD:" in str(old)
+
+
+def test_fallback_policy_prep_keeps_original_data_for_scoring():
+    from scripts.prepare_local_fallback import _policy_analysis
+    from app.models.radar_item import RadarItem
+
+    item = RadarItem(
+        title="US safety guidance",
+        source="cpsc_compliance",
+        category="policy",
+        url="https://www.cpsc.gov/example",
+        description=POLICY_RSS,
+        metrics={"policy_score": 70},
+    )
+    result = _policy_analysis(item)
+    assert "Official safety guidance" not in result["purpose"]
+    assert "政策中文内容尚未完成核验" in result["purpose"]
+    assert item.description == POLICY_RSS
