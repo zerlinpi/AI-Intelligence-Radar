@@ -49,6 +49,8 @@ def _project_analysis(item) -> dict:
         item.description,
         tags=tags,
         source_name="GitHub" if item.source == "github" else item.source,
+        title=title,
+        metrics=metrics,
     )
     if tags:
         direction = f"先验证 {title} 在“{tags[0]}”场景中的真实可执行性与集成成本。"
