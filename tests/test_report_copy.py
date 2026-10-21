@@ -23,9 +23,11 @@ def test_raw_readme_never_enters_report_copy():
     assert "README:" not in text
     assert "Quickstart" not in text
     assert "topics:" not in text
-    assert "已识别方向：硬件开发、实体商品机会" in text
-    assert "中文功能摘要尚未完成核验" in text
-    assert len(text) < 150
+    assert "视频监控/录像" in text
+    assert "端侧/本地推理" in text
+    assert "RTSP" in text
+    assert "中文功能摘要尚未完成核验" not in text
+    assert len(text) < 400
 
 
 def test_untranslated_short_english_is_not_misrepresented_as_chinese_summary():
@@ -34,7 +36,8 @@ def test_untranslated_short_english_is_not_misrepresented_as_chinese_summary():
         source_name="GitHub",
     )
     assert "agent workflow" not in description
-    assert "GitHub 仓库" in description
+    assert "AI Agent/工作流自动化工具" in description
+    assert "可重复执行的流程" in description
 
 
 def test_existing_real_chinese_analysis_is_kept_verbatim():
@@ -60,7 +63,7 @@ def test_pipeline_product_decision_filters_fallback_raw_english_readme():
     }
     decision = _to_product_decision(item)
     assert "README:" not in decision.description
-    assert "中文功能摘要尚未完成核验" in decision.description
+    assert "视频监控/录像" in decision.description
     assert decision.judgment == "请验证真实工程证据。"
     assert item.description == LONG_README
 
@@ -75,7 +78,7 @@ def test_pre_generated_local_fallback_never_copies_readme_into_purpose():
     )
     result = _project_analysis(item)
     assert "README:" not in result["purpose"]
-    assert "中文功能摘要尚未完成核验" in result["purpose"]
+    assert "视频监控/录像" in result["purpose"]
     assert result["llm_meta"]["fallback"] is True
 
 
@@ -94,5 +97,5 @@ def test_feishu_card_guard_also_cleans_external_feed_project():
     rendered = str(elements)
     assert "README:" not in rendered
     assert "Detailed setup instructions" not in rendered
-    assert "中文功能摘要尚未完成核验" in rendered
+    assert "视频监控/录像" in rendered
     assert "先核验工程进度" in rendered
