@@ -7,6 +7,8 @@ from copy import deepcopy
 import re
 from typing import Iterable
 
+from app.project_summary import infer_project_summary
+
 
 _SOURCE_DUMP = re.compile(
     r"\b(?:README|MODEL_CARD|topics|language|license|pipeline_tag|"
@@ -49,11 +51,23 @@ def project_display_description(
     *,
     tags: Iterable[str] = (),
     source_name: str = "",
+    title: str = "",
+    metrics: dict | None = None,
 ) -> str:
-    """Use Chinese verified analysis, never GitHub README/HF model cards."""
+    """Prefer verified Chinese analysis; otherwise infer a cautious summary from source evidence."""
     text = " ".join(str(value or "").split()).strip()
     if text and not is_raw_source_copy(text) and _CHINESE.search(text):
         return text
+
+    inferred = infer_project_summary(
+        title or "未命名项目",
+        text,
+        tags=tags,
+        source_name=source_name,
+        metrics=metrics,
+    )
+    if inferred:
+        return inferred
 
     directions = []
     for tag in tags or ():
