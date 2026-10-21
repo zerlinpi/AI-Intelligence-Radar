@@ -13,7 +13,7 @@ CHINESE_LONG = "这是完整且已核验的中文分析，不能因为文本很�
 def test_huggingface_model_card_and_mixed_chinese_preface_are_removed():
     text = project_display_description("已有项目说明：" + HF_CARD, source_name="Hugging Face")
     assert "MODEL_CARD:" not in text
-    assert "中文功能摘要尚未完成核验" in text
+    assert "文本生成/大语言模型" in text
 
 
 def test_rss_english_or_html_policy_does_not_render_raw():
