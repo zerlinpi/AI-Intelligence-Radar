@@ -154,12 +154,12 @@ def infer_project_summary(
     if context or tech:
         evidence = "；".join(context + (["技术线索：" + "、".join(tech[:5])] if tech else []))
         return (
-            f"目前公开简介/README不足以确认“{title or '该项目'}”的具体输入、输出和核心功能。"
+            f"目前公开简介/README不足以确认该项目的具体输入、输出和核心功能。"
             f"可确认的辅助线索：{evidence}。这些线索只能用于定位方向，不能替代对示例和核心代码的核验。"
         )
 
     return (
-        f"目前公开简介/README不足以确认“{title or '该项目'}”具体解决什么问题；"
+        "目前公开简介/README不足以确认该项目具体解决什么问题；"
         "现有文本未提供足够明确的功能、输入输出或使用示例，因此不应仅凭名称或热度猜测。"
         "需要补充项目首页简介、Quickstart 示例或核心入口代码后再下结论。"
     )
