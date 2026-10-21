@@ -566,6 +566,7 @@ def _project_elements(project, index: int) -> list:
         project.description,
         tags=project.tags,
         source_name=project.source_name,
+        title=project.title,
     )
     judgment = safe_project_insight(project.judgment)
     direction = safe_project_insight(project.direction)
