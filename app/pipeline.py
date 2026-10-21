@@ -801,6 +801,8 @@ def _to_product_decision(item: RadarItem) -> ProductDecision:
             analysis.get("purpose") or item.description,
             tags=tags,
             source_name=SOURCE_NAMES.get(item.source, item.source),
+            title=item.title,
+            metrics=item.metrics,
         ),
         growth_signal=_format_metrics(item),
         judgment=safe_project_insight(_clean_text(analysis.get("summary"), "暂无 AI 分析摘要。")),
